@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet build *)",
+      "PowerShell(Get-ChildItem *)",
+      "PowerShell($dll = \"$env:USERPROFILE\\\\.nuget\\\\packages\\\\workflowengine.netcore-providerformssql\\\\21.0.0\\\\lib\\\\netstandard2.0\\\\OptimaJet.Workflow.MSSQL.dll\"; [Reflection.Assembly]::LoadFile\\($dll\\).GetExportedTypes\\(\\) | Select-Object -ExpandProperty FullName)",
+      "PowerShell(Out-Null *)",
+      "PowerShell($dll = \"$env:USERPROFILE\\\\.nuget\\\\packages\\\\workflowengine.netcore-providerformssql\\\\21.0.0\\\\lib\\\\netstandard2.0\\\\OptimaJet.Workflow.MSSQL.dll\"; $asm = [Reflection.Assembly]::LoadFile\\($dll\\); try { $asm.GetExportedTypes\\(\\) | Select FullName } catch [System.Reflection.ReflectionTypeLoadException] { $_.Exception.Types | Where-Object { $_ } | Select FullName })"
+    ]
+  }
+}

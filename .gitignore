@@ -1,0 +1,130 @@
+# =============================================================================
+# .gitignore for FSI.Trade.Compliance (.NET 8 solution)
+#
+# Sources:
+#   - Microsoft's official VisualStudio.gitignore template
+#   - Project-specific additions for Slice 7 (PuppeteerSharp cache) and
+#     Slice 8 (ICBC_Data uploads)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# .NET build output
+# -----------------------------------------------------------------------------
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Ll]og/
+[Ll]ogs/
+
+# Build artefacts produced by `dotnet publish`
+[Pp]ublish/
+PublishProfiles/*.pubxml.user
+
+# Code-coverage results
+[Cc]overage*/
+*.coverage
+*.coveragexml
+coverage.cobertura.xml
+
+# .NET secrets (per-user, never commit)
+**/secrets.json
+
+# -----------------------------------------------------------------------------
+# Visual Studio
+# -----------------------------------------------------------------------------
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.sln.iml
+
+# VS-generated launchSettings is fine to commit; the per-user variant isn't
+**/Properties/launchSettings.local.json
+
+# -----------------------------------------------------------------------------
+# Rider / ReSharper
+# -----------------------------------------------------------------------------
+.idea/
+*.DotSettings.user
+_ReSharper*/
+[Tt]est[Rr]esult*/
+
+# -----------------------------------------------------------------------------
+# VS Code (keep workspace settings, skip per-user state)
+# -----------------------------------------------------------------------------
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# -----------------------------------------------------------------------------
+# NuGet
+# -----------------------------------------------------------------------------
+*.nupkg
+*.snupkg
+**/packages/*
+# (modern projects use PackageReference; the packages/ folder is legacy MSBuild)
+
+# -----------------------------------------------------------------------------
+# Entity Framework Core
+# -----------------------------------------------------------------------------
+# Migrations are committed; design-time-generated artefacts are not
+**/Migrations/*.Designer.cs.bak
+
+# -----------------------------------------------------------------------------
+# Logs, temp files, OS junk
+# -----------------------------------------------------------------------------
+*.log
+*.tlog
+*.tmp
+*.temp
+*.swp
+Thumbs.db
+.DS_Store
+ehthumbs.db
+
+# -----------------------------------------------------------------------------
+# Slice 7 — PuppeteerSharp Chromium cache
+# (default lives in %LOCALAPPDATA% — guard for the case where someone
+#  configures Reports:ChromiumCachePath to a project-relative path)
+# -----------------------------------------------------------------------------
+PuppeteerCache/
+**/chrome-win64/
+**/chrome-win64.zip
+**/chrome-linux/
+**/chrome-linux.zip
+**/chrome-mac/
+
+# -----------------------------------------------------------------------------
+# Slice 8 — ICBC_Data folder (user-uploaded evidence)
+# Files belong on the deployed server, NEVER in source control
+# -----------------------------------------------------------------------------
+ICBC_Data/
+**/ICBC_Data/
+
+# -----------------------------------------------------------------------------
+# Database backups + local SQL dumps
+# -----------------------------------------------------------------------------
+*.bak
+*.bacpac
+*.mdf
+*.ldf
+
+# -----------------------------------------------------------------------------
+# JetBrains DotMemory / DotTrace snapshots
+# -----------------------------------------------------------------------------
+*.dmw
+*.dmp
+*.dtt
+
+# -----------------------------------------------------------------------------
+# Local env / config overrides
+# (appsettings.Development.json IS committed — shared dev defaults.
+#  appsettings.Local.json is per-developer and not committed.)
+# -----------------------------------------------------------------------------
+**/appsettings.Local.json
+**/appsettings.Local.*.json
+.env
+.env.local

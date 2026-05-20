@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>FSI.Trade.Compliance.API</RootNamespace>
+    <AssemblyName>FSI.Trade.Compliance.API</AssemblyName>
+    <!-- Slice 5.6 — propagate the Windows Desktop targeting from Infrastructure
+         to the executable host so the legacy System.Data.SqlClient resolves
+         the same way at process start as it does in Infrastructure. The
+         working sample app sets this on its WebAPI csproj too. -->
+    <ImportWindowsDesktopTargets>true</ImportWindowsDesktopTargets>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FSI.Trade.Compliance.Application\FSI.Trade.Compliance.Application.csproj" />
+    <ProjectReference Include="..\FSI.Trade.Compliance.Infrastructure\FSI.Trade.Compliance.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.10" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.8.1" />
+    <PackageReference Include="Serilog.AspNetCore" Version="8.0.3" />
+
+    <!-- API versioning — Asp.Versioning successor of Microsoft.AspNetCore.Mvc.Versioning -->
+    <PackageReference Include="Asp.Versioning.Mvc" Version="8.1.0" />
+    <PackageReference Include="Asp.Versioning.Mvc.ApiExplorer" Version="8.1.0" />
+  </ItemGroup>
+
+</Project>

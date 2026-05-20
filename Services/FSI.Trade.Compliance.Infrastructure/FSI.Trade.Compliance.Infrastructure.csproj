@@ -1,0 +1,106 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\FSI.Trade.Compliance.Application\FSI.Trade.Compliance.Application.csproj" />
+    <ProjectReference Include="..\FSI.Trade.Compliance.Domain\FSI.Trade.Compliance.Domain.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.10" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.10">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="8.0.2" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="8.0.0" />
+
+    <!-- Slice 5.6 — pin DI Abstractions to v8 to override the transitive v10
+         pull-in from WorkflowEngine.NETCore-Core 3.5.0. Without this, the API
+         project (which references v8) fails to load with CS1705 "uses a higher
+         version than referenced assembly". The pin keeps the whole solution
+         consistent on .NET 8's DI surface and matches our top-level
+         <TargetFramework>net8.0</TargetFramework>. -->
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.2" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection"            Version="8.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions"           Version="8.0.3" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Abstractions"           Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Memory"                 Version="8.0.1" />
+
+    <!-- Slice 5.6 — pin System.Data.SqlClient + System.Configuration.ConfigurationManager
+         to the EXACT versions the working sample app resolves at runtime
+         (verified by reading TMXPL.WebAPI.deps.json line 269-272: ConfigurationManager
+         8.0.0 paired with SqlClient 4.8.1). Without this, the runtime resolves
+         to the older 4.2.x transitive that WorkflowEngine.NETCore-ProviderForMSSQL
+         3.5.0 was compiled against, and .NET 8 fails to load the legacy
+         SqlGuidCaster struct (LayoutKind.Explicit with overlapping Guid/SqlGuid
+         fields). 4.8.6 was too new; 4.8.1 is what the sample uses and it works. -->
+    <PackageReference Include="System.Data.SqlClient"                       Version="4.8.1" />
+    <PackageReference Include="System.Configuration.ConfigurationManager"   Version="8.0.0" />
+    <PackageReference Include="Otp.NET" Version="1.4.0" />
+    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.10.0" />
+
+    <!-- Slice 4 — outbound HTTP resilience for upstream integrations
+         (BRAINS, Customer master, FCCM). Polly v8 under the hood; cleaner
+         declarative API than raw Polly. -->
+    <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="8.10.0" />
+
+    <!-- Slice 4 Step-2 follow-up: add Oracle.ManagedDataAccess.Core when
+         the real FccmOracleReader is implemented (today's reader is a stub).
+         <PackageReference Include="Oracle.ManagedDataAccess.Core" Version="23.6.0" /> -->
+
+    <!-- Slice 5.6 — Pinned to OptimaJet 3.5.0 (the .NET 8-compatible build of
+         the legacy v3.x line) for license parity with the existing legacy
+         backend. v3.x has soft license enforcement: an expired key logs a
+         warning at runtime startup but every runtime call (GetAvailableCommands,
+         ExecuteCommand, SetState, CreateInstance) continues to function. v21
+         enforces strictly per-call. Until OptimaJet procurement lands a fresh
+         v21 license — OR the FSI-owned workflow engine ships (see BACKLOG
+         "Replace OptimaJet runtime with FSI-owned engine") — v3.5.0 is the
+         pragmatic choice. Same DB schema, same scheme XML, same API surface
+         as legacy v3.1, runs on .NET 8 natively. Verified against the working
+         TMX Sample App (D:\ICBC - Latest\TMX Sample App). See OPTIMAJET_POC.md
+         §License for the licensing-risk note.
+    -->
+    <PackageReference Include="WorkflowEngine.NETCore-Core" Version="3.5.0" />
+    <PackageReference Include="WorkflowEngine.NETCore-ProviderForMSSQL" Version="3.5.0" />
+
+    <!-- Slice 7 — Reports stack -->
+    <!-- Liquid templating for HTML report rendering (matches legacy
+         ReportService which used DotLiquid). MIT license. -->
+    <PackageReference Include="DotLiquid" Version="2.2.692" />
+
+    <!-- Open-source Excel (.xlsx) writer. MIT. Used by the ReportExcel
+         endpoint to project DataTable → worksheet. -->
+    <PackageReference Include="ClosedXML" Version="0.104.2" />
+
+    <!-- HTML→PDF via headless Chromium. Apache 2.0. Downloads Chromium on
+         first BrowserFetcher invocation (~150 MB) — see PuppeteerReportPdfGenerator
+         for how the browser is initialised. Highest-fidelity HTML rendering
+         available in open-source land; renders any CSS, fonts, JS the
+         report HTML carries. -->
+    <PackageReference Include="PuppeteerSharp" Version="20.0.5" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- Slice 5.6 — Required for the legacy System.Data.SqlClient used by
+         WorkflowEngine.NETCore-ProviderForMSSQL 3.5.0 to load on .NET 8.
+         Without this, the runtime rejects SqlGuidCaster's [LayoutKind.Explicit]
+         struct (overlapping Guid + SqlGuid at offset 0) under strict layout
+         validation. The Windows Desktop targeting pack ships a legacy
+         compatibility build that keeps the union working. Verified against
+         the working sample app — every project in that solution that touches
+         OptimaJet has this property set (TMXPL.Workflows, .Services, .WebAPI).
+         Windows-only. If we ever target Linux, swap OptimaJet's MSSQLProvider
+         for one backed by Microsoft.Data.SqlClient. -->
+    <ImportWindowsDesktopTargets>true</ImportWindowsDesktopTargets>
+  </PropertyGroup>
+
+</Project>

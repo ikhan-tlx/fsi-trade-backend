@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/Services/">
+    <Project Path="Services/FSI.Trade.Compliance.API/FSI.Trade.Compliance.API.csproj" />
+    <Project Path="Services/FSI.Trade.Compliance.Application/FSI.Trade.Compliance.Application.csproj" />
+    <Project Path="Services/FSI.Trade.Compliance.Domain/FSI.Trade.Compliance.Domain.csproj" />
+    <Project Path="Services/FSI.Trade.Compliance.Infrastructure/FSI.Trade.Compliance.Infrastructure.csproj" />
+  </Folder>
+</Solution>
