@@ -75,7 +75,11 @@ INSERT @scoped(Code, Description) VALUES
 
     -- Workflow module (Slice 5)
     (N'Workflow.View',     N'View workflow schemes and product mappings'),
-    (N'Workflow.Manage',   N'Edit workflow schemes, product mappings, and use the visual designer');
+    (N'Workflow.Manage',   N'Edit workflow schemes, product mappings, and use the visual designer'),
+
+    -- Flags module (Slice 8)
+    (N'Flags.View',        N'View flag catalogue, per-transaction flag state, scopes and stats'),
+    (N'Flags.Manage',      N'Create / edit / activate / deactivate catalogue flags and manage their (product, tab) scopes');
 
 INSERT INTO dbo.TmX_Privilege
     (Tenant_ID,
@@ -138,7 +142,9 @@ INSERT @grants(PrivCode) VALUES
     (N'Roles.Manage'),
     (N'Privileges.View'),
     (N'Workflow.View'),
-    (N'Workflow.Manage');
+    (N'Workflow.Manage'),
+    (N'Flags.View'),
+    (N'Flags.Manage');
 
 INSERT INTO dbo.TmX_Role_Privilege_Mapping
     (Tenant_ID,             Role_ID,           Privilege_ID,

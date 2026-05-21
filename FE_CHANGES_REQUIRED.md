@@ -26,6 +26,155 @@ next pending entry, apply the listed edits, mark it Done.
 
 ---
 
+## 2026-05-21 — Slice 8 Step 6 — Flag admin / management endpoints
+
+**Status**: ⏳ Pending
+
+**Trigger**: FE has an admin page for managing the flag catalogue
+(create new indicators, edit existing ones, toggle visibility per
+product/tab, retire flags). Slice 8 Step 5 only built read + per-
+transaction write — the catalogue itself was admin-less. This step
+adds the full admin CRUD surface.
+
+**New privileges seeded** (via `database/seed/rbac_grants.sql`):
+
+- `Flags.View` — required for every flag read endpoint (catalogue list,
+  detail, scope reads, stats, per-transaction reads). IT Admin granted
+  by default.
+- `Flags.Manage` — required for every flag write endpoint (create,
+  update, activate, scope add/update/delete). IT Admin granted by
+  default.
+
+Run the seed file on the target DB before testing the admin page:
+`sqlcmd -d ICBC_DEMO -i database/seed/rbac_grants.sql`. Other roles
+get the privileges via the role-privilege admin UI (Slice 2.3).
+
+**Catalogue management endpoints** (all gated by `Flags.Manage`
+unless noted):
+
+```
+GET    /api/v1/Flag                        paged catalogue grid       (Flags.View)
+       ?page=&pageSize=&filter=&sort=
+       &categoryLkpId=&severityLkpId=&flagTypeLkpId=&activeFlag=
+
+GET    /api/v1/Flag/{id}                   detail + scopes            (Flags.View)
+
+POST   /api/v1/Flag                        create new flag
+PUT    /api/v1/Flag/{id}                   update fields
+POST   /api/v1/Flag/{id}/Activate          Active_Flag = true
+POST   /api/v1/Flag/{id}/Deactivate        Active_Flag = false
+
+POST   /api/v1/Flag/{id}/Scopes            deploy flag to (product, tab)
+PUT    /api/v1/Flag/Scope/{scopeId}        toggle visibility / re-order
+DELETE /api/v1/Flag/Scope/{scopeId}        permanently remove a scope
+```
+
+**Detail response shape** (`GET /Flag/{id}`):
+
+```jsonc
+{
+  "status": { "code": 200, "message": "OK" },
+  "data": {
+    "flagId": 31,
+    "flagCode": "TBML.MRL.C8CE048A",
+    "flagName": "The packaging of goods is inconsistent...",
+    "flagDescription": "<full text>",
+    "flagTypeLkpId": 901,
+    "flagCategoryLkpId": 905,
+    "severityLkpId": 912,
+    "defaultWeight": 1.00,
+    "requiresEvidence": true,
+    "sourceSystem": null,
+    "activeFlag": true,
+    "createdBy": "System (Slice 8 catalogue seed)",
+    "createdDate": "2026-05-20T08:14:23",
+    "lastUpdatedBy": null,
+    "lastUpdatedDate": null,
+    "scopes": [
+      { "flagScopeId": 88,  "productId": 2, "tabId": 6,  "sortOrder": 555, "activeFlag": true,  "legacyFieldName": "ILFMRL1" },
+      { "flagScopeId": 142, "productId": 2, "tabId": 11, "sortOrder": 555, "activeFlag": false, "legacyFieldName": "ICRMRL1" }
+    ]
+  }
+}
+```
+
+**Create body** (`POST /Flag`):
+
+```jsonc
+{
+  "flagCode":          null,                            // auto-generated when blank
+  "flagName":          "Suspicious counterparty geography",
+  "flagDescription":   "Counterparty location flagged by sanctions screen.",
+  "flagTypeLkpId":     901,                             // FLAG_TYPE = Manual
+  "flagCategoryLkpId": 905,                             // FLAG_CATEGORY = TBML
+  "severityLkpId":     911,                             // FLAG_SEVERITY = High
+  "defaultWeight":     1.50,
+  "requiresEvidence":  true,
+  "sourceSystem":      null
+}
+// → 200 { data: { flagId: 64 } }
+// Newly-created flag starts UNSCOPED. Follow up with POST /Flag/64/Scopes
+// for each (product, tab) the bank wants it surfaced on.
+```
+
+**Add scope body** (`POST /Flag/{id}/Scopes`):
+
+```jsonc
+{
+  "productId":  2,
+  "tabId":      6,        // null = product-level (e.g. KYC has no sub-tabs)
+  "sortOrder":  600,
+  "activeFlag": true
+}
+// → 200 { data: { flagScopeId: 489 } }
+// 409 if (flagId, productId, tabId) already has a scope row.
+```
+
+**Update scope body** (`PUT /Flag/Scope/{scopeId}`):
+
+```jsonc
+{
+  "activeFlag": false,    // legacy "Visibility = '0'" — hides on form, keeps audit history
+  "sortOrder":  null      // null = leave unchanged
+}
+```
+
+**Error codes the admin UI should handle**:
+
+| Status | Code | When |
+|---|---|---|
+| 400 | `validation_failed` | Missing required fields / invalid lookup IDs |
+| 401 | `unauthenticated` | No JWT |
+| 403 | `forbidden_privilege` | Caller lacks `Flags.View` / `Flags.Manage` |
+| 404 | `flag_not_found` | `{id}` doesn't exist |
+| 404 | `flag_scope_not_found` | `{scopeId}` doesn't exist |
+| 409 | `flag_code_taken` | Submitted `flagCode` clashes with existing flag |
+| 409 | `flag_scope_exists` | (flag, product, tab) already scoped |
+
+**Action in FE**:
+
+- Build the admin page using the endpoints above. Recommend a master-
+  detail layout: paged list (left) → detail with scopes (right).
+- "Edit visibility" UI → call `PUT /Flag/Scope/{scopeId}` with
+  `activeFlag` only (omit `sortOrder` to leave it alone).
+- "Retire flag" UI → `POST /Flag/{id}/Deactivate` (preserves history).
+- "Permanently remove from product" → `DELETE /Flag/Scope/{scopeId}`
+  (use sparingly; soft-deactivate is usually preferred).
+- All admin actions need the admin's JWT to carry the `Flags.Manage`
+  privilege via their role's grants — 403 with `forbidden_privilege`
+  when they don't.
+
+**Verify**:
+
+- `GET /Flag?page=1&pageSize=20` as IT Admin → returns 64 catalogue
+  rows from the migration seed.
+- `GET /Flag/31` → response includes ~16-17 scope rows for the
+  "packaging inconsistent" flag (one per product variant that carries it).
+- `POST /Flag/{id}/Activate` while logged in as a user without
+  `Flags.Manage` → 403 with `forbidden_privilege` envelope.
+
+---
+
 ## 2026-05-20 — Slice 8 — Flag catalogue (read embedded, write embedded, attachments)
 
 **Status**: ⏳ Pending

@@ -1,4 +1,5 @@
 using Asp.Versioning;
+using FSI.Trade.Compliance.API.Filters;
 using FSI.Trade.Compliance.Application.Common.Models;
 using FSI.Trade.Compliance.Application.Features.Flags.Read;
 using FSI.Trade.Compliance.Application.Features.Transactions.Cancel;
@@ -105,6 +106,7 @@ public class TransactionController : ControllerBase
     /// on the form).
     /// </summary>
     [HttpGet("{id:int}/Flags")]
+    [RequiresPrivilege("Flags.View")]
     public async Task<IActionResult> ListFlags(int id, CancellationToken ct)
     {
         var rows = await _mediator.Send(new ListTransactionFlagsQuery(id), ct);
