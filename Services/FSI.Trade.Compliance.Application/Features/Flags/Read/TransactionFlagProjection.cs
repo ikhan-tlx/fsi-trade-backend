@@ -87,4 +87,63 @@ public static class TransactionFlagProjection
 
         return await query.ToListAsync(ct);
     }
+
+    /// <summary>
+    /// "Which flags apply to this product (and optionally tab)" — no
+    /// transaction context. Used during the create-flow before a
+    /// <c>Transaction_Id</c> exists, and for any read-side admin /
+    /// catalogue browse.
+    ///
+    /// Same DTO as <see cref="LoadAsync"/>; the transaction-state
+    /// fields come back null / false because there's no
+    /// <c>TmX_Transaction_Flag</c> to LEFT JOIN against. FE renders
+    /// the flag panel identically — every flag starts unticked.
+    /// </summary>
+    public static async Task<List<TransactionFlagDto>> LoadByProductAsync(
+        IApplicationDbContext db,
+        int productId,
+        int? tabId,
+        CancellationToken ct)
+    {
+        var query =
+            from s in db.FlagScopes.AsNoTracking()
+            where s.ProductId  == productId
+               && s.ActiveFlag
+
+            join c in db.FlagCatalogues.AsNoTracking()
+                 .Where(c => c.ActiveFlag) on s.FlagId equals c.FlagId
+
+            where tabId == null || s.TabId == tabId
+
+            orderby s.TabId, s.SortOrder, c.FlagName
+
+            select new TransactionFlagDto
+            {
+                flagScopeId         = s.FlagScopeId,
+                productId           = s.ProductId,
+                tabId               = s.TabId,
+                sortOrder           = s.SortOrder,
+                legacyFieldName     = s.LegacyFieldName,
+
+                flagId              = c.FlagId,
+                flagCode            = c.FlagCode,
+                flagName            = c.FlagName,
+                flagDescription     = c.FlagDescription,
+                flagTypeLkpId       = c.FlagTypeLkpId,
+                flagCategoryLkpId   = c.FlagCategoryLkpId,
+                severityLkpId       = c.SeverityLkpId,
+                defaultWeight       = c.DefaultWeight,
+                requiresEvidence    = c.RequiresEvidence,
+
+                transactionFlagId   = null,
+                isFlagged           = false,
+                evidenceDocumentId  = null,
+                evidenceFileName    = null,
+                analystNotes        = null,
+                setBy               = null,
+                setDate             = null
+            };
+
+        return await query.ToListAsync(ct);
+    }
 }

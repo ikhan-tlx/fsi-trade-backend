@@ -118,6 +118,21 @@ that only need the flag panel without the rest of the transaction:
    from above, wrapped in `ResponseViewModel<IReadOnlyList<TransactionFlagDto>>`.
    Same projection as the embedded list, so identical shape per row.
 
+**Create-flow read endpoints** — for rendering the flag panel BEFORE a
+transaction exists (transaction-create wizard, "preview flags for this
+product" admin views):
+
+3a. **`GET /api/v1/Flag/Product/{productId}`** — every flag scoped to a
+    product, across all tabs. Same DTO as the standalone endpoint above,
+    but `transactionFlagId` / `isFlagged` / attribution fields all come
+    back null / false (no transaction context exists yet). The FE renders
+    the same flag-panel component; ticks land in memory and save via the
+    first `PUT /Transaction/{id}` after the transaction is created.
+
+3b. **`GET /api/v1/Flag/Product/{productId}/Tab/{tabId}`** — same shape
+    narrowed to one tab. Useful if the form lazy-loads each tab's flags
+    as the analyst clicks through tabs.
+
 **Stats endpoint** — top-N flags by transaction count over a period:
 
 4. **`GET /api/v1/Flag/Stats/TopFlagged?from=&to=&productId=&take=10`** —
@@ -220,13 +235,19 @@ that only need the flag panel without the rest of the transaction:
   them during transaction-detail render — it reads from
   `TmX_Flag_Scope` exclusively.
 - Existing `UDF_Data` content is untouched. Old transactions saved
-  before Slice 8 keep their JSON keys; new transactions get the keys
-  written too IF the FE keeps the legacy form fields visible (which
-  per the action above, it shouldn't for MRL fields).
-- The form-definition `GET /Product/{id}/FormDefinition` still returns
-  every field including the MRL ones — the FE filters them out
-  client-side rather than us excluding them server-side. This keeps
-  product-form changes backwards-compatible during the transition.
+  before Slice 8 keep their JSON keys.
+
+**DOES change (server-side, 2026-05-21 amendment)**:
+
+- **`GET /api/v1/Product/{id}/FormDefinition`** now **excludes** the MRL
+  fields server-side. Filter: `FieldTypeLkp = 28` AND
+  `Field_Name LIKE '%MRL%'` AND `Field_Table_Name = 'TmxTransactionDetail[]'`.
+  This eliminates the FE-side de-duplication chore — the form definition
+  no longer carries flags-as-form-fields, only the new
+  `/Flag/Product/{id}` endpoint does. Other `checkbox_file` fields
+  (real document uploads etc.) are untouched.
+- Cache key on FormDefinition bumped to `v2` so stale `v1` entries
+  (containing MRL rows) invalidate on deploy.
 
 **Operational note (BACKEND)**: the `Documents:BasePath` config in
 `appsettings.json` resolves relative to `ContentRootPath`. In dev that's
@@ -304,9 +325,11 @@ because the report filter panel needs them.
    `Content-Disposition: attachment; filename="<ReportVisibleName>-<yyyy-MM-dd>.xlsx"`.
 
 **Companion LOVs** (the FE's `business-reports-api.ts` already calls
-these three URLs):
+these three URLs — note URL changes from the original Slice 7 draft;
+the plural controller variants were consolidated into the existing
+singular controllers on 2026-05-21 to match the rest of the codebase):
 
-4. **`GET /api/v1/CompanyBranches`** — ALL effective branches (no
+4. **`GET /api/v1/CompanyBranch/all`** — ALL effective branches (no
    user-scoping). Distinct from `GET /api/v1/CompanyBranch/lov` (Slice
    6.5) which user-scopes. Response:
 
@@ -319,7 +342,7 @@ these three URLs):
    }
    ```
 
-5. **`GET /api/v1/Roles`** — ALL effective roles (Active_Flag + today
+5. **`GET /api/v1/Role/all`** — ALL effective roles (Active_Flag + today
    inside effective window). Distinct from `GET /api/v1/Role` (Slice 2.3)
    which is the privilege-gated CRUD list. Response:
 
@@ -354,6 +377,10 @@ these three URLs):
 
 **Action in FE** (`src/features/reports/businessReports/api/business-reports-api.ts`):
 
+- **Update the LOV URLs**:
+  - `/api/v1/CompanyBranches` → **`/api/v1/CompanyBranch/all`**
+  - `/api/v1/Roles` → **`/api/v1/Role/all`**
+  - `/api/v1/Product/ActiveLov` (unchanged)
 - The three LOV `transformResponse` mappers currently look only for
   PascalCase keys (`r.CompanyBranchId`, `r.RoleId`, `r.LookupId`,
   `r.VisibleValue`, etc.). The new backend uses **camelCase** wire

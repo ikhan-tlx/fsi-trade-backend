@@ -4,6 +4,7 @@ using FSI.Trade.Compliance.Application.Common.Models;
 using FSI.Trade.Compliance.Application.Features.Roles.Create;
 using FSI.Trade.Compliance.Application.Features.Roles.Get;
 using FSI.Trade.Compliance.Application.Features.Roles.List;
+using FSI.Trade.Compliance.Application.Features.Roles.Lov;
 using FSI.Trade.Compliance.Application.Features.Roles.Privileges;
 using FSI.Trade.Compliance.Application.Features.Roles.SetActive;
 using FSI.Trade.Compliance.Application.Features.Roles.Update;
@@ -41,6 +42,22 @@ public class RoleController : ControllerBase
     {
         var paged = await _mediator.Send(query, ct);
         return Ok(ResponseViewModel<PagedResult<RoleListItemDto>>.Ok(paged));
+    }
+
+    // ---------- LOV (flat, all-active, no paging, no privilege gate) ----------
+    /// <summary>
+    /// Slice 7 — all-active roles for Reports filter dropdowns and any
+    /// other consumer that needs a flat list without paging or the
+    /// Roles.View privilege gate. Distinct from <see cref="List"/>
+    /// which is the paged/filtered/privilege-gated CRUD surface.
+    /// Replaces the plural-name <c>RolesController</c> (deleted during
+    /// consolidation).
+    /// </summary>
+    [HttpGet("all")]
+    public async Task<IActionResult> ListAll(CancellationToken ct)
+    {
+        var rows = await _mediator.Send(new ListAllRolesLovQuery(), ct);
+        return Ok(ResponseViewModel<IReadOnlyList<RoleLovItemDto>>.Ok(rows));
     }
 
     // ---------- Get one ----------

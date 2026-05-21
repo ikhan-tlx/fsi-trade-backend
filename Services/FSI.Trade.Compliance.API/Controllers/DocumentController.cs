@@ -28,17 +28,43 @@ public class DocumentController : ControllerBase
     public DocumentController(IMediator mediator) => _mediator = mediator;
 
     /// <summary>
-    /// Multipart upload. Single file per request; multipart name is
-    /// "file". Optional form field "subfolderHint" overrides the
-    /// default of "flag-evidence" — e.g. set to "customer-docs"
-    /// for non-flag uploads.
+    /// Multipart upload. Single file per request; multipart form-field
+    /// name is <c>"file"</c>. Optional <c>subfolderHint</c> on the
+    /// query string (e.g. <c>POST /Document?subfolderHint=customer-docs</c>).
+    /// Defaults to "flag-evidence".
+    ///
+    /// <para>
+    /// HIDDEN FROM SWAGGER. Swashbuckle 6.8.x has an over-eager check
+    /// that throws on any IFormFile parameter when other params (even
+    /// <c>[FromQuery]</c> or <c>CancellationToken</c>) are present —
+    /// no documented workaround other than downgrading the package or
+    /// removing the action from the OpenAPI doc. We picked the latter.
+    /// The endpoint is fully functional; it just isn't in the Swagger UI.
+    /// </para>
+    ///
+    /// <para>
+    /// Test directly with curl:
+    /// <code>
+    /// curl -X POST "https://localhost:5081/api/v1/Document?subfolderHint=flag-evidence" \
+    ///      -H "Authorization: Bearer &lt;jwt&gt;" \
+    ///      -F "file=@C:\path\to\file.pdf"
+    /// </code>
+    /// </para>
+    ///
+    /// <para>
+    /// TODO: once Swashbuckle ships a fix (or we add a custom OperationFilter
+    /// that generates the multipart schema), drop the
+    /// <c>[ApiExplorerSettings]</c> attribute and the endpoint reappears
+    /// in Swagger.
+    /// </para>
     /// </summary>
     [HttpPost]
     [RequestSizeLimit(50_000_000)]   // 50MB cap per upload
+    [ApiExplorerSettings(IgnoreApi = true)]
     public async Task<IActionResult> Upload(
-        [FromForm] IFormFile file,
-        [FromForm] string?   subfolderHint,
-        CancellationToken    ct)
+        IFormFile           file,
+        [FromQuery] string? subfolderHint,
+        CancellationToken   ct)
     {
         if (file is null || file.Length == 0)
             return BadRequest(ResponseViewModel<object>.Fail(
@@ -79,3 +105,4 @@ public class DocumentController : ControllerBase
             result.OriginalFileName);
     }
 }
+

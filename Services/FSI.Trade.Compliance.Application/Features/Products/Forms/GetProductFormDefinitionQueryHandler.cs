@@ -12,7 +12,9 @@ namespace FSI.Trade.Compliance.Application.Features.Products.Forms;
 ///   <item>Every active <c>EntityTabProductMapping</c> row for the product
 ///         (tab ids + parent nesting + sort order).</item>
 ///   <item>Every <c>TenantFieldSetup</c> row for the product (the actual
-///         dynamic-field definitions — labels, validation, formula, etc.).</item>
+///         dynamic-field definitions — labels, validation, formula, etc.),
+///         EXCLUDING the Manual Red flag rows that have been migrated to
+///         the new flag catalogue (see filter below).</item>
 ///   <item>Every <c>Tab</c> referenced above (tab names + localised labels).</item>
 /// </list>
 ///
@@ -26,9 +28,21 @@ namespace FSI.Trade.Compliance.Application.Features.Products.Forms;
 /// culture — if no localised row exists for that culture, the FE falls back
 /// to <c>Field_Label</c> automatically (default-locale fallback).
 ///
+/// SLICE 8 — MRL FIELDS EXCLUDED: rows matching
+/// <c>(Field_Type_Lkp = 28 AND Field_Name LIKE '%MRL%' AND
+/// Field_Table_Name = 'TmxTransactionDetail[]')</c> are filtered out.
+/// These are the "Manual Red flags" now owned by
+/// <c>TmX_Flag_Catalogue</c> / <c>TmX_Flag_Scope</c> and served via
+/// <c>GET /Flag/Product/{id}</c>. Returning them here would cause the FE
+/// to render two competing UIs for the same flag (legacy checkbox_file
+/// alongside the new flag panel). Other <c>checkbox_file</c> fields —
+/// e.g. real document-upload checkboxes — keep their existing rendering.
+///
 /// CACHING: per-(productId, culture) for 15 minutes. The dataset rarely
 /// changes; admins update field setups via separate (future) endpoints,
-/// and any update should evict the matching cache entry.
+/// and any update should evict the matching cache entry. Cache key was
+/// bumped from v1 → v2 with the Slice 8 MRL filter so previously-cached
+/// responses (which would still contain the MRL rows) invalidate on deploy.
 /// </summary>
 public class GetProductFormDefinitionQueryHandler
     : IRequestHandler<GetProductFormDefinitionQuery, ProductFormDefinitionDto>
@@ -47,7 +61,9 @@ public class GetProductFormDefinitionQueryHandler
     public async Task<ProductFormDefinitionDto> Handle(GetProductFormDefinitionQuery req, CancellationToken ct)
     {
         var cultureKey = (req.Culture ?? "").Trim().ToLowerInvariant();
-        var cacheKey   = $"Products::FormDefinition::v1::{req.ProductId}::{cultureKey}";
+        // v2 — Slice 8 filter dropped MRL rows. Old v1 cache entries would
+        // still contain them; bumping the key ensures clean invalidation.
+        var cacheKey   = $"Products::FormDefinition::v2::{req.ProductId}::{cultureKey}";
 
         if (_cache.TryGetValue<ProductFormDefinitionDto>(cacheKey, out var hit) && hit is not null)
             return hit;
@@ -73,10 +89,18 @@ public class GetProductFormDefinitionQueryHandler
             .Where(t => tabIds.Contains(t.TabId) && t.ActiveFlag)
             .ToListAsync(ct);
 
-        // 3. Fields for this product.
+        // 3. Fields for this product. Slice 8: skip Manual Red flag rows
+        //    (FieldTypeLkp=28 + name contains "MRL" + bound to
+        //    TmxTransactionDetail[]) — they're owned by the new flag
+        //    catalogue and served via GET /Flag/Product/{id}. Other
+        //    checkbox_file fields stay (e.g. document uploads).
         var fields = await _db.TenantFieldSetups
             .AsNoTracking()
             .Where(f => f.ProductId == req.ProductId)
+            .Where(f => !(f.FieldTypeLkp == 28
+                       && f.FieldName     != null
+                       && EF.Functions.Like(f.FieldName, "%MRL%")
+                       && f.FieldTableName == "TmxTransactionDetail[]"))
             .OrderBy(f => f.FieldSequence)
             .ToListAsync(ct);
 
