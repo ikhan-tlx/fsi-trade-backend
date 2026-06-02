@@ -26,6 +26,16 @@ public class Transaction
     public int?      TransactionTypeLkp      { get; set; }
     public DateTime? TransactionDate         { get; set; }
 
+    /// <summary>
+    /// Slice 9 — FCCM case reference populated by
+    /// <c>IFccmTradeCaseService.SubmitAsync</c> after a successful
+    /// post-workflow-finalise submit. NULL until then. Doubles as the
+    /// idempotency anchor so the same finalised transaction isn't
+    /// resubmitted twice. Cleared back to NULL only via the explicit
+    /// admin resubmit endpoint.
+    /// </summary>
+    public string?   FccmCaseId              { get; set; }
+
     public string    CreatedBy               { get; set; } = "";
     public DateTime  CreatedDate             { get; set; }
     public string?   LastUpdatedBy           { get; set; }

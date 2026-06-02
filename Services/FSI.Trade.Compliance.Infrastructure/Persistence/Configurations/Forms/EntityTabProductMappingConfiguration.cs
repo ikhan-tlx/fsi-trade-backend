@@ -20,6 +20,12 @@ public class EntityTabProductMappingConfiguration : IEntityTypeConfiguration<Ent
         b.Property(x => x.IsActive)        .HasColumnName("Is_Active");
         b.Property(x => x.SortOrder)       .HasColumnName("Sort_Order");
 
+        // Added by migration 20260522_001_DynamicFormEnhancements.
+        // BIT NOT NULL DEFAULT 1. Surface in API responses but NEVER
+        // filter on it — the FE owns the decision of whether to render
+        // a tab in the rail.
+        b.Property(x => x.IsVisible)       .HasColumnName("Is_Visible");
+
         b.Property(x => x.CreatedBy)       .HasColumnName("Created_By").HasMaxLength(100);
         b.Property(x => x.CreatedDate)     .HasColumnName("Created_Date");
         b.Property(x => x.LastUpdatedBy)   .HasColumnName("Last_Updated_By").HasMaxLength(100);

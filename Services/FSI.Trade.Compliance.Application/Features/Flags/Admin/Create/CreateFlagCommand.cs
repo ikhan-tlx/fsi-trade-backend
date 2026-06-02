@@ -27,8 +27,7 @@ public class CreateFlagCommand : IRequest<int>
     /// <summary>FK to TmX_Lookup row, Lookup_Type='FLAG_TYPE'. Required.</summary>
     public int      flagTypeLkpId      { get; set; }
 
-    /// <summary>FK to TmX_Lookup row, Lookup_Type='FLAG_CATEGORY'. Optional.</summary>
-    public int?     flagCategoryLkpId  { get; set; }
+    // flagCategoryLkpId removed 2026-06-01 — category now lives on the scope.
 
     /// <summary>FK to TmX_Lookup row, Lookup_Type='FLAG_SEVERITY'. Optional.</summary>
     public int?     severityLkpId      { get; set; }

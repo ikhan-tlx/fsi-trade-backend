@@ -53,9 +53,10 @@ public interface IApplicationDbContext
     DbSet<TenantFieldSetup>        TenantFieldSetups        { get; }
 
     // OptimaJet-owned tables (read-only from our side).
-    DbSet<WorkflowProcessScheme>   WorkflowProcessSchemes   { get; }
-    DbSet<WorkflowProcessInstance> WorkflowProcessInstances { get; }
-    DbSet<WorkflowInbox>           WorkflowInboxes          { get; }
+    DbSet<WorkflowProcessScheme>             WorkflowProcessSchemes             { get; }
+    DbSet<WorkflowProcessInstance>           WorkflowProcessInstances           { get; }
+    DbSet<WorkflowInbox>                     WorkflowInboxes                    { get; }
+    DbSet<WorkflowProcessTransitionHistory>  WorkflowProcessTransitionHistories { get; }
 
     // Slice 7: Reports. Templates store the Liquid HTML for each report
     // type (joined to TmX_Lookup REPORT_TYPE rows via Template_Type_Lkp_ID).
@@ -63,6 +64,8 @@ public interface IApplicationDbContext
 
     // Slice 8: Flag catalogue + generic document store.
     DbSet<Document>                Documents                { get; }
+    // Slice 10 §7.4 — Transaction ↔ Document bridge (many-to-many).
+    DbSet<TransactionDocument>     TransactionDocuments     { get; }
     DbSet<FlagCatalogue>           FlagCatalogues           { get; }
     DbSet<FlagCatalogueLocale>     FlagCatalogueLocales     { get; }
     DbSet<FlagScope>               FlagScopes               { get; }

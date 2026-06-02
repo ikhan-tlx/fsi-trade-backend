@@ -24,14 +24,13 @@ public class UpdateFlagCommandHandler : IRequestHandler<UpdateFlagCommand, int>
                 "Flag update requires an authenticated caller.");
 
         var entity = await _db.FlagCatalogues
-            .FirstOrDefaultAsync(c => c.FlagId == req.flagId, ct)
+            .FirstOrDefaultAsync(c => c.FlagId == req.flagId && !c.IsDeleted, ct)
             ?? throw new NotFoundException("flag_not_found",
                 $"Flag {req.flagId} does not exist.");
 
         entity.FlagName           = req.flagName.Trim();
         entity.FlagDescription    = req.flagDescription.Trim();
         entity.FlagTypeLkpId      = req.flagTypeLkpId;
-        entity.FlagCategoryLkpId  = req.flagCategoryLkpId;
         entity.SeverityLkpId      = req.severityLkpId;
         entity.DefaultWeight      = req.defaultWeight ?? entity.DefaultWeight;
         entity.RequiresEvidence   = req.requiresEvidence;

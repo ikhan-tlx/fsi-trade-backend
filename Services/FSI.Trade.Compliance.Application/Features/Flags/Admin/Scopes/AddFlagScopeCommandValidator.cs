@@ -9,8 +9,18 @@ public class AddFlagScopeCommandValidator : AbstractValidator<AddFlagScopeComman
         RuleFor(x => x.flagId)
             .GreaterThan(0);
 
-        RuleFor(x => x.productId)
+        // productId is OPTIONAL — null means an "all products" (global) scope.
+        // When supplied it must be positive.
+        RuleFor(x => x.productId!.Value)
             .GreaterThan(0)
-            .WithMessage("Product ID is required.");
+            .When(x => x.productId.HasValue)
+            .WithMessage("Product ID must be a positive value when supplied.");
+
+        // A tab-level scope cannot exist without a product (mirrors the
+        // CK_TmX_Flag_Scope_TabRequiresProduct DB constraint).
+        RuleFor(x => x.productId)
+            .NotNull()
+            .When(x => x.tabId.HasValue)
+            .WithMessage("A tab-level scope requires a product.");
     }
 }

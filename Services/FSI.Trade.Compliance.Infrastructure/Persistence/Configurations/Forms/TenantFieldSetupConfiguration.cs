@@ -33,6 +33,13 @@ public class TenantFieldSetupConfiguration : IEntityTypeConfiguration<TenantFiel
         b.Property(x => x.AllowedState)             .HasColumnName("Allowed_State").HasMaxLength(200);
         b.Property(x => x.DefaultValue)             .HasColumnName("Default_Value").HasMaxLength(200);
 
+        // Added by migration 20260522_001_DynamicFormEnhancements.
+        b.Property(x => x.IsActive)                 .HasColumnName("Is_Active");
+        b.Property(x => x.UdfData)                  .HasColumnName("UDF_Data");
+
+        // Added by migration 2026_05_029_AddPlaceholderToTenantFieldSetup.
+        b.Property(x => x.Placeholder)              .HasColumnName("Placeholder").HasMaxLength(500);
+
         b.Property(x => x.LocaleFieldLabel)         .HasColumnName("Locale_Field_Label").HasMaxLength(200);
         b.Property(x => x.LocaleLabel)              .HasColumnName("Locale_Label");
         b.Property(x => x.LocaleId)                 .HasColumnName("Locale_ID");

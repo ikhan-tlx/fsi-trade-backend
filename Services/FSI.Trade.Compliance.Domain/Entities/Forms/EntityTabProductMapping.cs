@@ -22,6 +22,18 @@ public class EntityTabProductMapping
     public int?      IsActive            { get; set; }   // int — see class note
     public int?      SortOrder           { get; set; }
 
+    /// <summary>
+    /// Added by migration <c>20260522_001_DynamicFormEnhancements</c>.
+    /// Distinguishes tabs that are <em>structurally present</em> (BE must
+    /// return them) from tabs that <em>appear in the FE tab rail</em>.
+    /// <c>Is_Visible = false</c> means the row is data the FE needs (e.g.
+    /// selector-tab checkbox fields) but should NOT show in the tab rail.
+    ///
+    /// CRITICAL: the BE must NOT filter on this — the FE decides rendering.
+    /// We surface the flag verbatim in the FormDefinition response.
+    /// </summary>
+    public bool      IsVisible           { get; set; } = true;
+
     public string?   CreatedBy           { get; set; }
     public DateTime? CreatedDate         { get; set; }
     public string?   LastUpdatedBy       { get; set; }

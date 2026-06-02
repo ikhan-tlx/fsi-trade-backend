@@ -14,8 +14,8 @@ public class AddFlagScopeCommand : IRequest<int>
     // Path-bound — set by the controller from {id}; not part of the body.
     public int   flagId      { get; set; }
 
-    public int   productId   { get; set; }
-    public int?  tabId       { get; set; }     // null = product-level (e.g. KYC)
+    public int?  productId   { get; set; }     // null = ALL products (global scope)
+    public int?  tabId       { get; set; }     // null = product-level / all-products
     public int?  sortOrder   { get; set; }     // defaults to 0
     public bool? activeFlag  { get; set; }     // defaults to true
 }

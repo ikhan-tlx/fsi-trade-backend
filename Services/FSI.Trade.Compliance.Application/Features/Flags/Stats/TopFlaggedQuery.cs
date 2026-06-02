@@ -30,7 +30,6 @@ public class TopFlaggedRowDto
     public string  flagName                 { get; set; } = "";
     public string  flagDescription          { get; set; } = "";
     public int?    severityLkpId            { get; set; }
-    public int?    flagCategoryLkpId        { get; set; }
     public decimal defaultWeight            { get; set; }
     public int     flaggedTransactionCount  { get; set; }
     /// <summary>Sum of (DefaultWeight × count) — naive risk-load score per flag.</summary>

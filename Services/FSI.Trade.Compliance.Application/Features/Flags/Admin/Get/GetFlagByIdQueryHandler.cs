@@ -15,7 +15,7 @@ public class GetFlagByIdQueryHandler
         GetFlagByIdQuery req, CancellationToken ct)
     {
         var c = await _db.FlagCatalogues.AsNoTracking()
-            .FirstOrDefaultAsync(c => c.FlagId == req.FlagId, ct)
+            .FirstOrDefaultAsync(c => c.FlagId == req.FlagId && !c.IsDeleted, ct)
             ?? throw new NotFoundException("flag_not_found",
                 $"Flag {req.FlagId} does not exist.");
 
@@ -42,12 +42,12 @@ public class GetFlagByIdQueryHandler
             flagName           = c.FlagName,
             flagDescription    = c.FlagDescription,
             flagTypeLkpId      = c.FlagTypeLkpId,
-            flagCategoryLkpId  = c.FlagCategoryLkpId,
             severityLkpId      = c.SeverityLkpId,
             defaultWeight      = c.DefaultWeight,
             requiresEvidence   = c.RequiresEvidence,
             sourceSystem       = c.SourceSystem,
             activeFlag         = c.ActiveFlag,
+            isBuiltIn          = c.IsBuiltIn,
             createdBy          = c.CreatedBy,
             createdDate        = c.CreatedDate,
             lastUpdatedBy      = c.LastUpdatedBy,

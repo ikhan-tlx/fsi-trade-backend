@@ -43,11 +43,13 @@ public static class TransactionFlagProjection
 
         var query =
             from s in db.FlagScopes.AsNoTracking()
-            where s.ProductId  == productId
+            // Product-specific scopes for this product PLUS "all products"
+            // (global) scopes where Product_ID IS NULL.
+            where (s.ProductId == productId || s.ProductId == null)
                && s.ActiveFlag == true
 
             join c in db.FlagCatalogues.AsNoTracking()
-                 .Where(c => c.ActiveFlag) on s.FlagId equals c.FlagId
+                 .Where(c => c.ActiveFlag && !c.IsDeleted) on s.FlagId equals c.FlagId
 
             join tf in txFlags on s.FlagId equals tf.FlagId into tfj
             from tf in tfj.DefaultIfEmpty()
@@ -71,7 +73,6 @@ public static class TransactionFlagProjection
                 flagName            = c.FlagName,
                 flagDescription     = c.FlagDescription,
                 flagTypeLkpId       = c.FlagTypeLkpId,
-                flagCategoryLkpId   = c.FlagCategoryLkpId,
                 severityLkpId       = c.SeverityLkpId,
                 defaultWeight       = c.DefaultWeight,
                 requiresEvidence    = c.RequiresEvidence,
@@ -107,13 +108,16 @@ public static class TransactionFlagProjection
     {
         var query =
             from s in db.FlagScopes.AsNoTracking()
-            where s.ProductId  == productId
+            // Product-specific scopes PLUS "all products" (global) scopes.
+            where (s.ProductId == productId || s.ProductId == null)
                && s.ActiveFlag
 
             join c in db.FlagCatalogues.AsNoTracking()
-                 .Where(c => c.ActiveFlag) on s.FlagId equals c.FlagId
+                 .Where(c => c.ActiveFlag && !c.IsDeleted) on s.FlagId equals c.FlagId
 
-            where tabId == null || s.TabId == tabId
+            // Tab filter applies only to product-specific scopes; global
+            // (all-products) scopes always surface regardless of tab.
+            where tabId == null || s.ProductId == null || s.TabId == tabId
 
             orderby s.TabId, s.SortOrder, c.FlagName
 
@@ -130,7 +134,6 @@ public static class TransactionFlagProjection
                 flagName            = c.FlagName,
                 flagDescription     = c.FlagDescription,
                 flagTypeLkpId       = c.FlagTypeLkpId,
-                flagCategoryLkpId   = c.FlagCategoryLkpId,
                 severityLkpId       = c.SeverityLkpId,
                 defaultWeight       = c.DefaultWeight,
                 requiresEvidence    = c.RequiresEvidence,

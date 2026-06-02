@@ -95,6 +95,13 @@ public class GetTransactionByIdQueryHandler
                             .Where(d => d.TransactionId == id && d.ModuleCode == TransactionModuleCode)
                             .ToListAsync(ct);
 
+        // ---------- 4.4 Product summary (Slice 10 §7.6) ----------
+        // Back-trace canonical FE field names through TenantFieldSetup +
+        // UDF_Data. Cheap when the product has no matching fields (single
+        // IN-list query that returns zero rows).
+        var productSummary = await ProductSummaryProjection.BuildAsync(
+            _db, tx.ProductId, detail?.UdfData, ct);
+
         // ---------- 4.5 Flags (Slice 8) ----------
         // Project every active scope row for this product LEFT-JOINed to
         // the transaction's existing flag rows. Flags without a
@@ -130,6 +137,12 @@ public class GetTransactionByIdQueryHandler
                 }
                 catch { /* engine miss — empty commands list is the safe default */ }
             }
+
+            // Slice 10 §7.2 — assigned actors via WorkflowInbox. Each row in
+            // WorkflowInbox represents one user the engine has the process
+            // queued for. Resolve identity GUID → display name + primary role
+            // in a single batch to avoid N+1.
+            workflow.assignedActors = await LoadAssignedActorsAsync(tx.ProcessInstanceId.Value, ct);
         }
 
         // ---------- 6. Compose response ----------
@@ -234,8 +247,71 @@ public class GetTransactionByIdQueryHandler
 
             flags = flags,
 
-            workflow = workflow
+            workflow       = workflow,
+            productSummary = productSummary
         };
+    }
+
+    /// <summary>
+    /// Slice 10 §7.2 — resolves WorkflowInbox rows for the process into the
+    /// list of currently-assigned actors with display name + primary role.
+    /// </summary>
+    /// <remarks>
+    /// WorkflowInbox.IdentityId in this deployment is uniqueidentifier;
+    /// TmX_User.User_ID is nvarchar(100) but stores a Guid-shaped string.
+    /// We convert IdentityId.ToString() into the string form before joining.
+    /// </remarks>
+    private async Task<List<AssignedActorDto>> LoadAssignedActorsAsync(
+        Guid              processId,
+        CancellationToken ct)
+    {
+        var inboxIds = await _db.WorkflowInboxes.AsNoTracking()
+            .Where(i => i.ProcessId == processId)
+            .Select(i => i.IdentityId)
+            .Distinct()
+            .ToListAsync(ct);
+
+        if (inboxIds.Count == 0) return new List<AssignedActorDto>();
+
+        // Convert Guid → string so the IN-list joins to TmX_User.User_ID.
+        var idStrings = inboxIds.Select(g => g.ToString()).ToList();
+
+        var users = await _db.Users.AsNoTracking()
+            .Where(u => idStrings.Contains(u.Id))
+            .Select(u => new { u.Id, u.FirstName, u.LastName, u.UserName })
+            .ToListAsync(ct);
+
+        // Primary role per user — first role by RoleId (stable order;
+        // legacy displays roles in insertion order which equals role-id order
+        // for the seeded data set). Filter on IsActive for hygiene.
+        var userIds = users.Select(u => u.Id).ToList();
+        var roleByUserId = await (
+            from m in _db.UserRoleMappings.AsNoTracking()
+            join r in _db.Roles.AsNoTracking() on m.RoleId equals r.Id
+            where userIds.Contains(m.UserId) && m.IsActive
+            orderby m.UserId, m.RoleId
+            select new { m.UserId, RoleName = r.Name }
+        ).ToListAsync(ct);
+
+        var firstRoleByUser = roleByUserId
+            .GroupBy(x => x.UserId)
+            .ToDictionary(g => g.Key, g => g.First().RoleName);
+
+        return users.Select(u => new AssignedActorDto
+        {
+            userId   = u.Id,
+            userName = ComposeDisplayName(u.FirstName, u.LastName, u.UserName),
+            roleName = firstRoleByUser.TryGetValue(u.Id, out var rn) ? rn : null
+        }).ToList();
+    }
+
+    private static string ComposeDisplayName(string? firstName, string? lastName, string? userName)
+    {
+        var first = (firstName ?? "").Trim();
+        var last  = (lastName  ?? "").Trim();
+        if (first.Length > 0 || last.Length > 0)
+            return (first + " " + last).Trim();
+        return userName ?? "";
     }
 
     /// <summary>

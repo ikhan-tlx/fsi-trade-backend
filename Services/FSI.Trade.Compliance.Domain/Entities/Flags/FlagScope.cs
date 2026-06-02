@@ -9,9 +9,12 @@ namespace FSI.Trade.Compliance.Domain.Entities.Flags;
 /// combinations — that's how the seed migration de-duplicates the
 /// indicator text while preserving every form-rendering location.
 ///
-/// <c>TabId</c> is nullable for product-level scopes (no tab
-/// discriminator); today every legacy MRL row has a real Tab_ID so the
-/// nullable column is forward-looking.
+/// Scope tiers (Slice 8.1):
+///   (ProductId NULL, TabId NULL) = applies to ALL products
+///   (ProductId set,  TabId NULL) = product-level
+///   (ProductId set,  TabId set ) = product + tab (sub-product)
+/// A Tab can never be scoped without a Product — enforced by the
+/// CK_TmX_Flag_Scope_TabRequiresProduct check (migration 2026_06_031).
 ///
 /// <see cref="LegacyFieldName"/> preserves the original "ILFMRL5"-style
 /// identifier for forensic traceability and for the UDF_Data backfill
@@ -21,7 +24,9 @@ public class FlagScope
 {
     public int       FlagScopeId           { get; set; }
     public int       FlagId                { get; set; }
-    public int       ProductId             { get; set; }
+
+    /// <summary>NULL = "all products" scope. Otherwise the FK to TmX_Product.</summary>
+    public int?      ProductId             { get; set; }
     public int?      TabId                 { get; set; }
     public int       SortOrder             { get; set; }
 

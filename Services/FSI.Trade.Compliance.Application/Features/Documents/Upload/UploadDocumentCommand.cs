@@ -17,6 +17,15 @@ public class UploadDocumentCommand : IRequest<UploadDocumentResult>
     public string?  MimeType          { get; init; }
     /// <summary>Logical sub-folder under the storage base path. Default "flag-evidence".</summary>
     public string   SubfolderHint     { get; init; } = "flag-evidence";
+
+    /// <summary>
+    /// Slice 10 §7.4 — when set, the handler inserts a row in
+    /// <c>TmX_Transaction_Document</c> after the document is persisted,
+    /// linking the newly-uploaded file to this transaction. Null for the
+    /// legacy flag-evidence path (where the transaction is resolved via
+    /// the flag row, not the bridge).
+    /// </summary>
+    public int?     TransactionId     { get; init; }
 }
 
 public class UploadDocumentResult

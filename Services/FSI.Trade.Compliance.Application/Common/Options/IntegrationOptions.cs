@@ -20,8 +20,18 @@ public class IntegrationOptions
     public string FccmOnboardingUrl      { get; set; } = "";
 
     /// <summary>
-    /// FCCM Oracle DB connection string for poller reads from <c>FCC_OB_RA</c>.
-    /// Empty string = poller skips Oracle reads (stub mode), useful in dev.
+    /// FCCM Oracle DB connection string — used for EVERYTHING FCCM:
+    /// case-id poll reads (<c>FCC_OB_RA</c>), staging-table INSERTs
+    /// (<c>MANTAS.*_STAGING</c>), the SP call
+    /// (<c>PR_CREATE_EVENT_DEMO</c>), and post-SP enrichment
+    /// (<c>KDD_CASE_CUSTOMERS</c> / <c>KDD_CASES</c>). One connection
+    /// string, one Oracle DB. Empty = all FCCM operations log a STUB
+    /// warning and return synthetic values (dev mode).
+    ///
+    /// Slice 9 rework: previously had a sibling
+    /// <c>FccmStagingConnection</c> for a non-existent SQL Server
+    /// staging DB. Confirmed all staging lives on the FCCM Oracle —
+    /// see docs/LEGACY_FCCM_TRADE_FLOW.md §0.
     /// </summary>
     public string FccmOracleConnection   { get; set; } = "";
 
