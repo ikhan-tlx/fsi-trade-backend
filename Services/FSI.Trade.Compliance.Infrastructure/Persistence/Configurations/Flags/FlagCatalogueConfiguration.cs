@@ -16,12 +16,15 @@ public class FlagCatalogueConfiguration : IEntityTypeConfiguration<FlagCatalogue
         b.Property(x => x.FlagName)             .HasColumnName("Flag_Name")            .HasMaxLength(200).IsRequired();
         b.Property(x => x.FlagDescription)      .HasColumnName("Flag_Description")     .IsRequired();
         b.Property(x => x.FlagTypeLkpId)        .HasColumnName("Flag_Type_Lkp_ID");
-        b.Property(x => x.FlagCategoryLkpId)    .HasColumnName("Flag_Category_Lkp_ID");
         b.Property(x => x.SeverityLkpId)        .HasColumnName("Severity_Lkp_ID");
         b.Property(x => x.DefaultWeight)        .HasColumnName("Default_Weight")       .HasColumnType("decimal(8,2)");
         b.Property(x => x.RequiresEvidence)     .HasColumnName("Requires_Evidence");
         b.Property(x => x.SourceSystem)         .HasColumnName("Source_System")        .HasMaxLength(50);
         b.Property(x => x.ActiveFlag)           .HasColumnName("Active_Flag");
+        b.Property(x => x.IsBuiltIn)            .HasColumnName("Is_Built_In");
+        b.Property(x => x.IsDeleted)            .HasColumnName("Is_Deleted");
+        b.Property(x => x.DeletedBy)            .HasColumnName("Deleted_By")           .HasMaxLength(100);
+        b.Property(x => x.DeletedDate)          .HasColumnName("Deleted_Date");
         b.Property(x => x.CreatedBy)            .HasColumnName("Created_By")           .HasMaxLength(100).IsRequired();
         b.Property(x => x.CreatedDate)          .HasColumnName("Created_Date");
         b.Property(x => x.LastUpdatedBy)        .HasColumnName("Last_Updated_By")      .HasMaxLength(100);

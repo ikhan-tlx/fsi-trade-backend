@@ -19,7 +19,7 @@ public class UpdateFlagCommand : IRequest<int>
     public string   flagName           { get; set; } = "";
     public string   flagDescription    { get; set; } = "";
     public int      flagTypeLkpId      { get; set; }
-    public int?     flagCategoryLkpId  { get; set; }
+    // flagCategoryLkpId removed 2026-06-01 — category now lives on the scope.
     public int?     severityLkpId      { get; set; }
     public decimal? defaultWeight      { get; set; }
     public bool     requiresEvidence   { get; set; }

@@ -49,9 +49,12 @@
          declarative API than raw Polly. -->
     <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="8.10.0" />
 
-    <!-- Slice 4 Step-2 follow-up: add Oracle.ManagedDataAccess.Core when
-         the real FccmOracleReader is implemented (today's reader is a stub).
-         <PackageReference Include="Oracle.ManagedDataAccess.Core" Version="23.6.0" /> -->
+    <!-- Slice 9 — pure ADO.NET Oracle client for all FCCM operations
+         (staging INSERTs, sequence read, SP call with OUT param, post-SP
+         KDD_CASES updates, correlation table insert). Single dep covers
+         everything — Oracle.EntityFrameworkCore is deliberately NOT added;
+         see docs/LEGACY_FCCM_TRADE_FLOW.md §4 for the coverage analysis. -->
+    <PackageReference Include="Oracle.ManagedDataAccess.Core" Version="23.6.0" />
 
     <!-- Slice 5.6 — Pinned to OptimaJet 3.5.0 (the .NET 8-compatible build of
          the legacy v3.x line) for license parity with the existing legacy

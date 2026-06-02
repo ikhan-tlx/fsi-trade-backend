@@ -28,22 +28,26 @@ builder.Services.AddHttpContextAccessor();
 
 // --- API Versioning ---------------------------------------------------
 // Strategy:
-//   - URL-segment is the canonical version reader: /api/v1/...
-//   - Clients can ALSO supply X-API-Version or ?api-version=1.0 — useful for
-//     header-driven negotiation later without breaking URL-bookmarked v1 calls.
+//   - URL-segment is the SOLE, canonical version reader: /api/v1/..., /api/v2/...
 //   - Default version 1.0 is assumed when none is provided (back-compat).
 //   - Server reports api-supported-versions on every response so FE can detect
 //     when v2 ships.
+//
+// NOTE (2026-06-01): the header (X-API-Version) and query (api-version) readers
+// were REMOVED. With ApiVersionReader.Combine, if a client still sent a version
+// hint that disagreed with the URL segment (e.g. a leftover `X-API-Version: 1.0`
+// default header on a `/api/v2/...` request), Asp.Versioning treated it as an
+// AMBIGUOUS API version and returned HTTP 400 — which broke every v2 call.
+// The URL already carries the version, so the extra readers added no value and
+// only created that failure mode. If header/query negotiation is needed later,
+// re-add them ONLY after ensuring no client sends a version that contradicts the URL.
 builder.Services
     .AddApiVersioning(o =>
     {
         o.DefaultApiVersion                   = new ApiVersion(1, 0);
         o.AssumeDefaultVersionWhenUnspecified = true;
         o.ReportApiVersions                   = true;
-        o.ApiVersionReader = ApiVersionReader.Combine(
-            new UrlSegmentApiVersionReader(),
-            new HeaderApiVersionReader("X-API-Version"),
-            new QueryStringApiVersionReader("api-version"));
+        o.ApiVersionReader                    = new UrlSegmentApiVersionReader();
     })
     .AddApiExplorer(o =>
     {

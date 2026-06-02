@@ -1,3 +1,4 @@
+using FSI.Trade.Compliance.Application.Common.Caching;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
 using FSI.Trade.Compliance.Domain.Entities.Forms;
 using MediatR;
@@ -28,21 +29,30 @@ namespace FSI.Trade.Compliance.Application.Features.Products.Forms;
 /// culture — if no localised row exists for that culture, the FE falls back
 /// to <c>Field_Label</c> automatically (default-locale fallback).
 ///
-/// SLICE 8 — MRL FIELDS EXCLUDED: rows matching
-/// <c>(Field_Type_Lkp = 28 AND Field_Name LIKE '%MRL%' AND
-/// Field_Table_Name = 'TmxTransactionDetail[]')</c> are filtered out.
-/// These are the "Manual Red flags" now owned by
-/// <c>TmX_Flag_Catalogue</c> / <c>TmX_Flag_Scope</c> and served via
-/// <c>GET /Flag/Product/{id}</c>. Returning them here would cause the FE
-/// to render two competing UIs for the same flag (legacy checkbox_file
-/// alongside the new flag panel). Other <c>checkbox_file</c> fields —
-/// e.g. real document-upload checkboxes — keep their existing rendering.
+/// SLICE 8 + MIGRATION 20260522_001 — DEACTIVATED FIELDS EXCLUDED:
+/// the <c>Is_Active</c> column added to <c>TmX_Tenant_Field_Setup</c>
+/// by migration 20260522_001 covers most exclusions (the migration
+/// flipped every <c>%MRL%</c> row to <c>Is_Active = 0</c>). We apply
+/// <c>WHERE IsActive = true</c> as the primary filter. The original
+/// Slice 8 type-specific filter (<c>FieldTypeLkp = 28 AND Field_Name
+/// LIKE '%MRL%' AND Field_Table_Name = 'TmxTransactionDetail[]'</c>)
+/// remains as belt-and-braces — if some environment hasn't run the
+/// migration yet, the type filter still catches the MRL rows.
+///
+/// MIGRATION 20260522_001 ADDITIONS: the response now surfaces
+/// <c>UDF_Data</c> on each field (per-field metadata; today carries
+/// <c>{"TabId":N}</c> on selector checkboxes so the FE can resolve
+/// the destination sub-product tab on selection). <c>Is_Visible</c>
+/// on the ETPM row is intentionally NOT surfaced — FSI direction
+/// (May 2026): "is visible might not required will be handled from
+/// FE side". The column stays mapped on the entity for future use.
 ///
 /// CACHING: per-(productId, culture) for 15 minutes. The dataset rarely
 /// changes; admins update field setups via separate (future) endpoints,
-/// and any update should evict the matching cache entry. Cache key was
-/// bumped from v1 → v2 with the Slice 8 MRL filter so previously-cached
-/// responses (which would still contain the MRL rows) invalidate on deploy.
+/// and any update should evict the matching cache entry. Cache key
+/// bumped v2 → v3 with the migration-20260522_001 changes (Is_Active
+/// filter + UDF_Data surface) so previously-cached responses invalidate
+/// on deploy.
 /// </summary>
 public class GetProductFormDefinitionQueryHandler
     : IRequestHandler<GetProductFormDefinitionQuery, ProductFormDefinitionDto>
@@ -61,9 +71,16 @@ public class GetProductFormDefinitionQueryHandler
     public async Task<ProductFormDefinitionDto> Handle(GetProductFormDefinitionQuery req, CancellationToken ct)
     {
         var cultureKey = (req.Culture ?? "").Trim().ToLowerInvariant();
-        // v2 — Slice 8 filter dropped MRL rows. Old v1 cache entries would
-        // still contain them; bumping the key ensures clean invalidation.
-        var cacheKey   = $"Products::FormDefinition::v2::{req.ProductId}::{cultureKey}";
+        // v4 — selectorTabId added to the response shape so KYC and
+        // other one-shot callers also receive the signal. Cached
+        // alongside the rest of the form definition.
+        //
+        // Cache-key includes FormSchemaCacheVersion.Get(productId): an
+        // admin field edit calls Bump() and the next read computes a
+        // new key, naturally evicting the previous entry (Slice 12 §A).
+        var version    = FormSchemaCacheVersion.Get(req.ProductId);
+        // v6 — added dynamic fieldTypeName (resolved from the 'field' lookup).
+        var cacheKey   = $"Products::FormDefinition::v6::{req.ProductId}::ver={version}::{cultureKey}";
 
         if (_cache.TryGetValue<ProductFormDefinitionDto>(cacheKey, out var hit) && hit is not null)
             return hit;
@@ -89,14 +106,18 @@ public class GetProductFormDefinitionQueryHandler
             .Where(t => tabIds.Contains(t.TabId) && t.ActiveFlag)
             .ToListAsync(ct);
 
-        // 3. Fields for this product. Slice 8: skip Manual Red flag rows
-        //    (FieldTypeLkp=28 + name contains "MRL" + bound to
-        //    TmxTransactionDetail[]) — they're owned by the new flag
-        //    catalogue and served via GET /Flag/Product/{id}. Other
-        //    checkbox_file fields stay (e.g. document uploads).
+        // 3. Fields for this product.
+        //    Primary filter: IsActive == true (migration 20260522_001 —
+        //    every legacy MRL row was flipped to Is_Active = 0).
+        //    Belt-and-braces: keep the original Slice 8 type-specific
+        //    exclusion in case some environment hasn't run the migration
+        //    yet (MRL rows still get filtered even if their IsActive
+        //    column hasn't been populated). Other checkbox_file fields
+        //    (e.g. document uploads) keep flowing through.
         var fields = await _db.TenantFieldSetups
             .AsNoTracking()
             .Where(f => f.ProductId == req.ProductId)
+            .Where(f => f.IsActive)
             .Where(f => !(f.FieldTypeLkp == 28
                        && f.FieldName     != null
                        && EF.Functions.Like(f.FieldName, "%MRL%")
@@ -104,11 +125,19 @@ public class GetProductFormDefinitionQueryHandler
             .OrderBy(f => f.FieldSequence)
             .ToListAsync(ct);
 
+        // 3b. Field-type display names — resolved dynamically from
+        //     TmX_Lookup (Lookup_Type = 'field'): Hidden_Value (as int) is
+        //     the Field_Type_Lkp code, Visible_Value is the display name
+        //     ("Text", "Dropdown", "Date", …). Loaded once per request
+        //     (cache-miss only). Non-numeric Hidden_Values are skipped
+        //     (mirrors the TRY_CAST in the reference query).
+        var typeNameByCode = await LoadFieldTypeNamesAsync(ct);
+
         // 4. Compose. Build a flat tab dictionary first, then walk parent→child.
         var fieldsByTab = fields
             .Where(f => f.TabId.HasValue)
             .GroupBy(f => f.TabId!.Value)
-            .ToDictionary(g => g.Key, g => g.Select(ToFieldDto).ToList());
+            .ToDictionary(g => g.Key, g => g.Select(f => ToFieldDto(f, typeNameByCode)).ToList());
 
         var flatTabs = mappings
             .Select(m =>
@@ -123,6 +152,8 @@ public class GetProductFormDefinitionQueryHandler
                     localeId    = t?.LocaleId ?? 0,
                     hiddenValue = t?.HiddenValue,
                     sortOrder   = m.SortOrder,
+                    // NOTE: m.IsVisible deliberately NOT projected — FE owns
+                    // tab-rail visibility per FSI direction (May 2026).
                     fields      = fieldsByTab.TryGetValue(m.TabId, out var fs) ? fs : new List<FormFieldDto>()
                 };
             })
@@ -135,11 +166,24 @@ public class GetProductFormDefinitionQueryHandler
         foreach (var top in topLevel)
             top.tabs = ResolveChildren(flatTabs, top.tabId);
 
+        // Server-derived load-strategy signal — see ProductTabsDto.selectorTabId
+        // for full semantics. Null = no selector (KYC etc.); non-null = the
+        // tab id containing sub-product checkboxes.
+        var selectorTabId = await _db.TenantFieldSetups.AsNoTracking()
+            .Where(f => f.ProductId       == req.ProductId
+                    &&  f.FieldLookupType == "ProductTab"
+                    &&  f.IsActive
+                    &&  f.TabId.HasValue)
+            .OrderBy(f => f.TabId)
+            .Select(f => (int?)f.TabId!.Value)
+            .FirstOrDefaultAsync(ct);
+
         var result = new ProductFormDefinitionDto
         {
-            productId = req.ProductId,
-            culture   = req.Culture,
-            tabs      = topLevel
+            productId     = req.ProductId,
+            culture       = req.Culture,
+            selectorTabId = selectorTabId,
+            tabs          = topLevel
         };
 
         _cache.Set(cacheKey, result, Ttl);
@@ -154,7 +198,28 @@ public class GetProductFormDefinitionQueryHandler
         return children;
     }
 
-    private static FormFieldDto ToFieldDto(TenantFieldSetup f) => new()
+    /// <summary>
+    /// Loads the dynamic Field_Type_Lkp → display-name map from
+    /// TmX_Lookup (Lookup_Type = 'field'). Keyed by the integer parsed from
+    /// Hidden_Value; first row wins on duplicate codes.
+    /// </summary>
+    private async Task<Dictionary<int, string>> LoadFieldTypeNamesAsync(CancellationToken ct)
+    {
+        var rows = await _db.Lookups.AsNoTracking()
+            .Where(l => l.LookupType == "field" && l.HiddenValue != null)
+            .Select(l => new { l.HiddenValue, l.VisibleValue })
+            .ToListAsync(ct);
+
+        var map = new Dictionary<int, string>();
+        foreach (var r in rows)
+            if (int.TryParse(r.HiddenValue, out var code)
+                && !string.IsNullOrWhiteSpace(r.VisibleValue)
+                && !map.ContainsKey(code))
+                map[code] = r.VisibleValue!;
+        return map;
+    }
+
+    private static FormFieldDto ToFieldDto(TenantFieldSetup f, IReadOnlyDictionary<int, string> typeNames) => new()
     {
         tenantFieldSetupId       = f.TenantFieldSetupId,
         parentTenantFieldSetupId = f.ParentTenantFieldSetupId,
@@ -165,6 +230,8 @@ public class GetProductFormDefinitionQueryHandler
         localeFieldLabel         = f.LocaleFieldLabel,
         localeId                 = f.LocaleId,
         fieldTypeLkp             = f.FieldTypeLkp,
+        fieldType                = FieldTypeMapper.ToSemanticType(f.FieldTypeLkp, f.FieldLookupType),
+        fieldTypeName            = FieldTypeMapper.ResolveTypeName(f.FieldTypeLkp, typeNames),
         fieldSequence            = f.FieldSequence,
         fieldTableName           = f.FieldTableName,
         fieldLookupType          = f.FieldLookupType,
@@ -175,6 +242,8 @@ public class GetProductFormDefinitionQueryHandler
         visibility               = f.Visibility,
         formula                  = f.Formula,
         allowedState             = f.AllowedState,
-        defaultValue             = f.DefaultValue
+        defaultValue             = f.DefaultValue,
+        udfData                  = f.UdfData,
+        placeholder              = f.Placeholder
     };
 }

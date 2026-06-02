@@ -118,11 +118,24 @@ public class WorkflowScheme
 
 public class WorkflowExecutionResult
 {
-    public Guid    ProcessId   { get; set; }
-    public bool    WasExecuted { get; set; }
+    public Guid    ProcessId     { get; set; }
+    public bool    WasExecuted   { get; set; }
     public string? PreviousState { get; set; }
     public string? CurrentState  { get; set; }
     public string? Comment       { get; set; }
+
+    /// <summary>
+    /// True when the executed command finalised the process — i.e. the
+    /// resulting state is a terminal state in the scheme. Mirrors the
+    /// legacy <c>transition.IsFinalised</c> predicate that the legacy
+    /// main backend used to decide whether to fire the post-workflow
+    /// FCCM submit (see <c>LEGACY_TRANSACTION_FLOW.md</c> Phase 4).
+    ///
+    /// Slice 9 — the post-execute hook in
+    /// <c>ExecuteWorkflowCommandHandler</c> reads this to know when to
+    /// invoke <c>IFccmTradeCaseService.SubmitAsync</c>.
+    /// </summary>
+    public bool    IsFinalised   { get; set; }
 }
 
 public class WorkflowInboxItem

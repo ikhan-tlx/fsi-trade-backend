@@ -31,7 +31,7 @@ public class CreateFlagCommandHandler : IRequestHandler<CreateFlagCommand, int>
 
         // Resolve / generate Flag_Code.
         var code = string.IsNullOrWhiteSpace(req.flagCode)
-            ? await GenerateUniqueCodeAsync(canonicalDescription, req.flagCategoryLkpId, ct)
+            ? GenerateCode(canonicalDescription)
             : req.flagCode!.Trim();
 
         // Uniqueness check (the DB index would catch it, but a clean
@@ -48,7 +48,6 @@ public class CreateFlagCommandHandler : IRequestHandler<CreateFlagCommand, int>
             FlagName           = req.flagName.Trim(),
             FlagDescription    = canonicalDescription,
             FlagTypeLkpId      = req.flagTypeLkpId,
-            FlagCategoryLkpId  = req.flagCategoryLkpId,
             SeverityLkpId      = req.severityLkpId,
             DefaultWeight      = req.defaultWeight ?? 1.00m,
             RequiresEvidence   = req.requiresEvidence,
@@ -64,29 +63,17 @@ public class CreateFlagCommandHandler : IRequestHandler<CreateFlagCommand, int>
     }
 
     /// <summary>
-    /// Builds a code in the same shape the seed migration uses:
-    ///   <c>"{CATEGORY_HINT}.MRL.{8-char-hex-hash-of-description}"</c>
-    /// Category hint resolves from the FLAG_CATEGORY lookup (Hidden_Value),
-    /// or "MANUAL" if no category supplied. Hashing the trimmed description
-    /// means the same flag-text always maps to the same code.
+    /// Builds a stable code: <c>"MANUAL.MRL.{8-char-hex-hash-of-description}"</c>.
+    /// Hashing the trimmed description means the same flag-text always maps to
+    /// the same code. (Category-derived prefixes were dropped 2026-06-01 along
+    /// with the flag-level category.)
     /// </summary>
-    private async Task<string> GenerateUniqueCodeAsync(
-        string description, int? categoryLkpId, CancellationToken ct)
+    private static string GenerateCode(string description)
     {
-        var categoryPrefix = "MANUAL";
-        if (categoryLkpId.HasValue)
-        {
-            categoryPrefix = await _db.Lookups.AsNoTracking()
-                .Where(l => l.Id == categoryLkpId.Value
-                         && l.LookupType == "FLAG_CATEGORY")
-                .Select(l => l.HiddenValue ?? "MANUAL")
-                .FirstOrDefaultAsync(ct) ?? "MANUAL";
-        }
-
         using var sha = SHA1.Create();
         var hashBytes = sha.ComputeHash(Encoding.UTF8.GetBytes(description));
         var shortHex  = Convert.ToHexString(hashBytes).Substring(0, 8);
 
-        return $"{categoryPrefix}.MRL.{shortHex}";
+        return $"MANUAL.MRL.{shortHex}";
     }
 }

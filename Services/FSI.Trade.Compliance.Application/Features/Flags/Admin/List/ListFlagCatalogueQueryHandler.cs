@@ -16,14 +16,30 @@ public class ListFlagCatalogueQueryHandler
     public async Task<PagedResult<FlagCatalogueListItemDto>> Handle(
         ListFlagCatalogueQuery req, CancellationToken ct)
     {
-        IQueryable<FlagCatalogue> q = _db.FlagCatalogues.AsNoTracking();
+        // Soft-deleted flags are never returned.
+        IQueryable<FlagCatalogue> q = _db.FlagCatalogues.AsNoTracking()
+            .Where(c => !c.IsDeleted);
 
         // Filter ----------------------------------------------------
         if (req.ActiveFlag.HasValue)
             q = q.Where(c => c.ActiveFlag == req.ActiveFlag.Value);
 
-        if (req.CategoryLkpId.HasValue)
-            q = q.Where(c => c.FlagCategoryLkpId == req.CategoryLkpId.Value);
+        // Scope filter ("All scopes" dropdown). GlobalScopeOnly wins; else
+        // a productId match also pulls in global (all-products) scopes.
+        if (req.GlobalScopeOnly == true)
+        {
+            q = q.Where(c => _db.FlagScopes.Any(s => s.FlagId == c.FlagId && s.ProductId == null));
+        }
+        else if (req.ProductId.HasValue)
+        {
+            var pid = req.ProductId.Value;
+            var tid = req.TabId;
+            q = q.Where(c => _db.FlagScopes.Any(s =>
+                    s.FlagId == c.FlagId
+                 && (s.ProductId == null
+                     || (s.ProductId == pid
+                         && (tid == null || s.TabId == null || s.TabId == tid)))));
+        }
 
         if (req.SeverityLkpId.HasValue)
             q = q.Where(c => c.SeverityLkpId == req.SeverityLkpId.Value);
@@ -56,18 +72,59 @@ public class ListFlagCatalogueQueryHandler
                 flagName           = c.FlagName,
                 flagDescription    = c.FlagDescription,
                 flagTypeLkpId      = c.FlagTypeLkpId,
-                flagCategoryLkpId  = c.FlagCategoryLkpId,
                 severityLkpId      = c.SeverityLkpId,
                 defaultWeight      = c.DefaultWeight,
                 requiresEvidence   = c.RequiresEvidence,
                 sourceSystem       = c.SourceSystem,
                 activeFlag         = c.ActiveFlag,
+                isBuiltIn          = c.IsBuiltIn,
                 scopeCount         = _db.FlagScopes.Count(s => s.FlagId == c.FlagId && s.ActiveFlag),
                 createdDate        = c.CreatedDate,
                 lastUpdatedBy      = c.LastUpdatedBy,
                 lastUpdatedDate    = c.LastUpdatedDate
             })
             .ToListAsync(ct);
+
+        // Enrich each page item with its scopes (resolved product / tab
+        // names) in ONE round-trip — no N+1. Left-joins so a global scope
+        // (ProductId NULL) keeps a null productName for the FE to label
+        // as "All products".
+        var flagIds = items.Select(i => i.flagId).ToList();
+        if (flagIds.Count > 0)
+        {
+            var scopeRows = await (
+                from s in _db.FlagScopes.AsNoTracking().Where(s => flagIds.Contains(s.FlagId))
+                // Cast to int? so the join key types match (s.ProductId is
+                // nullable for all-products scopes). A global scope won't
+                // match any product → left-join yields null productName.
+                join p in _db.Products.AsNoTracking() on s.ProductId equals (int?)p.ProductId into pj
+                from p in pj.DefaultIfEmpty()
+                join t in _db.Tabs.AsNoTracking() on s.TabId equals (int?)t.TabId into tj
+                from t in tj.DefaultIfEmpty()
+                orderby s.ProductId, s.TabId, s.SortOrder
+                select new
+                {
+                    s.FlagId,
+                    Summary = new FlagScopeSummaryDto
+                    {
+                        flagScopeId = s.FlagScopeId,
+                        productId   = s.ProductId,
+                        productName = p != null ? p.ProductName : null,
+                        tabId       = s.TabId,
+                        tabName     = t != null ? t.TabName : null,
+                        activeFlag  = s.ActiveFlag
+                    }
+                })
+                .ToListAsync(ct);
+
+            var byFlag = scopeRows
+                .GroupBy(r => r.FlagId)
+                .ToDictionary(g => g.Key, g => g.Select(r => r.Summary).ToList());
+
+            foreach (var item in items)
+                if (byFlag.TryGetValue(item.flagId, out var sc))
+                    item.scopes = sc;
+        }
 
         return new PagedResult<FlagCatalogueListItemDto>
         {

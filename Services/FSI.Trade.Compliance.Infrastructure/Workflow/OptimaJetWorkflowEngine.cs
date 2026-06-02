@@ -123,9 +123,19 @@ public class OptimaJetWorkflowEngine : IWorkflowEngine
 
         // v3.5: sync GetCurrentState(processId) → WorkflowState (.Name is the state).
         // Matches the working sample app's pattern in InvoiceController/ClaimController.
-        var prevState = R.GetCurrentState(processId)?.Name ?? "";
-        var result    = await R.ExecuteCommandAsync(match, identityId, identityId);
-        var newState  = R.GetCurrentState(processId)?.Name ?? prevState;
+        var prevState   = R.GetCurrentState(processId)?.Name ?? "";
+        var result      = await R.ExecuteCommandAsync(match, identityId, identityId);
+        var stateAfter  = R.GetCurrentState(processId);
+        var newState    = stateAfter?.Name ?? prevState;
+
+        // Slice 9 — IsFinalised. v3.5's runtime-returned WorkflowState
+        // doesn't carry an IsFinal flag (it's a lightweight tuple of
+        // Name + VisibleName + Comment). IsFinal lives on the scheme's
+        // parsed State definition, accessible via R.Builder.GetProcessScheme.
+        // We look it up defensively — if scheme resolution fails for any
+        // reason, IsFinalised stays false so we under-fire FCCM rather
+        // than risk a duplicate submission.
+        var isFinalised = TryDetermineIsFinalised(processId, newState);
 
         return new WorkflowExecutionResult
         {
@@ -133,8 +143,50 @@ public class OptimaJetWorkflowEngine : IWorkflowEngine
             WasExecuted   = result.WasExecuted,
             PreviousState = prevState,
             CurrentState  = newState,
-            Comment       = comments
+            Comment       = comments,
+            IsFinalised   = isFinalised
         };
+    }
+
+    /// <summary>
+    /// Resolves whether <paramref name="stateName"/> is a final/terminal
+    /// state in the scheme this process is running.
+    ///
+    /// v3.5 surface notes:
+    ///   • <c>WorkflowState</c> (the runtime-returned object) carries
+    ///     only Name / VisibleName — no IsFinal.
+    ///   • <c>ProcessDefinition</c> (parsed scheme) doesn't expose a
+    ///     States collection; states are surfaced indirectly through
+    ///     <c>Activities</c>, where each <c>ActivityDefinition</c>
+    ///     carries the state name (<c>.State</c>, string) and the
+    ///     final flag (<c>.IsFinal</c>, bool). One state can map to
+    ///     multiple activities, but any matching activity's IsFinal is
+    ///     authoritative — they all agree by scheme construction.
+    ///
+    /// Returns false defensively on any resolution miss. Better to
+    /// under-fire FCCM than risk a double-submission.
+    /// </summary>
+    private bool TryDetermineIsFinalised(Guid processId, string stateName)
+    {
+        if (string.IsNullOrWhiteSpace(stateName)) return false;
+
+        try
+        {
+            var pi = R.GetProcessInstanceAndFillProcessParameters(processId);
+            if (string.IsNullOrWhiteSpace(pi?.SchemeCode)) return false;
+
+            var pd = R.Builder.GetProcessScheme(pi.SchemeCode);
+            if (pd?.Activities is null) return false;
+
+            var activity = pd.Activities.FirstOrDefault(a =>
+                string.Equals(a.State, stateName, StringComparison.OrdinalIgnoreCase));
+
+            return activity?.IsFinal ?? false;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public Task SetStateAsync(Guid processId, string state, string identityId, string? reason = null, CancellationToken ct = default)

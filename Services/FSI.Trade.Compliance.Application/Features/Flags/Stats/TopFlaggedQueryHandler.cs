@@ -45,7 +45,7 @@ public class TopFlaggedQueryHandler
         // Aggregate: count per Flag_ID, JOIN catalogue, ORDER BY count, TAKE N.
         var query =
             from g in txFlagFlagIds.GroupBy(fid => fid)
-            join c in _db.FlagCatalogues.AsNoTracking() on g.Key equals c.FlagId
+            join c in _db.FlagCatalogues.AsNoTracking().Where(c => !c.IsDeleted) on g.Key equals c.FlagId
             orderby g.Count() descending, c.FlagName
             select new TopFlaggedRowDto
             {
@@ -54,7 +54,6 @@ public class TopFlaggedQueryHandler
                 flagName                = c.FlagName,
                 flagDescription         = c.FlagDescription,
                 severityLkpId           = c.SeverityLkpId,
-                flagCategoryLkpId       = c.FlagCategoryLkpId,
                 defaultWeight           = c.DefaultWeight,
                 flaggedTransactionCount = g.Count(),
                 weightedScore           = c.DefaultWeight * g.Count()

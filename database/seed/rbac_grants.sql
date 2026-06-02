@@ -57,6 +57,11 @@ PRINT CONCAT('Tenant_ID for new rows: ', @tenantId);
 -- Idempotent: each row guarded by NOT EXISTS on Privilege_Name.
 -- =========================================================================
 
+-- IMPORTANT: TmX_Privilege.Privilege_Description is nvarchar(100).
+-- Keep every Description value below at <= 100 characters or the
+-- INSERT will throw "String or binary data would be truncated". Code
+-- column is also nvarchar(100), but in practice privilege codes stay
+-- well under that.
 DECLARE @scoped TABLE (Code nvarchar(100) PRIMARY KEY, Description nvarchar(100));
 INSERT @scoped(Code, Description) VALUES
     -- Users module
@@ -79,7 +84,17 @@ INSERT @scoped(Code, Description) VALUES
 
     -- Flags module (Slice 8)
     (N'Flags.View',        N'View flag catalogue, per-transaction flag state, scopes and stats'),
-    (N'Flags.Manage',      N'Create / edit / activate / deactivate catalogue flags and manage their (product, tab) scopes');
+    (N'Flags.Manage',      N'Create / edit / activate / deactivate catalogue flags and manage their (product, tab) scopes'),
+
+    -- Transactions module (Slice 9)
+    (N'Transactions.Resubmit',       N'Manually re-fire the FCCM trade submission for a transaction'),
+
+    -- Transactions module (Slice 10 §7.4 + §7.5)
+    (N'Transactions.AddNote',        N'Append a note / remark to a transaction'),
+    (N'Transactions.UploadDocument', N'Attach a document directly to a transaction'),
+
+    -- FieldSetup module (Slice 12 §A)
+    (N'FieldSetup.Manage',           N'Edit dynamic-form field config (label, placeholder, visible, required)');
 
 INSERT INTO dbo.TmX_Privilege
     (Tenant_ID,
@@ -144,7 +159,11 @@ INSERT @grants(PrivCode) VALUES
     (N'Workflow.View'),
     (N'Workflow.Manage'),
     (N'Flags.View'),
-    (N'Flags.Manage');
+    (N'Flags.Manage'),
+    (N'Transactions.Resubmit'),
+    (N'Transactions.AddNote'),
+    (N'Transactions.UploadDocument'),
+    (N'FieldSetup.Manage');
 
 INSERT INTO dbo.TmX_Role_Privilege_Mapping
     (Tenant_ID,             Role_ID,           Privilege_ID,
@@ -174,6 +193,62 @@ FROM    dbo.TmX_Role_Privilege_Mapping rpm
 JOIN    dbo.TmX_Privilege p ON p.Privilege_ID = rpm.Privilege_ID
 WHERE   rpm.Role_ID = @itAdminRoleId
 ORDER   BY p.Privilege_Name;
+
+GO
+
+-- =========================================================================
+-- Section 3 — Universal grants (EVERY role gets these)
+-- =========================================================================
+-- Some privileges back endpoints the FE calls during bootstrap regardless
+-- of role. If a non-IT-Admin user misses these, the SPA fails to render
+-- on first page load. Currently:
+--
+--   Privileges.View → GET /api/v1/Privilege/Entities
+--                     (FE reads the privilege catalog so it can render
+--                      permission gates client-side; called on login.
+--                      Analysts / makers / authorizers all hit this.)
+--
+-- Pattern: CROSS JOIN every role with every universal privilege; the
+-- NOT EXISTS guard skips pairs that are already granted. Idempotent;
+-- safe to re-run after creating new roles.
+--
+-- IMPORTANT: when adding a new privilege here, also add it to Section 1
+-- so the privilege row exists before the grant tries to reference it.
+-- =========================================================================
+
+DECLARE @tenantId3 int          = (SELECT TOP 1 Tenant_ID FROM dbo.TmX_Privilege ORDER BY Privilege_ID);
+IF @tenantId3 IS NULL SET @tenantId3 = 1;
+
+DECLARE @now3 datetime           = GETUTCDATE();
+DECLARE @far3 datetime           = '9999-12-31';
+DECLARE @who3 nvarchar(100)      = N'System (rbac_grants.sql - Section 3)';
+
+DECLARE @universal TABLE (PrivCode nvarchar(100) PRIMARY KEY);
+INSERT @universal(PrivCode) VALUES
+    -- FE bootstrap requirement — see header comment above.
+    (N'Privileges.View');
+
+INSERT INTO dbo.TmX_Role_Privilege_Mapping
+    (Tenant_ID,        Role_ID,         Privilege_ID,
+     Active_Flag,      Effective_Start_Date, Effective_End_Date,
+     Created_By,       Created_Date,
+     Last_Updated_By,  Last_Updated_Date)
+SELECT
+    @tenantId3,        r.Role_ID,       p.Privilege_ID,
+    1,                 @now3,           @far3,
+    @who3,             @now3,
+    NULL,              NULL
+FROM     dbo.TmX_Role r
+CROSS JOIN dbo.TmX_Privilege p
+JOIN     @universal u ON u.PrivCode = p.Privilege_Name
+WHERE    NOT EXISTS (
+    SELECT 1
+    FROM   dbo.TmX_Role_Privilege_Mapping rpm
+    WHERE  rpm.Role_ID      = r.Role_ID
+      AND  rpm.Privilege_ID = p.Privilege_ID
+);
+
+PRINT CONCAT('Section 3 — universal grants: inserted ', @@ROWCOUNT, ' new row(s).');
 
 GO
 

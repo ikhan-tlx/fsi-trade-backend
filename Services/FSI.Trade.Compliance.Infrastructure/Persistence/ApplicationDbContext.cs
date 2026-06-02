@@ -53,15 +53,19 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public DbSet<TenantFieldSetup>         TenantFieldSetups        => Set<TenantFieldSetup>();
 
     // OptimaJet-owned tables (read-only from our side).
-    public DbSet<WorkflowProcessScheme>   WorkflowProcessSchemes   => Set<WorkflowProcessScheme>();
-    public DbSet<WorkflowProcessInstance> WorkflowProcessInstances => Set<WorkflowProcessInstance>();
-    public DbSet<WorkflowInbox>           WorkflowInboxes          => Set<WorkflowInbox>();
+    public DbSet<WorkflowProcessScheme>             WorkflowProcessSchemes             => Set<WorkflowProcessScheme>();
+    public DbSet<WorkflowProcessInstance>           WorkflowProcessInstances           => Set<WorkflowProcessInstance>();
+    public DbSet<WorkflowInbox>                     WorkflowInboxes                    => Set<WorkflowInbox>();
+    public DbSet<WorkflowProcessTransitionHistory>  WorkflowProcessTransitionHistories => Set<WorkflowProcessTransitionHistory>();
 
     // Slice 7: Reports.
     public DbSet<Template>                Templates                => Set<Template>();
 
     // Slice 8: Flag catalogue + generic document store.
     public DbSet<Document>                Documents                => Set<Document>();
+    // Slice 10 §7.4 — bridge between TmX_Transaction and TmX_Document
+    // (many-to-many; keeps Document polymorphic).
+    public DbSet<TransactionDocument>     TransactionDocuments     => Set<TransactionDocument>();
     public DbSet<FlagCatalogue>           FlagCatalogues           => Set<FlagCatalogue>();
     public DbSet<FlagCatalogueLocale>     FlagCatalogueLocales     => Set<FlagCatalogueLocale>();
     public DbSet<FlagScope>               FlagScopes               => Set<FlagScope>();

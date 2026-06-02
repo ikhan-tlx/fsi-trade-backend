@@ -17,12 +17,12 @@ public class FlagCatalogueDetailDto
     public string    flagName           { get; set; } = "";
     public string    flagDescription    { get; set; } = "";
     public int       flagTypeLkpId      { get; set; }
-    public int?      flagCategoryLkpId  { get; set; }
     public int?      severityLkpId      { get; set; }
     public decimal   defaultWeight      { get; set; }
     public bool      requiresEvidence   { get; set; }
     public string?   sourceSystem       { get; set; }
     public bool      activeFlag         { get; set; }
+    public bool      isBuiltIn          { get; set; }
     public string    createdBy          { get; set; } = "";
     public DateTime  createdDate        { get; set; }
     public string?   lastUpdatedBy      { get; set; }
@@ -34,7 +34,7 @@ public class FlagCatalogueDetailDto
 public class FlagScopeDto
 {
     public int      flagScopeId      { get; set; }
-    public int      productId        { get; set; }
+    public int?     productId        { get; set; }   // null = "all products" scope (Slice 8.1)
     public int?     tabId            { get; set; }
     public int      sortOrder        { get; set; }
     public bool     activeFlag       { get; set; }

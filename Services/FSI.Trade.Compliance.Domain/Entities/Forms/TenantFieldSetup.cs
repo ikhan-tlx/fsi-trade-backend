@@ -59,6 +59,32 @@ public class TenantFieldSetup
 
     public string?   DefaultValue               { get; set; }
 
+    /// <summary>
+    /// Added by migration <c>2026_05_029_AddPlaceholderToTenantFieldSetup</c>.
+    /// Free-text hint shown under the field label on the rendered form
+    /// ("Legal entity / individual name", "CIF / NIC / passport", etc.).
+    /// Edited via the Field Configuration admin page (Slice 12 §A).
+    /// </summary>
+    public string?   Placeholder                { get; set; }
+
+    /// <summary>
+    /// Added by migration <c>20260522_001_DynamicFormEnhancements</c>. Set
+    /// to false to soft-deactivate a field — excluded from form rendering
+    /// while preserving the row for forensic / rollback purposes. The
+    /// migration flipped ~415 MRL rows (legacy red-flag inline fields,
+    /// now owned by <c>TmX_Flag_Catalogue</c>) to <c>Is_Active = 0</c>.
+    /// </summary>
+    public bool      IsActive                   { get; set; } = true;
+
+    /// <summary>
+    /// Added by migration <c>20260522_001_DynamicFormEnhancements</c>.
+    /// Per-field JSON blob for arbitrary metadata. Today carries
+    /// <c>{"TabId":N}</c> on selector-checkbox fields to link them to
+    /// the destination sub-product tab. Future consumers can store any
+    /// per-field config they need here without touching the schema.
+    /// </summary>
+    public string?   UdfData                    { get; set; }
+
     // Localisation — one row per (field × locale).
     public string?   LocaleFieldLabel           { get; set; }
     public string?   LocaleLabel                { get; set; }

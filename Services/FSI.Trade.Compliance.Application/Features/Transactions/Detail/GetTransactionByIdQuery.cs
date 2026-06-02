@@ -53,13 +53,21 @@ public class TransactionDetailDto
     public List<TransactionFlagDto>  flags         { get; set; } = new();
 
     public WorkflowSnapshotDto       workflow      { get; set; } = new();
+
+    /// <summary>
+    /// Slice 10 §7.6 — flat summary card for the Trade Finance detail page.
+    /// Server-side back-traced from TmX_Tenant_Field_Setup + UDF_Data so the
+    /// FE doesn't have to walk the dynamic-form tree. Null when the product
+    /// has no matching fields configured (e.g. KYC product, account types).
+    /// </summary>
+    public ProductSummaryDto?        productSummary { get; set; }
 }
 
 public class TransactionFlagDto
 {
     // ---- scope ----
     public int      flagScopeId        { get; set; }
-    public int      productId          { get; set; }
+    public int?     productId          { get; set; }   // null = "all products" scope (Slice 8.1)
     public int?     tabId              { get; set; }
     public int      sortOrder          { get; set; }
     public string?  legacyFieldName    { get; set; }
@@ -70,7 +78,6 @@ public class TransactionFlagDto
     public string   flagName           { get; set; } = "";
     public string   flagDescription    { get; set; } = "";
     public int      flagTypeLkpId      { get; set; }
-    public int?     flagCategoryLkpId  { get; set; }
     public int?     severityLkpId      { get; set; }
     public decimal  defaultWeight      { get; set; }
     public bool     requiresEvidence   { get; set; }
@@ -162,4 +169,29 @@ public class WorkflowSnapshotDto
     public string?                currentState      { get; set; }
     public string?                activityName      { get; set; }
     public List<WorkflowCommand>  commands          { get; set; } = new();
+
+    /// <summary>
+    /// Slice 10 §7.2 — every user the workflow engine currently has the
+    /// process assigned to (one row per WorkflowInbox entry). The FE's
+    /// "People" sidebar groups these by role to surface "Analyst" vs
+    /// "Authorizer" labels. Empty when no inbox rows exist (e.g.
+    /// process terminal, never started, or detached).
+    /// </summary>
+    public List<AssignedActorDto> assignedActors    { get; set; } = new();
+}
+
+public class AssignedActorDto
+{
+    /// <summary>TmX_User.User_ID — string form, matches what the FE uses elsewhere.</summary>
+    public string  userId    { get; set; } = "";
+
+    /// <summary>Display name: "First Last", falling back to UserName.</summary>
+    public string  userName  { get; set; } = "";
+
+    /// <summary>
+    /// Primary role for this user (first role in TmX_User_Role_Mapping ordered
+    /// by RoleId). Null if no roles are mapped. The FE uses this to label
+    /// "Analyst" vs "Authorizer" on the People sidebar.
+    /// </summary>
+    public string? roleName  { get; set; }
 }

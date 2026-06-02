@@ -48,6 +48,11 @@ public static class InfrastructureServiceRegistration
                              sql => sql.EnableRetryOnFailure()));
         services.AddScoped<IApplicationDbContext>(sp => sp.GetRequiredService<ApplicationDbContext>());
 
+        // Slice 9 — FCCM staging lives on the same Oracle DB the rest
+        // of FccmOracleReader uses (not a separate SQL Server). No
+        // additional DbContext registration — all Oracle access flows
+        // through FccmOracleReader via Oracle.ManagedDataAccess.Core.
+
         // Identity (Pattern A — IdentityCore + custom store, NO AspNet* tables)
         services.AddIdentityCore<ApplicationUser>(o =>
         {
@@ -116,12 +121,25 @@ public static class InfrastructureServiceRegistration
         // pipeline configured by AddHttpClient<T> wouldn't apply when the
         // interface is resolved.
         services.AddScoped<IKycScreeningService>(sp => sp.GetRequiredService<BrainsKycScreeningService>());
-        services.AddScoped<ICustomerMasterService>(sp => sp.GetRequiredService<CustomerMasterClient>());
+
+        // Slice 11 P0 §1 — ICustomerMasterService is now backed by
+        // LocalCustomerMasterReader (reads TmX_Customer_Master snapshots)
+        // instead of CustomerMasterClient (which proxied to BRAINS). KYC
+        // lookups stay on BRAINS via IKycScreeningService above. The HTTP
+        // client registration above is left in place so flipping the
+        // adapter back is a single-line change if requirements shift.
+        services.AddScoped<ICustomerMasterService, LocalCustomerMasterReader>();
 
         // FccmKycCaseService isn't a typed HttpClient itself (it COMPOSES
         // FccmHttpClient + Oracle reader + DbContext), so it can register as
         // a normal scoped service mapped to the interface.
         services.AddScoped<IKycCaseService,             FccmKycCaseService>();
+
+        // Slice 9 — Trade-to-FCCM submission. Same composition pattern as
+        // FccmKycCaseService: scoped, composes the shared FccmHttpClient
+        // + FccmOracleReader + DbContext. Phase 1 ships the scaffold;
+        // Phase 2 fills in the pipeline.
+        services.AddScoped<IFccmTradeCaseService,       FccmTradeCaseService>();
 
         // Oracle reader stub — see file header for real-impl wiring.
         services.AddScoped<FccmOracleReader>();

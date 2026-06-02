@@ -2,6 +2,7 @@ using FSI.Trade.Compliance.Application.Common.Exceptions;
 using FSI.Trade.Compliance.Application.Contracts.Documents;
 using FSI.Trade.Compliance.Application.Contracts.Identity;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
+using FSI.Trade.Compliance.Domain.Entities.Documents;
 using MediatR;
 
 namespace FSI.Trade.Compliance.Application.Features.Documents.Upload;
@@ -45,6 +46,27 @@ public class UploadDocumentCommandHandler
 
         _db.Documents.Add(document);
         await _db.SaveChangesAsync(ct);
+
+        // Slice 10 §7.4 — optional bridge insert. Saved separately so the
+        // document gets its identity-generated ID first; the bridge row
+        // then references it. Idempotent at the row level via the unique
+        // (Transaction_ID, Document_ID) constraint — a re-upload of an
+        // already-attached document would throw on the second commit
+        // here. That's the intended behaviour; the controller doesn't
+        // currently surface "replace existing" semantics.
+        if (req.TransactionId.HasValue)
+        {
+            _db.TransactionDocuments.Add(new TransactionDocument
+            {
+                TransactionId = req.TransactionId.Value,
+                DocumentId    = document.DocumentId,
+                TenantId      = tenantId,
+                ActiveFlag    = true,
+                CreatedBy     = userId,
+                CreatedDate   = DateTime.UtcNow
+            });
+            await _db.SaveChangesAsync(ct);
+        }
 
         return new UploadDocumentResult
         {

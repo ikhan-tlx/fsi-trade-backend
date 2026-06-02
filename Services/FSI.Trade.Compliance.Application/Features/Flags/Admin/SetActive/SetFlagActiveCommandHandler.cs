@@ -24,7 +24,7 @@ public class SetFlagActiveCommandHandler : IRequestHandler<SetFlagActiveCommand,
                 "Flag activation toggle requires an authenticated caller.");
 
         var entity = await _db.FlagCatalogues
-            .FirstOrDefaultAsync(c => c.FlagId == req.FlagId, ct)
+            .FirstOrDefaultAsync(c => c.FlagId == req.FlagId && !c.IsDeleted, ct)
             ?? throw new NotFoundException("flag_not_found",
                 $"Flag {req.FlagId} does not exist.");
 

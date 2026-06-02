@@ -2,6 +2,7 @@ using Asp.Versioning;
 using FSI.Trade.Compliance.API.Filters;
 using FSI.Trade.Compliance.Application.Common.Models;
 using FSI.Trade.Compliance.Application.Features.Flags.Admin.Create;
+using FSI.Trade.Compliance.Application.Features.Flags.Admin.Delete;
 using FSI.Trade.Compliance.Application.Features.Flags.Admin.Get;
 using FSI.Trade.Compliance.Application.Features.Flags.Admin.List;
 using FSI.Trade.Compliance.Application.Features.Flags.Admin.Scopes;
@@ -118,6 +119,19 @@ public class FlagController : ControllerBase
     {
         await _mediator.Send(new SetFlagActiveCommand(id, false), ct);
         return Ok(ResponseViewModel<object>.Ok(new { flagId = id, activeFlag = false }));
+    }
+
+    /// <summary>
+    /// Soft-delete a flag (retire it). Returns 409 (<c>flag_is_builtin</c>)
+    /// for shipped built-in flags — those can only be relabelled /
+    /// deactivated. Existing transaction-flag history is preserved.
+    /// </summary>
+    [HttpDelete("{id:int}")]
+    [RequiresPrivilege("Flags.Manage")]
+    public async Task<IActionResult> Delete(int id, CancellationToken ct)
+    {
+        await _mediator.Send(new DeleteFlagCommand(id), ct);
+        return Ok(ResponseViewModel<object>.Ok(new { flagId = id, deleted = true }));
     }
 
     // =====================================================================

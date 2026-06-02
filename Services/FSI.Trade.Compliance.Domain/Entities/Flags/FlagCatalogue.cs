@@ -33,8 +33,9 @@ public class FlagCatalogue
     /// <summary>FK to TmX_Lookup row with Lookup_Type='FLAG_TYPE' (Manual / Automated).</summary>
     public int       FlagTypeLkpId         { get; set; }
 
-    /// <summary>FK to TmX_Lookup row with Lookup_Type='FLAG_CATEGORY' (TBML / KYC / Onboarding / Generic).</summary>
-    public int?      FlagCategoryLkpId     { get; set; }
+    // Flag-level category removed 2026-06-01 (Slice 8.2): categorisation now
+    // lives on the flag SCOPE (product / tab), so a catalogue-level category
+    // was redundant. Column dropped by migration 2026_06_032.
 
     /// <summary>FK to TmX_Lookup row with Lookup_Type='FLAG_SEVERITY' (Critical / High / Medium / Low / Info).</summary>
     public int?      SeverityLkpId         { get; set; }
@@ -49,6 +50,19 @@ public class FlagCatalogue
     public string?   SourceSystem          { get; set; }
 
     public bool      ActiveFlag            { get; set; } = true;
+
+    /// <summary>
+    /// TRUE = shipped/seeded flag. Built-ins can be relabelled and
+    /// deactivated but NOT deleted (the admin UI blocks delete; the
+    /// delete handler enforces it server-side). FALSE = admin-created.
+    /// Backfilled to TRUE for the Slice-8 seed rows by migration 2026_06_031.
+    /// </summary>
+    public bool      IsBuiltIn             { get; set; }
+
+    /// <summary>Soft-delete tombstone. Excluded from every catalogue read. History rows are preserved.</summary>
+    public bool      IsDeleted             { get; set; }
+    public string?   DeletedBy             { get; set; }
+    public DateTime? DeletedDate           { get; set; }
 
     public string    CreatedBy             { get; set; } = "";
     public DateTime  CreatedDate           { get; set; }

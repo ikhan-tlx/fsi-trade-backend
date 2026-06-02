@@ -3,7 +3,6 @@ using FSI.Trade.Compliance.Application.Common.Models;
 using FSI.Trade.Compliance.Application.Features.Products.ActiveLov;
 using FSI.Trade.Compliance.Application.Features.Products.Forms;
 using FSI.Trade.Compliance.Application.Features.Products.List;
-using FSI.Trade.Compliance.Application.Features.Products.Tabs;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -11,17 +10,18 @@ using Microsoft.AspNetCore.Mvc;
 namespace FSI.Trade.Compliance.API.Controllers;
 
 /// <summary>
-/// Product-configuration surface — replaces two legacy endpoints in one
-/// domain-named controller:
+/// Product-configuration surface. Endpoint inventory (all read-mostly,
+/// cached server-side):
 ///
-///   GET    /api/v1/Product/Tabs/Mappings                        — every active entity-tab-product mapping (cached 5min)
-///   GET    /api/v1/Product/{id}/FormDefinition?culture=...      — nested tabs+fields tree for one product (cached 15min)
+///   GET /api/v1/Product/list                                     — active products
+///   GET /api/v1/Product/ActiveLov                                — active products in legacy LOV shape
+///   GET /api/v1/Product/{id}/Tabs?culture=...                    — tabs only (lightweight); carries selectorTabId signal
+///   GET /api/v1/Product/{id}/Tabs/{tabId}/Fields?culture=...     — fields for one tab (lazy-load)
+///   GET /api/v1/Product/{id}/FormDefinition?culture=...          — full tabs+fields tree (one-shot, e.g. KYC)
 ///
-/// Both endpoints are read-mostly, idempotent, and shared across every
-/// dynamic-form page the FE renders.
-///
-/// Legacy mapping:
-/// - GET /api/v1/Entity/TabEntityMapping                            → /Product/Tabs/Mappings
+/// Legacy URL mapping (decommissioned):
+/// - GET /api/v1/Entity/TabEntityMapping                            → use /Product/{id}/Tabs (per-product, scoped)
+/// - GET /api/v1/Product/Tabs/Mappings                              → use /Product/{id}/Tabs (removed 2026-05-25)
 /// - GET /api/v1/TenantFieldSetup/GetFieldsByProduct/{id}/{culture} → /Product/{id}/FormDefinition?culture=
 /// </summary>
 [ApiController]
@@ -33,20 +33,53 @@ public class ProductController : ControllerBase
     private readonly IMediator _mediator;
     public ProductController(IMediator mediator) => _mediator = mediator;
 
-    /// <summary>Every active entity-tab-product mapping. Server-cached 5 min.</summary>
-    [HttpGet("Tabs/Mappings")]
-    public async Task<IActionResult> TabMappings(CancellationToken ct)
-    {
-        var rows = await _mediator.Send(new ListEntityTabMappingsQuery(), ct);
-        return Ok(ResponseViewModel<IReadOnlyList<EntityTabProductMappingDto>>.Ok(rows));
-    }
-
-    /// <summary>Tabs + fields tree for one product. Server-cached 15 min per (productId, culture).</summary>
+    /// <summary>
+    /// Tabs + fields tree for one product (full preload). Server-cached
+    /// 15 min per (productId, culture).
+    ///
+    /// Use this when the caller needs every field for the product in one
+    /// shot — e.g. KYC, where all tabs are loaded together. For the
+    /// lazy-load wizard flow, prefer
+    /// <c>GET /Product/{id}/Tabs</c> + <c>GET /Product/{id}/Tabs/{tabId}/Fields</c>.
+    /// </summary>
     [HttpGet("{productId:int}/FormDefinition")]
     public async Task<IActionResult> FormDefinition(int productId, [FromQuery] string? culture, CancellationToken ct)
     {
         var def = await _mediator.Send(new GetProductFormDefinitionQuery(productId, culture), ct);
         return Ok(ResponseViewModel<ProductFormDefinitionDto>.Ok(def));
+    }
+
+    /// <summary>
+    /// Tabs-only tree for one product (lightweight). No fields included —
+    /// each tab's <c>fields</c> array is empty. Designed for the FE's
+    /// lazy-load flow: render tab rail / sub-product selector first, then
+    /// fetch fields for the active tab via
+    /// <c>GET /Product/{id}/Tabs/{tabId}/Fields</c> on demand.
+    ///
+    /// Server-cached 15 min per (productId, culture).
+    /// </summary>
+    [HttpGet("{productId:int}/Tabs")]
+    public async Task<IActionResult> Tabs(int productId, [FromQuery] string? culture, CancellationToken ct)
+    {
+        var tabs = await _mediator.Send(new ListProductTabsQuery(productId, culture), ct);
+        return Ok(ResponseViewModel<ProductTabsDto>.Ok(tabs));
+    }
+
+    /// <summary>
+    /// Fields for one specific tab inside a product. Validates the
+    /// (productId, tabId) mapping before returning data — 404 if the tab
+    /// isn't attached to the product. Same filters as
+    /// <c>FormDefinition</c> (Is_Active + MRL belt-and-braces).
+    ///
+    /// Server-cached 15 min per (productId, tabId, culture). Finer-grained
+    /// than the FormDefinition cache, so a field edit invalidates only
+    /// that tab's entry.
+    /// </summary>
+    [HttpGet("{productId:int}/Tabs/{tabId:int}/Fields")]
+    public async Task<IActionResult> TabFields(int productId, int tabId, [FromQuery] string? culture, CancellationToken ct)
+    {
+        var fields = await _mediator.Send(new GetTabFieldsQuery(productId, tabId, culture), ct);
+        return Ok(ResponseViewModel<TabFieldsDto>.Ok(fields));
     }
 
     /// <summary>

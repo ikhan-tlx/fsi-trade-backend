@@ -25,6 +25,7 @@ public class TransactionConfiguration : IEntityTypeConfiguration<Domain.Entities
         b.Property(x => x.IsWorkflowAttached)    .HasColumnName("Is_Workflow_Attached");
         b.Property(x => x.TransactionTypeLkp)    .HasColumnName("Transaction_Type_Lkp");
         b.Property(x => x.TransactionDate)       .HasColumnName("Transaction_Date");
+        b.Property(x => x.FccmCaseId)            .HasColumnName("Fccm_Case_Id").HasMaxLength(100);
 
         b.Property(x => x.CreatedBy)             .HasColumnName("Created_By").HasMaxLength(100).IsRequired();
         b.Property(x => x.CreatedDate)           .HasColumnName("Created_Date");
@@ -33,5 +34,7 @@ public class TransactionConfiguration : IEntityTypeConfiguration<Domain.Entities
 
         b.HasIndex(x => x.ProcessInstanceId);
         b.HasIndex(x => x.ProductId);
+        // Filtered index defined in 2026_05_015 migration. EF skips
+        // re-declaration here to avoid Generate-Migrations drift.
     }
 }
