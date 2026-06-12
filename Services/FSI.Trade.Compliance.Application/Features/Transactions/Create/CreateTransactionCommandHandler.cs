@@ -105,18 +105,59 @@ public class CreateTransactionCommandHandler
             throw new NotFoundException("product_not_found",
                 $"Product {req.productId} does not exist.");
 
+        // 2b. Sub-product is mandatory at create for products that have a
+        // ProductTab selector (Trade). KYC / single-tab products have no
+        // selector, so subProductTabId stays optional for them.
+        var hasSubProducts = await _db.TenantFieldSetups.AsNoTracking()
+            .AnyAsync(f => f.ProductId == req.productId
+                        && f.FieldLookupType == "ProductTab"
+                        && f.IsActive, ct);
+        if (hasSubProducts && req.subProductTabId is null)
+            throw new ValidationException(new[]
+            {
+                new ValidationFailure("subProductTabId",
+                    "A sub-product (subProductTabId) must be supplied when creating a transaction for this product.")
+            });
+
         // 3. Generate server-side IDs.
         var processInstanceId = Guid.NewGuid();
         var transactionNumber = await _txnNumberGen.NextAsync(branchCode, ct);
 
         // 4. Build customer snapshot — riskScore is folded into udf_data as JSON
         //    so we don't need to add a new column. Legacy did the same thing.
-        var customerUdf = req.customer.riskScore.HasValue
-            ? JsonSerializer.Serialize(new Dictionary<string, object?>
+        // The wizard sends the BRAINS v2.0 band LABEL ("PEP"/"High"/"Medium"/
+        // "Low"). Resolve it to the numeric Hidden_Value via the RISK_BAND
+        // lookup and persist the NUMBER on udf_data — storage stays decimal
+        // (legacy domain) and the dashboard RiskBandClassifier numeric branch
+        // reads it. The RISK_BAND lookup is the authoritative band->number map.
+        string? customerUdf = null;
+        var bandLabel = req.customer.riskScore?.Trim();
+        if (!string.IsNullOrWhiteSpace(bandLabel))
+        {
+            var hidden = await _db.Lookups
+                .AsNoTracking()
+                .Where(l => l.TenantId == 1
+                         && l.LookupType == "RISK_BAND"
+                         && l.VisibleValue != null
+                         && l.VisibleValue.ToLower() == bandLabel.ToLower())
+                .Select(l => l.HiddenValue)
+                .FirstOrDefaultAsync(ct);
+
+            if (decimal.TryParse(hidden, System.Globalization.NumberStyles.Any,
+                                 System.Globalization.CultureInfo.InvariantCulture, out var riskNum))
+            {
+                customerUdf = JsonSerializer.Serialize(new Dictionary<string, object?>
                 {
-                    ["RiskScore"] = req.customer.riskScore.Value
-                })
-            : null;
+                    ["RiskScore"] = riskNum
+                });
+            }
+            else
+            {
+                _log.LogWarning(
+                    "RISK_BAND lookup has no numeric Hidden_Value for band '{Band}'; " +
+                    "risk score not persisted on the new transaction.", bandLabel);
+            }
+        }
 
         // 5. INSERT transaction + customer snapshot in a single SaveChanges.
         var tx = new Transaction
@@ -133,6 +174,7 @@ public class CreateTransactionCommandHandler
             TransactionNumber     = transactionNumber,
             ProcessInstanceId     = processInstanceId,
             IsWorkflowAttached    = false,                                   // flips to true after engine init
+            SubProductTabId       = req.subProductTabId,                     // set when the FE knows the sub-type at create
             CreatedBy             = userId,
             CreatedDate           = DateTime.UtcNow
         };

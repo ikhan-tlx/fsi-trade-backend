@@ -102,12 +102,45 @@ public class GetTransactionByIdQueryHandler
         var productSummary = await ProductSummaryProjection.BuildAsync(
             _db, tx.ProductId, detail?.UdfData, ct);
 
+        // ---------- 4.4c Sub-product tab id (2026-06-04) ----------
+        // The FE needs the destination tab id when re-opening a saved
+        // transaction so it can lazy-load that one tab's fields. Prefer
+        // the persisted Sub_Product_Tab_Id; for legacy rows where the
+        // column is null, fall back to inferring from UDF_Data + the
+        // product's ProductTab-typed TenantFieldSetup rows.
+        var selectedSubProductTabId = tx.SubProductTabId
+            ?? await SelectedSubProductProjection.ResolveAsync(
+                    _db, tx.ProductId, detail?.UdfData, ct);
+
+        // ---------- 4.4e Display names for the summary card (2026-06-05) ----------
+        var productName = await _db.Products.AsNoTracking()
+            .Where(p => p.ProductId == tx.ProductId)
+            .Select(p => p.ProductName)
+            .FirstOrDefaultAsync(ct);
+        string? subProductName = null;
+        if (selectedSubProductTabId.HasValue)
+        {
+            subProductName = await _db.Tabs.AsNoTracking()
+                .Where(t => t.TabId == selectedSubProductTabId.Value)
+                .Select(t => t.TabName)
+                .FirstOrDefaultAsync(ct);
+        }
+
+        // NOTE (2026-06-05): long-tail grid sections are NOT a separate store —
+        // they're nested inside TmX_Transaction_Detail.UDF_Data (legacy shape),
+        // so they already come back as nested keys on `udfData` below. No extra
+        // query needed.
+
         // ---------- 4.5 Flags (Slice 8) ----------
         // Project every active scope row for this product LEFT-JOINed to
         // the transaction's existing flag rows. Flags without a
         // TmX_Transaction_Flag row come back as isFlagged=false so the FE
         // panel always shows the full applicable set.
-        var flags = await TransactionFlagProjection.LoadAsync(_db, id, tx.ProductId, ct);
+        // Only the flags actually SET on this transaction (rows in
+        // TmX_Transaction_Flag) — NOT the full applicable scope catalogue. The
+        // selectable flag set for the picker is a separate endpoint
+        // (GET /Flag/Product/{productId}/Tab/{tabId}).
+        var flags = await TransactionFlagProjection.LoadSetForTransactionAsync(_db, id, tx.ProductId, ct);
 
         // ---------- 5. Workflow snapshot ----------
         var workflow = new WorkflowSnapshotDto { processInstanceId = tx.ProcessInstanceId };
@@ -145,6 +178,37 @@ public class GetTransactionByIdQueryHandler
             workflow.assignedActors = await LoadAssignedActorsAsync(tx.ProcessInstanceId.Value, ct);
         }
 
+        // ---------- 5.9 Resolve user-id GUIDs → display names ----------
+        // Created_By / Last_Updated_By / flag SetBy store the caller's user_id
+        // (GUID), not a username — resolve them so the FE shows the actual user
+        // name everywhere it surfaces a "by" field.
+        // (Flag setBy is resolved inside TransactionFlagProjection.)
+        var userIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(tx.CreatedBy))     userIds.Add(tx.CreatedBy);
+        if (!string.IsNullOrWhiteSpace(tx.LastUpdatedBy)) userIds.Add(tx.LastUpdatedBy!);
+
+        var userNames = userIds.Count == 0
+            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            : (await _db.Users.AsNoTracking()
+                .Where(u => userIds.Contains(u.Id))
+                .Select(u => new { u.Id, u.FirstName, u.LastName, u.UserName })
+                .ToListAsync(ct))
+                .ToDictionary(
+                    u => u.Id,
+                    u =>
+                    {
+                        var full = $"{u.FirstName} {u.LastName}".Trim();
+                        return string.IsNullOrWhiteSpace(full) ? (u.UserName ?? u.Id) : full;
+                    },
+                    StringComparer.OrdinalIgnoreCase);
+
+        string? ResolveUser(string? key) =>
+            !string.IsNullOrWhiteSpace(key)
+            && userNames.TryGetValue(key!, out var n)
+            && !string.IsNullOrWhiteSpace(n)
+                ? n
+                : key;
+
         // ---------- 6. Compose response ----------
         return new TransactionDetailDto
         {
@@ -152,6 +216,8 @@ public class GetTransactionByIdQueryHandler
             tenantId               = tx.TenantId,
             companyBranchId        = tx.CompanyBranchId,
             productId              = tx.ProductId,
+            productName            = productName,
+            subProductName         = subProductName,
             transactionNumber      = tx.TransactionNumber,
             clientReferenceNumber  = tx.ClientReferenceNumber,
             userId                 = tx.UserId,
@@ -162,9 +228,9 @@ public class GetTransactionByIdQueryHandler
             processInstanceId      = tx.ProcessInstanceId,
             isWorkflowAttached     = tx.IsWorkflowAttached,
             createdDate            = tx.CreatedDate,
-            createdBy              = tx.CreatedBy,
+            createdBy              = ResolveUser(tx.CreatedBy) ?? tx.CreatedBy,
             lastUpdatedDate        = tx.LastUpdatedDate,
-            lastUpdatedBy          = tx.LastUpdatedBy,
+            lastUpdatedBy          = ResolveUser(tx.LastUpdatedBy),
 
             udfData                = ParseJson(detail?.UdfData),
 
@@ -247,8 +313,9 @@ public class GetTransactionByIdQueryHandler
 
             flags = flags,
 
-            workflow       = workflow,
-            productSummary = productSummary
+            workflow                = workflow,
+            productSummary          = productSummary,
+            selectedSubProductTabId = selectedSubProductTabId
         };
     }
 

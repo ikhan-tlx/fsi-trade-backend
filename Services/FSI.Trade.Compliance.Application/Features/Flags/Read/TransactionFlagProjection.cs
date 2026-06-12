@@ -5,88 +5,136 @@ using Microsoft.EntityFrameworkCore;
 namespace FSI.Trade.Compliance.Application.Features.Flags.Read;
 
 /// <summary>
-/// Shared LEFT-JOIN projection that drives both
-/// <c>GET /Transaction/{id}</c> (embedded flag list) and
-/// <c>GET /Transaction/{id}/Flags</c> (standalone). One place to evolve
-/// the query keeps the two endpoints permanently in sync.
+/// Read projections for transaction flags. Two distinct concerns:
+///   • <see cref="LoadSetForTransactionAsync"/> — the flags actually SET on a
+///     transaction (rows in <c>TmX_Transaction_Flag</c>). Drives
+///     <c>GET /Transaction/{id}</c> and <c>GET /Transaction/{id}/Flags</c>.
+///   • <see cref="LoadByProductAsync"/> — the selectable flag catalogue scoped
+///     by product (+ optional sub-product tab), with no transaction context.
+///     Drives the flag-picker endpoints <c>GET /Flag/Product/{id}</c> and
+///     <c>GET /Flag/Product/{id}/Tab/{tab}</c>.
 ///
-/// Semantics:
-///   • Every active <c>TmX_Flag_Scope</c> row for the transaction's
-///     product becomes a result row.
-///   • If the transaction has a matching <c>TmX_Transaction_Flag</c>
-///     row, its state is folded in (isFlagged, evidence, notes,
-///     attribution).
-///   • Otherwise <c>isFlagged = false</c>, attribution fields null.
-///   • Catalogue must also be active — retired catalogue entries are
-///     filtered out even if a stale scope row points at them.
-///
-/// Ordering: tab first (form-render groups by tab), then sort order,
-/// then flag name as a deterministic tie-breaker.
+/// Keeping these separate is deliberate: a transaction "carries" only the flags
+/// an analyst picked, while the picker shows everything applicable to the
+/// product/sub-product. Mixing them is what made the detail endpoint return the
+/// entire scope catalogue.
 /// </summary>
 public static class TransactionFlagProjection
 {
-    public static async Task<List<TransactionFlagDto>> LoadAsync(
+    /// <summary>
+    /// The flags actually SET on a transaction — i.e. the rows that exist in
+    /// <c>TmX_Transaction_Flag</c> for it (one row per selected flag), NOT the
+    /// full applicable scope catalogue. This is what <c>GET /Transaction/{id}</c>
+    /// and <c>GET /Transaction/{id}/Flags</c> return: a transaction "carries"
+    /// only the flags an analyst selected. The selectable set (for the
+    /// flag-picker UI) is a separate concern — see
+    /// <see cref="LoadByProductAsync"/> / <c>GET /Flag/Product/{id}/Tab/{tab}</c>.
+    ///
+    /// <para>Catalogue fields are inner-joined for display. Scope fields
+    /// (tabId, sortOrder, legacyFieldName, flagScopeId) are best-effort: a flag
+    /// can be scoped to several tabs and <c>TmX_Transaction_Flag</c> only stores
+    /// <c>Flag_ID</c>, so we attach the first active scope for this product
+    /// (deterministic by tab, then sort order). Two cheap queries + an in-memory
+    /// stitch keep the SQL trivially translatable.</para>
+    /// </summary>
+    public static async Task<List<TransactionFlagDto>> LoadSetForTransactionAsync(
         IApplicationDbContext db,
         int transactionId,
         int productId,
         CancellationToken ct)
     {
-        // The LEFT JOIN expressed as a query-syntax LINQ — DefaultIfEmpty
-        // is the EF Core idiom for outer joins. The transaction-flag side
-        // is filtered by TransactionId BEFORE the join (rather than in the
-        // ON clause) so EF generates a clean LEFT JOIN with a sargable
-        // predicate instead of pushing the filter into the outer WHERE.
-        var txFlags =
-            from f in db.TransactionFlags.AsNoTracking()
-            where f.TransactionId == transactionId
-            select f;
-
-        var query =
-            from s in db.FlagScopes.AsNoTracking()
-            // Product-specific scopes for this product PLUS "all products"
-            // (global) scopes where Product_ID IS NULL.
-            where (s.ProductId == productId || s.ProductId == null)
-               && s.ActiveFlag == true
-
-            join c in db.FlagCatalogues.AsNoTracking()
-                 .Where(c => c.ActiveFlag && !c.IsDeleted) on s.FlagId equals c.FlagId
-
-            join tf in txFlags on s.FlagId equals tf.FlagId into tfj
-            from tf in tfj.DefaultIfEmpty()
-
-            join doc in db.Documents.AsNoTracking()
-                   on tf!.EvidenceDocumentId equals doc.DocumentId into docj
-            from doc in docj.DefaultIfEmpty()
-
-            orderby s.TabId, s.SortOrder, c.FlagName
-
-            select new TransactionFlagDto
+        // 1) The persisted, ACTUALLY-FLAGGED rows for this transaction
+        //    (IsFlagged = true) + their catalogue entry + evidence file (LEFT
+        //    JOIN). Catalogue is NOT filtered on active so a set flag still shows
+        //    even if the catalogue entry was later retired. Rows that were
+        //    toggled off (IsFlagged = false) are excluded — a transaction
+        //    "carries" only the flags that are set.
+        var setRows = await (
+            from tf in db.TransactionFlags.AsNoTracking()
+                 .Where(t => t.TransactionId == transactionId && t.IsFlagged)
+            join c in db.FlagCatalogues.AsNoTracking() on tf.FlagId equals c.FlagId
+            from doc in db.Documents.AsNoTracking()
+                  .Where(d => d.DocumentId == tf.EvidenceDocumentId).DefaultIfEmpty()
+            select new
             {
-                flagScopeId         = s.FlagScopeId,
-                productId           = s.ProductId,
-                tabId               = s.TabId,
-                sortOrder           = s.SortOrder,
-                legacyFieldName     = s.LegacyFieldName,
+                tf,
+                c,
+                evidenceFileName = doc == null ? null : doc.OriginalFileName
+            }).ToListAsync(ct);
 
-                flagId              = c.FlagId,
-                flagCode            = c.FlagCode,
-                flagName            = c.FlagName,
-                flagDescription     = c.FlagDescription,
-                flagTypeLkpId       = c.FlagTypeLkpId,
-                severityLkpId       = c.SeverityLkpId,
-                defaultWeight       = c.DefaultWeight,
-                requiresEvidence    = c.RequiresEvidence,
+        if (setRows.Count == 0) return new List<TransactionFlagDto>();
 
-                transactionFlagId   = tf == null ? (int?)null  : tf.TransactionFlagId,
-                isFlagged           = tf != null && tf.IsFlagged,
-                evidenceDocumentId  = tf == null ? (int?)null  : tf.EvidenceDocumentId,
-                evidenceFileName    = doc == null ? null       : doc.OriginalFileName,
-                analystNotes        = tf == null ? null        : tf.AnalystNotes,
-                setBy               = tf == null ? null        : tf.SetBy,
-                setDate             = tf == null ? (DateTime?)null : tf.SetDate
-            };
+        // 2) Best-effort scope context for those flags under this product.
+        var flagIds = setRows.Select(r => r.tf.FlagId).Distinct().ToList();
+        var scopes = await db.FlagScopes.AsNoTracking()
+            .Where(x => flagIds.Contains(x.FlagId)
+                     && (x.ProductId == productId || x.ProductId == null)
+                     && x.ActiveFlag)
+            .OrderBy(x => x.TabId).ThenBy(x => x.SortOrder)
+            .ToListAsync(ct);
+        var scopeByFlag = scopes
+            .GroupBy(x => x.FlagId)
+            .ToDictionary(g => g.Key, g => g.First());
 
-        return await query.ToListAsync(ct);
+        // 2b) Resolve SetBy user-id GUIDs → display names (TmX_User), so the FE
+        //     shows the actual user, not a GUID, on both the embedded flag list
+        //     and the standalone GET /Transaction/{id}/Flags.
+        var setByIds = setRows
+            .Select(r => r.tf.SetBy)
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var setByNames = setByIds.Count == 0
+            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            : (await db.Users.AsNoTracking()
+                .Where(u => setByIds.Contains(u.Id))
+                .Select(u => new { u.Id, u.FirstName, u.LastName, u.UserName })
+                .ToListAsync(ct))
+                .ToDictionary(
+                    u => u.Id,
+                    u =>
+                    {
+                        var full = $"{u.FirstName} {u.LastName}".Trim();
+                        return string.IsNullOrWhiteSpace(full) ? (u.UserName ?? u.Id) : full;
+                    },
+                    StringComparer.OrdinalIgnoreCase);
+        string? ResolveSetBy(string? key) =>
+            !string.IsNullOrWhiteSpace(key) && setByNames.TryGetValue(key!, out var n) && !string.IsNullOrWhiteSpace(n)
+                ? n
+                : key;
+
+        return setRows
+            .OrderBy(r => r.c.FlagName)
+            .Select(r =>
+            {
+                scopeByFlag.TryGetValue(r.tf.FlagId, out var s);
+                return new TransactionFlagDto
+                {
+                    flagScopeId        = s?.FlagScopeId ?? 0,
+                    productId          = s?.ProductId,
+                    tabId              = s?.TabId,
+                    sortOrder          = s?.SortOrder ?? 0,
+                    legacyFieldName    = s?.LegacyFieldName,
+
+                    flagId             = r.c.FlagId,
+                    flagCode           = r.c.FlagCode,
+                    flagName           = r.c.FlagName,
+                    flagDescription    = r.c.FlagDescription,
+                    flagTypeLkpId      = r.c.FlagTypeLkpId,
+                    severityLkpId      = r.c.SeverityLkpId,
+                    defaultWeight      = r.c.DefaultWeight,
+                    requiresEvidence   = r.c.RequiresEvidence,
+
+                    transactionFlagId  = r.tf.TransactionFlagId,
+                    isFlagged          = r.tf.IsFlagged,
+                    evidenceDocumentId = r.tf.EvidenceDocumentId,
+                    evidenceFileName   = r.evidenceFileName,
+                    analystNotes       = r.tf.AnalystNotes,
+                    setBy              = ResolveSetBy(r.tf.SetBy),
+                    setDate            = r.tf.SetDate
+                };
+            })
+            .ToList();
     }
 
     /// <summary>

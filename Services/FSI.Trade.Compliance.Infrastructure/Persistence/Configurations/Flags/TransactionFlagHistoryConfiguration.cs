@@ -28,5 +28,13 @@ public class TransactionFlagHistoryConfiguration : IEntityTypeConfiguration<Tran
         b.HasIndex(x => new { x.TransactionId, x.ChangedDate });
         b.HasIndex(x => new { x.FlagId, x.ChangedDate });
         b.HasIndex(x => new { x.ChangedBy, x.ChangedDate });
+
+        // NOTE: Transaction_Flag_ID is the FK to TmX_Transaction_Flag
+        // (FK_TmX_Transaction_Flag_History_TransactionFlag) but is intentionally
+        // left UNMAPPED as an EF relationship. New-flag history is written only
+        // after the parent flag row is flushed (see TransactionFlagDiffer), so
+        // the FK value is always a real, existing key — no need for EF to manage
+        // the relationship, and mapping it would pull the parent's soft-delete
+        // query filter into this append-only audit table.
     }
 }

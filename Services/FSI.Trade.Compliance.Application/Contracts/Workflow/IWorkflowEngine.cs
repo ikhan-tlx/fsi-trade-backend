@@ -32,9 +32,15 @@ public interface IWorkflowEngine
     /// transition + actions per scheme XML. <paramref name="comments"/> is
     /// optional, surfaced in transition history.
     /// </summary>
+    /// <param name="identityLabel">
+    /// Human-friendly caller identifier (username / email) used ONLY in
+    /// user-facing error messages when the command isn't available. Falls back
+    /// to <paramref name="identityId"/> when null. Never used for authorization.
+    /// </param>
     Task<WorkflowExecutionResult> ExecuteCommandAsync(Guid processId, string identityId, string command,
                                                      string? comments = null,
                                                      IDictionary<string, object?>? parameters = null,
+                                                     string? identityLabel = null,
                                                      CancellationToken ct = default);
 
     /// <summary>Forces a state transition (admin recovery). Bypasses scheme rules — use sparingly.</summary>
@@ -138,16 +144,12 @@ public class WorkflowExecutionResult
     public bool    IsFinalised   { get; set; }
 }
 
-public class WorkflowInboxItem
-{
-    public Guid     ProcessId       { get; set; }
-    public string?  SchemeCode      { get; set; }
-    public string?  StateName       { get; set; }
-    public string?  ApplicationType { get; set; }
-    public string?  CustomerName    { get; set; }
-    public string?  Status          { get; set; }
-    public DateTime CreatedDate     { get; set; }
-}
+// Slice 13 — WorkflowInboxItem (the 16-field listing DTO) now lives in
+// its own file at Contracts/Workflow/WorkflowInboxItem.cs. The original
+// 4-field stub used to live here; removed to avoid CS0101 duplicate-type
+// errors. Any consumer of the type imports the same namespace
+// (FSI.Trade.Compliance.Application.Contracts.Workflow) so no using-
+// statement changes are needed.
 
 public class WorkflowDesignerResponse
 {

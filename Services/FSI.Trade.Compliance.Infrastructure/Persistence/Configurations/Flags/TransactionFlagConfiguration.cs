@@ -23,6 +23,9 @@ public class TransactionFlagConfiguration : IEntityTypeConfiguration<Transaction
         b.Property(x => x.CreatedDate)          .HasColumnName("Created_Date");
         b.Property(x => x.LastUpdatedBy)        .HasColumnName("Last_Updated_By")   .HasMaxLength(100);
         b.Property(x => x.LastUpdatedDate)      .HasColumnName("Last_Updated_Date");
+        b.Property(x => x.Source)               .HasColumnName("Source")            .HasMaxLength(10).IsRequired();
+        b.Property(x => x.RuleId)               .HasColumnName("Rule_ID");
+        b.Property(x => x.MatchedValue)         .HasColumnName("Matched_Value")     .HasMaxLength(400);
 
         b.HasIndex(x => new { x.TransactionId, x.FlagId }).IsUnique();
         b.HasIndex(x => new { x.FlagId, x.IsFlagged });

@@ -37,6 +37,14 @@ public class CreateTransactionCommand : IRequest<TransactionDetailDto>
     public int?      transactionStatusLkp  { get; set; }
     public int?      currencyId            { get; set; }
 
+    /// <summary>
+    /// 2026-06-03 — sub-product tab (TmX_Tab.Tab_Id) the maker chose. Persisted
+    /// to TmX_Transaction.Sub_Product_Tab_Id at create. REQUIRED for products
+    /// that have a sub-type selector (the handler returns a 400 validation
+    /// error if omitted); leave null only for KYC / single-tab products.
+    /// </summary>
+    public int?      subProductTabId       { get; set; }
+
     public CreateCustomerInput customer { get; set; } = new();
 }
 
@@ -47,5 +55,12 @@ public class CreateCustomerInput
     public string?  nationalIdentifierValue { get; set; }
     public int?     nationalIdTypeLkp       { get; set; }
     public int?     customerTypeLkp         { get; set; }
-    public decimal? riskScore               { get; set; }   // optional; stored on udf_data if provided
+    // 2026-06-09 — the wizard sends the BRAINS v2.0 risk BAND LABEL
+    // ("PEP" / "High" / "Medium" / "Low"); see BrainsResponseMapper.RiskBand.
+    // The handler resolves the label to its numeric Hidden_Value via the
+    // RISK_BAND lookup (dbo.TmX_Lookup) and stores that NUMBER on udf_data,
+    // so the persisted risk score stays decimal — matching the legacy domain
+    // — while the API speaks the human band vocabulary. The lookup is the
+    // single source of truth for the band->number mapping.
+    public string?  riskScore               { get; set; }   // band label in; stored as numeric Hidden_Value
 }

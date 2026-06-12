@@ -19,6 +19,10 @@ public class TransactionDetailDto
     public int       tenantId                { get; set; }
     public int?      companyBranchId         { get; set; }
     public int       productId               { get; set; }
+    /// <summary>Display name from TmX_Product (for the detail summary card).</summary>
+    public string?   productName             { get; set; }
+    /// <summary>Display name of the selected sub-product tab (TmX_Tab), null when none.</summary>
+    public string?   subProductName          { get; set; }
     public string?   transactionNumber       { get; set; }
     public string?   clientReferenceNumber   { get; set; }
     public string?   userId                  { get; set; }
@@ -61,6 +65,33 @@ public class TransactionDetailDto
     /// has no matching fields configured (e.g. KYC product, account types).
     /// </summary>
     public ProductSummaryDto?        productSummary { get; set; }
+
+    /// <summary>
+    /// 2026-06-04 — destination tab id of the sub-product the user picked
+    /// when creating this transaction (Import LC Issuance, Import Contract
+    /// Registration, Export Documentary Collection, etc.). Resolved
+    /// server-side by matching ProductTab-typed <c>TenantFieldSetup</c>
+    /// rows against the <c>tf{id} = true</c> keys in <see cref="udfData"/>,
+    /// then reading the matched field's own <c>UDF_Data = {"TabId":N}</c>.
+    ///
+    /// <para>
+    /// FE usage when re-opening a saved transaction:
+    /// <c>GET /Product/{productId}/Tabs/{selectedSubProductTabId}/Fields</c>
+    /// lazy-loads exactly the field set the user originally filled in.
+    /// </para>
+    ///
+    /// <para>
+    /// Null when:
+    /// <list type="bullet">
+    ///   <item>The product has no sub-product selector tab (KYC and any
+    ///         other one-shot-load product — same condition as
+    ///         <c>ProductTabsDto.selectorTabId == null</c>).</item>
+    ///   <item>No sub-product checkbox is set to true yet (draft transaction
+    ///         before the user picked a sub-product).</item>
+    /// </list>
+    /// </para>
+    /// </summary>
+    public int?                      selectedSubProductTabId { get; set; }
 }
 
 public class TransactionFlagDto

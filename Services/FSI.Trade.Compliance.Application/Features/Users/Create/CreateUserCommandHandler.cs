@@ -106,6 +106,35 @@ public class CreateUserCommandHandler : IRequestHandler<CreateUserCommand, strin
             await _db.SaveChangesAsync(ct);
         }
 
+        // Company-branch assignments (legacy "Company & Branch Association").
+        // Mirrors the legacy TmX_Company_Branch_Users_Mapping insert: a wide
+        // effective-date window so the mapping is always "current" for scoping.
+        var branchRows = req.companyBranchMappings
+            .Where(m => m.companyBranchId > 0)
+            .GroupBy(m => m.companyBranchId)        // de-dup on branch
+            .Select(g => g.First())
+            .ToList();
+
+        if (branchRows.Count > 0)
+        {
+            foreach (var m in branchRows)
+            {
+                _db.CompanyBranchUserMappings.Add(new CompanyBranchUserMapping
+                {
+                    CompanyBranchId    = m.companyBranchId,
+                    TenantId           = user.TenantId,
+                    UserId             = user.Id,
+                    ReportingBossId    = string.IsNullOrWhiteSpace(m.reportingBossId) ? null : m.reportingBossId,
+                    EffectiveStartDate = now,
+                    EffectiveEndDate   = far,
+                    ActiveFlag         = true,
+                    CreatedBy          = actor,
+                    CreatedDate        = now
+                });
+            }
+            await _db.SaveChangesAsync(ct);
+        }
+
         return user.Id;
     }
 }

@@ -14,4 +14,11 @@ public class UpdateUserCommand : IRequest<Unit>
 
     /// <summary>Replaces the user's role mapping atomically. Send the FULL desired set.</summary>
     public List<int>? roleIds   { get; set; }
+
+    /// <summary>
+    /// Replaces the user's company-branch assignments atomically (legacy
+    /// "Company &amp; Branch Association"). null = don't touch; empty array =
+    /// revoke all. Send the FULL desired set.
+    /// </summary>
+    public List<Create.UserBranchMappingDto>? companyBranchMappings { get; set; }
 }

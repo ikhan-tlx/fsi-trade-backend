@@ -1,8 +1,12 @@
 using Asp.Versioning;
 using FSI.Trade.Compliance.Application.Common.Models;
 using FSI.Trade.Compliance.Application.Features.Products.ActiveLov;
+using FSI.Trade.Compliance.Application.Features.Products.Create;
 using FSI.Trade.Compliance.Application.Features.Products.Forms;
+using FSI.Trade.Compliance.Application.Features.Products.GetById;
 using FSI.Trade.Compliance.Application.Features.Products.List;
+using FSI.Trade.Compliance.Application.Features.Products.SetActive;
+using FSI.Trade.Compliance.Application.Features.Products.Update;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -32,6 +36,62 @@ public class ProductController : ControllerBase
 {
     private readonly IMediator _mediator;
     public ProductController(IMediator mediator) => _mediator = mediator;
+
+    /// <summary>
+    /// Paged admin grid of products (server-side sort + filter), ALL products
+    /// incl. inactive. Backs the FE "Products" management page. Slice 14.
+    ///
+    ///   GET /api/v1/Product?page=1&amp;pageSize=10&amp;sort=ProductName-asc&amp;filter=loan
+    ///
+    /// The active-only flat read stays on <c>/list</c>.
+    /// </summary>
+    [HttpGet]
+    public async Task<IActionResult> ListPaged([FromQuery] ListProductsPagedQuery query, CancellationToken ct)
+    {
+        var paged = await _mediator.Send(query, ct);
+        return Ok(ResponseViewModel<PagedResult<ProductPagedItemDto>>.Ok(paged));
+    }
+
+    /// <summary>Single product by id (edit form). Slice 14.</summary>
+    [HttpGet("{id:int}")]
+    public async Task<IActionResult> GetById(int id, CancellationToken ct)
+    {
+        var dto = await _mediator.Send(new GetProductByIdQuery(id), ct);
+        return Ok(ResponseViewModel<ProductPagedItemDto>.Ok(dto));
+    }
+
+    /// <summary>Create a product. Slice 14.</summary>
+    [HttpPost]
+    public async Task<IActionResult> Create([FromBody] CreateProductCommand cmd, CancellationToken ct)
+    {
+        var id = await _mediator.Send(cmd, ct);
+        return Ok(ResponseViewModel<object>.Ok(new { productId = id }, "Product created"));
+    }
+
+    /// <summary>Update a product. Slice 14.</summary>
+    [HttpPut("{id:int}")]
+    public async Task<IActionResult> Update(int id, [FromBody] UpdateProductCommand body, CancellationToken ct)
+    {
+        body.ProductId = id;
+        await _mediator.Send(body, ct);
+        return Ok(ResponseViewModel<object>.Ok(new { productId = id }, "Product updated"));
+    }
+
+    /// <summary>Activate a product. Slice 14.</summary>
+    [HttpPut("Activate/{id:int}")]
+    public async Task<IActionResult> Activate(int id, CancellationToken ct)
+    {
+        await _mediator.Send(new SetProductActiveCommand(id, true), ct);
+        return Ok(ResponseViewModel<object>.Ok(new { productId = id, isActive = true }, "Product activated"));
+    }
+
+    /// <summary>Deactivate a product. Slice 14.</summary>
+    [HttpPut("Deactivate/{id:int}")]
+    public async Task<IActionResult> Deactivate(int id, CancellationToken ct)
+    {
+        await _mediator.Send(new SetProductActiveCommand(id, false), ct);
+        return Ok(ResponseViewModel<object>.Ok(new { productId = id, isActive = false }, "Product deactivated"));
+    }
 
     /// <summary>
     /// Tabs + fields tree for one product (full preload). Server-cached

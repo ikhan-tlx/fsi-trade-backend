@@ -38,6 +38,7 @@ public static class InfrastructureServiceRegistration
         services.Configure<PasswordPolicyOptions>(config.GetSection(PasswordPolicyOptions.SectionName));
         services.Configure<TwoFactorOptions>     (config.GetSection(TwoFactorOptions.SectionName));
         services.Configure<IntegrationOptions>   (config.GetSection(IntegrationOptions.SectionName));
+        services.Configure<BrainsOptions>        (config.GetSection(BrainsOptions.SectionName));
         services.Configure<WorkflowOptions>      (config.GetSection(WorkflowOptions.SectionName));
         services.Configure<ReportOptions>        (config.GetSection(ReportOptions.SectionName));
         services.Configure<DocumentOptions>      (config.GetSection(DocumentOptions.SectionName));
@@ -120,7 +121,16 @@ public static class InfrastructureServiceRegistration
         // a second concrete-type registration — otherwise the resilience
         // pipeline configured by AddHttpClient<T> wouldn't apply when the
         // interface is resolved.
-        services.AddScoped<IKycScreeningService>(sp => sp.GetRequiredService<BrainsKycScreeningService>());
+        // BRAINS KYC screening — Live calls the real servlet; Sandbox returns
+        // canned responses so the UI isn't blocked while localhost BRAINS is
+        // down. Selected by Integration:Brains:Mode (Program.cs blocks Sandbox
+        // in Production). The typed HttpClient<BrainsKycScreeningService> above
+        // stays registered either way (harmless when unused in Sandbox).
+        var brainsMode = config.GetSection(BrainsOptions.SectionName)["Mode"];
+        if (string.Equals(brainsMode, nameof(BrainsMode.Sandbox), StringComparison.OrdinalIgnoreCase))
+            services.AddScoped<IKycScreeningService, SandboxKycScreeningService>();
+        else
+            services.AddScoped<IKycScreeningService>(sp => sp.GetRequiredService<BrainsKycScreeningService>());
 
         // Slice 11 P0 §1 — ICustomerMasterService is now backed by
         // LocalCustomerMasterReader (reads TmX_Customer_Master snapshots)
@@ -144,6 +154,11 @@ public static class InfrastructureServiceRegistration
         // Oracle reader stub — see file header for real-impl wiring.
         services.AddScoped<FccmOracleReader>();
 
+        // KYC onboarding risk-parameter derivation (legacy SetRealtimeValues
+        // parity): reads TmX_Transaction_Detail + TmX_Customer_Master UDF +
+        // TmX_Lookup, and the Oracle FCC_OB_RISK_PRMS_CODE_SCRE_MAP max-score.
+        services.AddScoped<KycOnboardingFieldResolver>();
+
         // Background poller — drives KycCaseRequest rows through the state machine.
         services.AddHostedService<FccmCaseIdPoller>();
 
@@ -152,6 +167,10 @@ public static class InfrastructureServiceRegistration
         // Singleton lifetimes match the WorkflowRuntime singleton.
         services.AddSingleton<FsiWorkflowActionProvider>();
         services.AddSingleton<FsiWorkflowRuleProvider>();
+        // Keeps dbo.WorkflowInbox in step with the engine on every transition
+        // (legacy WorkflowInit.ProcessStatusChanged parity). Singleton: it only
+        // holds an IServiceScopeFactory and is wired to the runtime singleton.
+        services.AddSingleton<WorkflowInboxSynchronizer>();
 
         // Runtime factory — singleton; lazily constructs the WorkflowRuntime
         // on first access (so the host doesn't fail to start if a workflow

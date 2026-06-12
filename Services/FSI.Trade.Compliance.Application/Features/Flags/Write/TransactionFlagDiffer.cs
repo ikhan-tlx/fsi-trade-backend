@@ -43,9 +43,15 @@ public static class TransactionFlagDiffer
 
         // Single pass to resolve all change-type lookup IDs we might need.
         // FLAG_CHANGE_TYPE has 5 rows total — cheap to load whole.
-        var changeTypeIds = await db.Lookups.AsNoTracking()
-            .Where(l => l.LookupType == "FLAG_CHANGE_TYPE")
-            .ToDictionaryAsync(l => l.HiddenValue!, l => l.Id, ct);
+        // Project ONLY the two columns we use. Do NOT materialize the full
+        // Lookup entity: TmX_Lookup.Created_Date is an nvarchar column in this
+        // DB while Lookup.CreatedDate is mapped as DateTime, so a full-entity
+        // load throws "Unable to cast String to DateTime".
+        var changeTypeIds = (await db.Lookups.AsNoTracking()
+                .Where(l => l.LookupType == "FLAG_CHANGE_TYPE" && l.HiddenValue != null)
+                .Select(l => new { l.HiddenValue, l.Id })
+                .ToListAsync(ct))
+            .ToDictionary(x => x.HiddenValue!, x => x.Id);
 
         if (!changeTypeIds.TryGetValue("SET",                 out var changeSet)        ||
             !changeTypeIds.TryGetValue("CLEARED",             out var changeCleared)    ||
@@ -74,6 +80,11 @@ public static class TransactionFlagDiffer
             .Where(t => t.TransactionId == transactionId && inputFlagIds.Contains(t.FlagId))
             .ToDictionaryAsync(t => t.FlagId, ct);
 
+        // New flags whose history must wait until the parent row has a real
+        // IDENTITY. (Existing flags already have one, so their history is
+        // staged inline below.)
+        var pendingNew = new List<(TransactionFlag tf, UpdateFlagInput input)>();
+
         foreach (var input in inputs)
         {
             if (existing.TryGetValue(input.flagId, out var current))
@@ -83,9 +94,26 @@ public static class TransactionFlagDiffer
             }
             else
             {
-                ApplyAsNew(db, transactionId, input, userId, now,
-                    changeSet, changeNotes, changeEvAdded);
+                var tf = StageNewFlag(db, transactionId, input, userId, now);
+                if (tf is not null) pendingNew.Add((tf, input));
             }
+        }
+
+        // A brand-new flag and its first history row cannot be inserted in the
+        // same SaveChanges: the history FK (Transaction_Flag_ID) would be written
+        // as 0 because the parent's IDENTITY isn't assigned until its INSERT runs.
+        // EF's in-graph key propagation via the reference navigation proved
+        // unreliable here (the MERGE batch still emitted 0 → violated
+        // FK_TmX_Transaction_Flag_History_TransactionFlag). So flush the flag
+        // inserts first to materialize their IDs, then append history against the
+        // now-real keys. The handler's final SaveChanges commits this history
+        // together with the rest of the transaction update.
+        if (pendingNew.Count > 0)
+        {
+            await db.SaveChangesAsync(ct);
+            foreach (var (tf, input) in pendingNew)
+                AddNewFlagHistory(db, tf.TransactionFlagId, transactionId, input, userId, now,
+                    changeSet, changeNotes, changeEvAdded);
         }
     }
 
@@ -180,22 +208,24 @@ public static class TransactionFlagDiffer
         current.LastUpdatedDate    = now;
     }
 
-    private static void ApplyAsNew(
+    /// <summary>
+    /// Stages the INSERT of a brand-new flag row (no history yet). Returns the
+    /// tracked entity so the caller can read its IDENTITY after the flush, or
+    /// <c>null</c> for a no-op input (isFlagged=false with no notes / evidence —
+    /// the analyst confirming "nothing to record"; we don't bloat the table).
+    /// </summary>
+    private static TransactionFlag? StageNewFlag(
         IApplicationDbContext db,
         int                   transactionId,
         UpdateFlagInput       input,
         string                userId,
-        DateTime              now,
-        int changeSet, int changeNotes, int changeEvAdded)
+        DateTime              now)
     {
-        // Skip no-op inserts: an input with isFlagged=false AND no notes
-        // AND no evidence is the analyst confirming "nothing to record"
-        // and shouldn't bloat the table.
         if (!input.isFlagged
             && string.IsNullOrWhiteSpace(input.analystNotes)
             && input.evidenceDocumentId is null)
         {
-            return;
+            return null;
         }
 
         var tf = new TransactionFlag
@@ -211,17 +241,30 @@ public static class TransactionFlagDiffer
             CreatedDate         = now,
         };
         db.TransactionFlags.Add(tf);
+        return tf;
+    }
 
-        // History: SET (or just Notes/Evidence change if isFlagged is
-        // false but the other dimensions carry data — rare but possible).
-        // Note: the FK on TransactionFlagHistory.TransactionFlagId will
-        // be resolved by EF's IDENTITY chaining when SaveChangesAsync
-        // runs — we just leave it at default(int) here.
+    /// <summary>
+    /// Appends the first history row for a newly-inserted flag. Called only
+    /// AFTER the parent flag has been flushed, so <paramref name="transactionFlagId"/>
+    /// is the real IDENTITY — never 0.
+    /// </summary>
+    private static void AddNewFlagHistory(
+        IApplicationDbContext db,
+        int                   transactionFlagId,
+        int                   transactionId,
+        UpdateFlagInput       input,
+        string                userId,
+        DateTime              now,
+        int changeSet, int changeNotes, int changeEvAdded)
+    {
+        // SET (or just Notes/Evidence change if isFlagged is false but the
+        // other dimensions carry data — rare but possible).
         if (input.isFlagged)
         {
             db.TransactionFlagHistories.Add(new TransactionFlagHistory
             {
-                TransactionFlagId          = tf.TransactionFlagId,
+                TransactionFlagId          = transactionFlagId,
                 TransactionId              = transactionId,
                 FlagId                     = input.flagId,
                 ChangeTypeLkpId            = changeSet,
@@ -239,7 +282,7 @@ public static class TransactionFlagDiffer
         {
             db.TransactionFlagHistories.Add(new TransactionFlagHistory
             {
-                TransactionFlagId          = tf.TransactionFlagId,
+                TransactionFlagId          = transactionFlagId,
                 TransactionId              = transactionId,
                 FlagId                     = input.flagId,
                 ChangeTypeLkpId            = changeNotes,
@@ -253,7 +296,7 @@ public static class TransactionFlagDiffer
         {
             db.TransactionFlagHistories.Add(new TransactionFlagHistory
             {
-                TransactionFlagId          = tf.TransactionFlagId,
+                TransactionFlagId          = transactionFlagId,
                 TransactionId              = transactionId,
                 FlagId                     = input.flagId,
                 ChangeTypeLkpId            = changeEvAdded,

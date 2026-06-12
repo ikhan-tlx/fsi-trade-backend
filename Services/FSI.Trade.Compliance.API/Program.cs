@@ -26,6 +26,15 @@ builder.Services.AddApplicationServices();
 builder.Services.AddInfrastructureServices(builder.Configuration);
 builder.Services.AddHttpContextAccessor();
 
+// Safety: the BRAINS sandbox returns synthetic KYC results — it must never run
+// in Production. Fail fast at start-up rather than silently screen against fakes.
+if (builder.Environment.IsProduction()
+    && string.Equals(builder.Configuration["Integration:Brains:Mode"], "Sandbox", StringComparison.OrdinalIgnoreCase))
+{
+    throw new InvalidOperationException(
+        "Integration:Brains:Mode = Sandbox is not permitted in Production. Set it to 'Live'.");
+}
+
 // --- API Versioning ---------------------------------------------------
 // Strategy:
 //   - URL-segment is the SOLE, canonical version reader: /api/v1/..., /api/v2/...

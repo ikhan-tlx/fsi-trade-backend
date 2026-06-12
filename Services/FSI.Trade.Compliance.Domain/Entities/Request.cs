@@ -1,0 +1,18 @@
+namespace FSI.Trade.Compliance.Domain.Entities;
+
+/// <summary>
+/// Maker/checker request row over <c>TmX_Request</c>. Slice 14 — added so the
+/// FE's "any pending request for this entity?" check
+/// (GET /api/v1/Request/GetPendingRequests/{type}/{entityId}) stops 404'ing.
+/// </summary>
+public class Request
+{
+    public long      RequestId         { get; set; }
+    public int       TenantId          { get; set; }
+    public string?   RequestTypeCode   { get; set; }
+    public string?   EntityStatusCode  { get; set; }
+    public string?   RequestStatusCode { get; set; }
+    public string?   EntityId          { get; set; }
+    public string?   CreatedBy         { get; set; }
+    public DateTime  CreatedDate       { get; set; }
+}

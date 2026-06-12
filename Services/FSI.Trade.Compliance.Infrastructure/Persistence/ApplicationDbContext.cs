@@ -5,6 +5,7 @@ using FSI.Trade.Compliance.Domain.Entities.Customer;
 using FSI.Trade.Compliance.Domain.Entities.Documents;
 using FSI.Trade.Compliance.Domain.Entities.Flags;
 using FSI.Trade.Compliance.Domain.Entities.Forms;
+using FSI.Trade.Compliance.Domain.Entities.Reference;
 using FSI.Trade.Compliance.Domain.Entities.Reports;
 using FSI.Trade.Compliance.Domain.Entities.Transaction;
 using FSI.Trade.Compliance.Domain.Entities.Workflow;
@@ -35,6 +36,9 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public DbSet<CompanyBranchUserMapping> CompanyBranchUserMappings => Set<CompanyBranchUserMapping>();
     public DbSet<CompanyBranch>            CompanyBranches           => Set<CompanyBranch>();
     public DbSet<Location>                 Locations                 => Set<Location>();
+    public DbSet<Company>                  Companies                 => Set<Company>();
+    public DbSet<Request>                  Requests                  => Set<Request>();
+    public DbSet<UserHoliday>              UserHolidays              => Set<UserHoliday>();
 
     // Slice 6 Step 2: Transaction detail (row + children).
     public DbSet<Domain.Entities.Transaction.Transaction> Transactions => Set<Domain.Entities.Transaction.Transaction>();
@@ -71,6 +75,11 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public DbSet<FlagScope>               FlagScopes               => Set<FlagScope>();
     public DbSet<TransactionFlag>         TransactionFlags         => Set<TransactionFlag>();
     public DbSet<TransactionFlagHistory>  TransactionFlagHistories => Set<TransactionFlagHistory>();
+    public DbSet<FlagRule>                FlagRules                => Set<FlagRule>();
+    public DbSet<ReferenceList>           ReferenceLists           => Set<ReferenceList>();
+    public DbSet<ReferenceListValue>      ReferenceListValues      => Set<ReferenceListValue>();
+    public DbSet<SanctionedCountry>       SanctionedCountries      => Set<SanctionedCountry>();
+    public DbSet<ScreeningGood>           ScreeningGoods           => Set<ScreeningGood>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

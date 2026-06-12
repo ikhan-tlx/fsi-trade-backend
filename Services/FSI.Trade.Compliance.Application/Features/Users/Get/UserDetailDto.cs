@@ -31,4 +31,20 @@ public class UserDetailDto
     public string?   lastUpdatedBy      { get; set; }
 
     public List<UserRoleRefDto> roles { get; set; } = new();
+
+    /// <summary>
+    /// Current company-branch assignments (legacy "Company &amp; Branch
+    /// Association"), so the edit form can prefill the grid.
+    /// </summary>
+    public List<UserBranchRefDto> companyBranchMappings { get; set; } = new();
+}
+
+public class UserBranchRefDto
+{
+    public int     companyBranchId { get; set; }
+    public string? branchCode      { get; set; }
+    public string? branchName      { get; set; }
+    public int?    companyId       { get; set; }
+    public string? reportingBossId { get; set; }
+    public string? visibleValue    { get; set; }
 }

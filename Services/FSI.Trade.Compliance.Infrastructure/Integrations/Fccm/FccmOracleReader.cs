@@ -57,6 +57,36 @@ public class FccmOracleReader
     private OracleConnection CreateConnection() =>
         new OracleConnection(_opt.FccmOracleConnection);
 
+    /// <summary>
+    /// Opens the connection and pins the session's CURRENT_SCHEMA to the
+    /// configured FCCM schema (default "MANTAS"). The integration references
+    /// most FCCM objects UNQUALIFIED (RT_CASE_TRACKING, EVENT_STAGING,
+    /// MESSAGE_ID_SEQ, FCC_OB_RA, PR_CREATE_EVENT_DEMO, KDD_CASES,
+    /// KDD_CASE_CUSTOMERS, TMX_TRANS_FROM_REPO), so they resolve against the
+    /// login user's schema. Legacy connected AS the schema owner ("mantas");
+    /// we instead set CURRENT_SCHEMA so the login user can differ (e.g.
+    /// ofsaafccm) while names still resolve to MANTAS. The login user still
+    /// needs object privileges (grants) on the MANTAS objects. The schema name
+    /// is a trusted config identifier; we sanitise it to a bare identifier as a
+    /// defence-in-depth measure since it's interpolated into the ALTER SESSION.
+    /// </summary>
+    private async Task OpenAndPrepareAsync(OracleConnection con, CancellationToken ct)
+    {
+        await con.OpenAsync(ct);
+
+        var schema = (_opt.FccmOracleSchema ?? "").Trim();
+        if (schema.Length == 0) return;                                  // no override → use login default schema
+        if (!System.Text.RegularExpressions.Regex.IsMatch(schema, "^[A-Za-z][A-Za-z0-9_$#]*$"))
+        {
+            _log.LogWarning("FccmOracleSchema '{Schema}' is not a valid Oracle identifier — skipping CURRENT_SCHEMA override.", schema);
+            return;
+        }
+
+        await using var cmd = con.CreateCommand();
+        cmd.CommandText = $"ALTER SESSION SET CURRENT_SCHEMA = {schema}";
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
     // =====================================================================
     // Slice 4 — KYC case poller (was previously stubbed, now real)
     // =====================================================================
@@ -74,7 +104,7 @@ public class FccmOracleReader
         cmd.BindByName = true;
         cmd.CommandText = "SELECT CASE_ID FROM FCC_OB_RA WHERE REQUEST_ID = :p_req";
         cmd.Parameters.Add(":p_req", OracleDbType.Varchar2).Value = fccmRequestId;
-        await con.OpenAsync(ct);
+        await OpenAndPrepareAsync(con, ct);
 
         var result = await cmd.ExecuteScalarAsync(ct);
         return result is null or DBNull ? null : result.ToString();
@@ -92,8 +122,48 @@ public class FccmOracleReader
         cmd.BindByName = true;
         cmd.CommandText = "SELECT RISK_CATEGORY_KEY FROM FCC_OB_RA WHERE REQUEST_ID = :p_req";
         cmd.Parameters.Add(":p_req", OracleDbType.Varchar2).Value = fccmRequestId;
-        await con.OpenAsync(ct);
+        await OpenAndPrepareAsync(con, ct);
 
+        var result = await cmd.ExecuteScalarAsync(ct);
+        return result is null or DBNull ? null : result.ToString();
+    }
+
+    /// <summary>
+    /// Legacy <c>GetMultivalueMaxParam</c> Oracle half: given a set of candidate
+    /// CODE_VALUEs (the TmX_Lookup hidden values collected from a KYC grid),
+    /// returns the single CODE_VALUE with the highest SCORE in
+    /// <c>FCC_OB_RISK_PRMS_CODE_SCRE_MAP</c>. Mirrors the legacy query
+    /// <c>SELECT DISTINCT CODE_VALUE … WHERE SCORE = (SELECT MAX(SCORE) … WHERE
+    /// CODE_VALUE IN (…)) AND CODE_VALUE IN (…)</c>, but with bound parameters
+    /// instead of the legacy inline string concat. Returns null in stub mode,
+    /// on empty input, or when no row matches.
+    /// </summary>
+    public async Task<string?> GetMaxScoreCodeValueAsync(
+        IReadOnlyCollection<string> codeValues, CancellationToken ct = default)
+    {
+        if (IsStub) { WarnOnceStub(); return null; }
+
+        var values = codeValues
+            .Where(v => !string.IsNullOrWhiteSpace(v) && !string.Equals(v, "null", StringComparison.OrdinalIgnoreCase))
+            .Distinct()
+            .ToList();
+        if (values.Count == 0) return null;
+
+        // Build a parameterised IN list ( :v0, :v1, … ) reused in both clauses.
+        var binds = values.Select((_, i) => $":v{i}").ToArray();
+        var inList = string.Join(",", binds);
+
+        await using var con = CreateConnection();
+        await using var cmd = con.CreateCommand();
+        cmd.BindByName = true;
+        cmd.CommandText =
+            $"SELECT DISTINCT CODE_VALUE FROM FCC_OB_RISK_PRMS_CODE_SCRE_MAP " +
+            $"WHERE SCORE = (SELECT MAX(SCORE) FROM FCC_OB_RISK_PRMS_CODE_SCRE_MAP WHERE CODE_VALUE IN ({inList})) " +
+            $"AND CODE_VALUE IN ({inList})";
+        for (var i = 0; i < values.Count; i++)
+            cmd.Parameters.Add(binds[i], OracleDbType.Varchar2).Value = values[i];
+
+        await OpenAndPrepareAsync(con, ct);
         var result = await cmd.ExecuteScalarAsync(ct);
         return result is null or DBNull ? null : result.ToString();
     }
@@ -115,7 +185,7 @@ public class FccmOracleReader
         await using var con = CreateConnection();
         await using var cmd = con.CreateCommand();
         cmd.CommandText = "TRUNCATE TABLE RT_CASE_TRACKING";
-        await con.OpenAsync(ct);
+        await OpenAndPrepareAsync(con, ct);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -130,7 +200,7 @@ public class FccmOracleReader
         await using var con = CreateConnection();
         await using var cmd = con.CreateCommand();
         cmd.CommandText = "TRUNCATE TABLE EVENT_STAGING";
-        await con.OpenAsync(ct);
+        await OpenAndPrepareAsync(con, ct);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -151,7 +221,7 @@ public class FccmOracleReader
         await using var con = CreateConnection();
         await using var cmd = con.CreateCommand();
         cmd.CommandText = "SELECT MESSAGE_ID_SEQ.nextval FROM DUAL";
-        await con.OpenAsync(ct);
+        await OpenAndPrepareAsync(con, ct);
 
         var result = await cmd.ExecuteScalarAsync(ct);
         return result?.ToString()
@@ -170,7 +240,7 @@ public class FccmOracleReader
         cmd.BindByName = true;
         cmd.CommandText = "INSERT INTO RT_CASE_TRACKING (MESSAGE_ID) VALUES (:p_msg)";
         cmd.Parameters.Add(":p_msg", OracleDbType.Varchar2).Value = messageId;
-        await con.OpenAsync(ct);
+        await OpenAndPrepareAsync(con, ct);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -227,7 +297,7 @@ public class FccmOracleReader
         AddV(cmd, ":p_receiverscorr",      r.Receiverscorr);
         AddV(cmd, ":p_transactionnumber",  r.Transactionnumber);
 
-        await con.OpenAsync(ct);
+        await OpenAndPrepareAsync(con, ct);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -265,7 +335,7 @@ public class FccmOracleReader
         AddV(cmd, ":p_customer",        r.Customer);
         cmd.Parameters.Add(":p_dumpDt", OracleDbType.Date).Value = r.DumpDt;
 
-        await con.OpenAsync(ct);
+        await OpenAndPrepareAsync(con, ct);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -344,7 +414,7 @@ public class FccmOracleReader
         AddV(cmd, ":p_instructions",     r.Instructions);
         AddV(cmd, ":p_lremarks",         r.Lremarks);
 
-        await con.OpenAsync(ct);
+        await OpenAndPrepareAsync(con, ct);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -376,7 +446,7 @@ public class FccmOracleReader
             (object?)r.TsDate ?? DBNull.Value;
         AddV(cmd, ":p_title", r.Title);
 
-        await con.OpenAsync(ct);
+        await OpenAndPrepareAsync(con, ct);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -415,7 +485,7 @@ public class FccmOracleReader
         var resid = cmd.Parameters.Add("RESID", OracleDbType.Varchar2, 50);
         resid.Direction = ParameterDirection.Output;
 
-        await con.OpenAsync(ct);
+        await OpenAndPrepareAsync(con, ct);
         await cmd.ExecuteNonQueryAsync(ct);
 
         return resid.Value?.ToString();
@@ -446,7 +516,7 @@ public class FccmOracleReader
         cmd.Parameters.Add(":p_txnId",  OracleDbType.Int32).Value    = transactionId;
         AddV(cmd, ":p_caseId",    caseId);
 
-        await con.OpenAsync(ct);
+        await OpenAndPrepareAsync(con, ct);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -467,7 +537,7 @@ public class FccmOracleReader
         AddV(cmd, ":p_title",  transactionNumber);
         AddV(cmd, ":p_caseId", caseId);
 
-        await con.OpenAsync(ct);
+        await OpenAndPrepareAsync(con, ct);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -499,7 +569,7 @@ public class FccmOracleReader
         cmd.Parameters.Add(":p_txnId", OracleDbType.Int32).Value = transactionId;
         AddV(cmd, ":p_txnNum",    transactionNumber);
 
-        await con.OpenAsync(ct);
+        await OpenAndPrepareAsync(con, ct);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 

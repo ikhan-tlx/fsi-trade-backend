@@ -27,6 +27,10 @@ public class LocationConfiguration : IEntityTypeConfiguration<Location>
         b.Property(x => x.EffectiveStartDate) .HasColumnName("Effective_Start_Date");
         b.Property(x => x.EffectiveEndDate)   .HasColumnName("Effective_End_Date");
         b.Property(x => x.LocationTypeLkpId)  .HasColumnName("Location_Type_Lkp_ID");
+        b.Property(x => x.CreatedBy)          .HasColumnName("Created_By").HasMaxLength(100);
+        b.Property(x => x.CreatedDate)        .HasColumnName("Created_Date");
+        b.Property(x => x.LastUpdatedBy)      .HasColumnName("Last_Updated_By").HasMaxLength(100);
+        b.Property(x => x.LastUpdatedDate)    .HasColumnName("Last_Updated_Date");
 
         b.HasIndex(x => x.ParentLocationId);
     }

@@ -63,6 +63,31 @@ public class GetAuditTrailQueryHandler
                     TransitionTime     = h.TransitionTime
                 })
                 .ToListAsync(ct);
+
+            // OptimaJet logs a single command that fires a conditional / auto
+            // chain as MULTIPLE transition rows that all carry the same trigger
+            // (e.g. one "AssignToMe" click → an intermediate hop + the real move,
+            // both TriggerName="AssignToMe"). That surfaced the action twice in
+            // the audit trail. Collapse consecutive rows sharing the same
+            // (trigger, executor), keeping the LAST — i.e. the real resulting
+            // activity + latest time — so each user action shows once.
+            transitions = transitions
+                .OrderBy(t => t.TransitionTime)
+                .Aggregate(new List<TransitionRow>(), (acc, t) =>
+                {
+                    var prev = acc.Count > 0 ? acc[^1] : null;
+                    if (prev != null
+                        && string.Equals(prev.TriggerName, t.TriggerName, StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(prev.ExecutorIdentityId, t.ExecutorIdentityId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        acc[^1] = t;   // same action chained — keep the later (final) row
+                    }
+                    else
+                    {
+                        acc.Add(t);
+                    }
+                    return acc;
+                });
         }
 
         // 3. Remarks (Module_Code = "5").
@@ -89,7 +114,15 @@ public class GetAuditTrailQueryHandler
         foreach (var t in transitions)
             if (!string.IsNullOrWhiteSpace(t.ExecutorIdentityId)) actorIds.Add(t.ExecutorIdentityId!);
         foreach (var r in remarks)
-            if (!string.IsNullOrWhiteSpace(r.UserId)) actorIds.Add(r.UserId);
+        {
+            if (!string.IsNullOrWhiteSpace(r.UserId))    actorIds.Add(r.UserId);
+            if (!string.IsNullOrWhiteSpace(r.CreatedBy)) actorIds.Add(r.CreatedBy);
+        }
+        // The new app writes Created_By / Last_Updated_By = the caller's user_id
+        // (GUID), not a username — so resolve those through TmX_User too, else
+        // the audit trail shows a raw GUID instead of the person's name.
+        if (!string.IsNullOrWhiteSpace(tx.CreatedBy))     actorIds.Add(tx.CreatedBy);
+        if (!string.IsNullOrWhiteSpace(tx.LastUpdatedBy)) actorIds.Add(tx.LastUpdatedBy!);
 
         var nameByUserId = actorIds.Count == 0
             ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -102,13 +135,20 @@ public class GetAuditTrailQueryHandler
                     u => ComposeDisplayName(u.FirstName, u.LastName, u.UserName),
                     StringComparer.OrdinalIgnoreCase);
 
+        // Resolve a stored id/username to a display name; falls back to the
+        // raw value when it isn't a known user id (e.g. a legacy username).
+        string? Resolve(string? key) =>
+            !string.IsNullOrWhiteSpace(key) && nameByUserId.TryGetValue(key!, out var n) && !string.IsNullOrWhiteSpace(n)
+                ? n
+                : key;
+
         // 5. Build event list.
         var entries = new List<AuditTrailEntryDto>(2 + transitions.Count + remarks.Count);
 
         entries.Add(new AuditTrailEntryDto
         {
             eventType = "Created",
-            actorName = tx.CreatedBy,   // CreatedBy stores the username verbatim
+            actorName = Resolve(tx.CreatedBy),   // CreatedBy may be a user_id GUID — resolve to a name
             timestamp = tx.CreatedDate
         });
 
@@ -120,26 +160,19 @@ public class GetAuditTrailQueryHandler
             entries.Add(new AuditTrailEntryDto
             {
                 eventType = "Updated",
-                actorName = tx.LastUpdatedBy,
+                actorName = Resolve(tx.LastUpdatedBy),
                 timestamp = tx.LastUpdatedDate.Value
             });
         }
 
         foreach (var t in transitions)
         {
-            string? actorName = null;
-            if (!string.IsNullOrWhiteSpace(t.ExecutorIdentityId)
-                && nameByUserId.TryGetValue(t.ExecutorIdentityId!, out var resolved))
-            {
-                actorName = resolved;
-            }
-
             entries.Add(new AuditTrailEntryDto
             {
                 eventType   = "Transition",
                 action      = t.TriggerName,
                 actorId     = t.ExecutorIdentityId,
-                actorName   = actorName,
+                actorName   = Resolve(t.ExecutorIdentityId),
                 timestamp   = t.TransitionTime,
                 stageChange = $"{t.FromActivityName} → {t.ToActivityName}"
             });
@@ -147,15 +180,11 @@ public class GetAuditTrailQueryHandler
 
         foreach (var r in remarks)
         {
-            string? actorName = null;
-            if (!string.IsNullOrWhiteSpace(r.UserId)
-                && nameByUserId.TryGetValue(r.UserId, out var resolved))
-            {
-                actorName = resolved;
-            }
-            // Fallback to the legacy CreatedBy username when User_ID didn't
-            // resolve (e.g. system-generated note).
-            actorName ??= r.CreatedBy;
+            // Prefer the remark's User_ID, else its CreatedBy — both may be a
+            // user_id GUID, so resolve to a display name.
+            var actorName = !string.IsNullOrWhiteSpace(r.UserId)
+                ? Resolve(r.UserId)
+                : Resolve(r.CreatedBy);
 
             entries.Add(new AuditTrailEntryDto
             {

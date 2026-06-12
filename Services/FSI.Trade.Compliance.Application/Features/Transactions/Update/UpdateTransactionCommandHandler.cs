@@ -72,55 +72,96 @@ public class UpdateTransactionCommandHandler
         tx.LastUpdatedDate = now;
 
         // ---------- 2. Transaction detail (UDF) ----------
-        await UpsertTransactionDetailAsync(req.transactionId, req.udfData, userId, now, ct);
+        // The FE sends dynamic-form values as top-level objects keyed by each
+        // field's Field_Table_Name (TmxTransactionDetail, TmxCustomerMaster,
+        // TmxBeneficiaryDetail, …) — captured on the command via JsonExtensionData.
+        // Prefer the explicit "TmxTransactionDetail" section; fall back to the
+        // legacy flat `udfData` for older callers. When NEITHER is present we
+        // preserve the existing UDF rather than nulling it (the prior bug).
+        // Flat transaction fields (TmxTransactionDetail) live at the ROOT of the
+        // detail blob; the long-tail grid/repeating sections (HS-code goods grid,
+        // ports, etc.) are NESTED inside the SAME blob under their section key —
+        // matching how existing ICBC_DEMO records store them. Both go into
+        // TmX_Transaction_Detail.UDF_Data in one upsert.
+        var detailSection  = UdfSectionMerge.TryGetSection(req.sections, "TmxTransactionDetail");
+        var nestedSections = CollectNestedSections(req.sections);
+        await UpsertTransactionDetailAsync(req.transactionId, detailSection, req.udfData, nestedSections, userId, now, ct);
+
+        // NOTE: Sub_Product_Tab_Id is set once at create and is NOT changed
+        // here — an update only mutates UDF values / minimal detail, never the
+        // product or its sub-product.
 
         // ---------- 3. Customer snapshot + banking details ----------
         if (req.customer is not null)
             await UpsertCustomerAsync(req.transactionId, req.customer, userId, now, ct);
 
-        // ---------- 4. Beneficiaries (diff strategy) ----------
-        await DiffSyncUdfChildrenAsync(
-            existing:    await _db.BeneficiaryDetails.Where(b => b.TransactionId == req.transactionId).ToListAsync(ct),
-            incoming:    req.beneficiaries,
-            idSelector:  b => b.BeneficiaryDetailId,
-            create:      udf => new BeneficiaryDetail
-            {
-                TenantId    = tx.TenantId,
-                TransactionId = req.transactionId,
-                UdfData     = udf,
-                CreatedBy   = userId,
-                CreatedDate = now
-            },
-            updateUdf:   (entity, udf) =>
-            {
-                entity.UdfData         = udf;
-                entity.LastUpdatedBy   = userId;
-                entity.LastUpdatedDate = now;
-            },
-            remove:      e => _db.BeneficiaryDetails.Remove(e),
-            add:         e => _db.BeneficiaryDetails.Add(e));
+        // 3b. Customer-master field section → merge into the snapshot's UDF.
+        // Merge (not replace) so server-managed keys like RiskScore survive.
+        var customerSection = UdfSectionMerge.TryGetSection(req.sections, "TmxCustomerMaster");
+        if (customerSection.HasValue)
+            await MergeCustomerSectionUdfAsync(req.transactionId, customerSection.Value, userId, now, ct);
 
-        // ---------- 5. Stakeholders (diff strategy) ----------
-        await DiffSyncUdfChildrenAsync(
-            existing:    await _db.TransactionStakeholders.Where(s => s.TransactionId == req.transactionId).ToListAsync(ct),
-            incoming:    req.stakeholders,
-            idSelector:  s => s.TransactionStakeholderId,
-            create:      udf => new TransactionStakeholder
-            {
-                TenantId      = tx.TenantId,
-                TransactionId = req.transactionId,
-                UdfData       = udf,
-                CreatedBy     = userId,
-                CreatedDate   = now
-            },
-            updateUdf:   (entity, udf) =>
-            {
-                entity.UdfData         = udf;
-                entity.LastUpdatedBy   = userId;
-                entity.LastUpdatedDate = now;
-            },
-            remove:      e => _db.TransactionStakeholders.Remove(e),
-            add:         e => _db.TransactionStakeholders.Add(e));
+        // ---------- 4. Beneficiaries ----------
+        // The array-driven diff is full-replace, so an empty `beneficiaries: []`
+        // (which the FE always sends — it drives beneficiary data through the
+        // TmxBeneficiaryDetail section instead) would DELETE every row. Only run
+        // the diff when the FE actually supplies array items; otherwise leave the
+        // rows alone and let the section path own the beneficiary UDF.
+        if (req.beneficiaries is { Count: > 0 })
+            await DiffSyncUdfChildrenAsync(
+                existing:    await _db.BeneficiaryDetails.Where(b => b.TransactionId == req.transactionId).ToListAsync(ct),
+                incoming:    req.beneficiaries,
+                idSelector:  b => b.BeneficiaryDetailId,
+                create:      udf => new BeneficiaryDetail
+                {
+                    TenantId    = tx.TenantId,
+                    TransactionId = req.transactionId,
+                    UdfData     = udf,
+                    CreatedBy   = userId,
+                    CreatedDate = now
+                },
+                updateUdf:   (entity, udf) =>
+                {
+                    entity.UdfData         = udf;
+                    entity.LastUpdatedBy   = userId;
+                    entity.LastUpdatedDate = now;
+                },
+                remove:      e => _db.BeneficiaryDetails.Remove(e),
+                add:         e => _db.BeneficiaryDetails.Add(e));
+
+        // 4b. Beneficiary field section → merge into the primary beneficiary's UDF
+        // (create one if none exists yet — single-beneficiary Trade flow).
+        var beneficiarySection = UdfSectionMerge.TryGetSection(req.sections, "TmxBeneficiaryDetail");
+        if (beneficiarySection.HasValue)
+            await MergePrimaryBeneficiarySectionUdfAsync(req.transactionId, tx.TenantId, beneficiarySection.Value, userId, now, ct);
+
+        // ---------- 5. Stakeholders ----------
+        // Same empty-array guard as beneficiaries (avoid wiping rows on the
+        // GET-shape `stakeholders: []` the FE round-trips).
+        if (req.stakeholders is { Count: > 0 })
+            await DiffSyncUdfChildrenAsync(
+                existing:    await _db.TransactionStakeholders.Where(s => s.TransactionId == req.transactionId).ToListAsync(ct),
+                incoming:    req.stakeholders,
+                idSelector:  s => s.TransactionStakeholderId,
+                create:      udf => new TransactionStakeholder
+                {
+                    TenantId      = tx.TenantId,
+                    TransactionId = req.transactionId,
+                    UdfData       = udf,
+                    CreatedBy     = userId,
+                    CreatedDate   = now
+                },
+                updateUdf:   (entity, udf) =>
+                {
+                    entity.UdfData         = udf;
+                    entity.LastUpdatedBy   = userId;
+                    entity.LastUpdatedDate = now;
+                },
+                remove:      e => _db.TransactionStakeholders.Remove(e),
+                add:         e => _db.TransactionStakeholders.Add(e));
+
+        // (Long-tail grid sections were already folded into the detail blob in
+        // step 2 — see UpsertTransactionDetailAsync / CollectNestedSections.)
 
         // ---------- 5.5 Flags (Slice 8) ----------
         // Stage flag inserts / updates and append-only history rows.
@@ -155,10 +196,49 @@ public class UpdateTransactionCommandHandler
     private static string? SerializeUdf(object? udf) =>
         udf is null ? null : JsonSerializer.Serialize(udf);
 
-    private async Task UpsertTransactionDetailAsync(int transactionId, object? udfData, string userId, DateTime now, CancellationToken ct)
+    /// <summary>
+    /// Known dynamic-form sections that map onto a first-class entity. Anything
+    /// the FE sends that isn't one of these (echoed GET fields, unmodeled child
+    /// tables) is ignored by the routing and — for table-shaped names — logged.
+    /// </summary>
+    private static readonly HashSet<string> MappedSectionNames =
+        new(StringComparer.OrdinalIgnoreCase) { "TmxTransactionDetail", "TmxCustomerMaster", "TmxBeneficiaryDetail" };
+
+    /// <summary>
+    /// Collects the long-tail grid/repeating sections the FE sent — the
+    /// <c>Tmx*</c> keys that aren't one of the entity-backed
+    /// <see cref="MappedSectionNames"/> and aren't echoed GET fields — to be
+    /// nested inside the transaction-detail blob. Object AND array values are
+    /// kept (grids are arrays).
+    /// </summary>
+    private static List<KeyValuePair<string, JsonElement>> CollectNestedSections(Dictionary<string, JsonElement> sections)
+    {
+        var list = new List<KeyValuePair<string, JsonElement>>();
+        if (sections is null) return list;
+        foreach (var kv in sections)
+        {
+            if (!kv.Key.StartsWith("Tmx", StringComparison.Ordinal)) continue; // echoed GET field
+            if (MappedSectionNames.Contains(kv.Key)) continue;                 // entity-backed → own table
+            var k = kv.Value.ValueKind;
+            if (k != JsonValueKind.Object && k != JsonValueKind.Array) continue;
+            list.Add(kv);
+        }
+        return list;
+    }
+
+    private async Task UpsertTransactionDetailAsync(
+        int transactionId, JsonElement? section, object? legacyUdf,
+        IReadOnlyList<KeyValuePair<string, JsonElement>> nestedSections,
+        string userId, DateTime now, CancellationToken ct)
     {
         var detail = await _db.TransactionDetails.FirstOrDefaultAsync(d => d.TransactionId == transactionId, ct);
-        var json   = SerializeUdf(udfData);
+
+        // Build the detail blob: flat TmxTransactionDetail fields at the root
+        // (merged over existing — keys not resent survive), the long-tail grid
+        // sections nested under their own key, and legacy flat `udfData` as a
+        // back-compat fallback. When there's nothing to apply, the existing UDF
+        // is preserved (NOT nulled).
+        var json = UdfSectionMerge.MergeDetail(detail?.UdfData, section, legacyUdf, nestedSections);
 
         if (detail is null)
         {
@@ -178,6 +258,66 @@ public class UpdateTransactionCommandHandler
             detail.UdfData         = json;
             detail.LastUpdatedBy   = userId;
             detail.LastUpdatedDate = now;
+        }
+    }
+
+    /// <summary>
+    /// Merges the <c>TmxCustomerMaster</c> field section into the transaction's
+    /// customer snapshot UDF (the single row per transaction). Inserts a snapshot
+    /// if none exists yet.
+    /// </summary>
+    private async Task MergeCustomerSectionUdfAsync(int transactionId, JsonElement section, string userId, DateTime now, CancellationToken ct)
+    {
+        var snapshot = await _db.TransactionCustomerSnapshots
+            .FirstOrDefaultAsync(c => c.TransactionId == transactionId, ct);
+
+        if (snapshot is null)
+        {
+            _db.TransactionCustomerSnapshots.Add(new TransactionCustomerSnapshot
+            {
+                TenantId      = 1,
+                TransactionId = transactionId,
+                UdfData       = UdfSectionMerge.Merge(null, section),
+                CreatedBy     = userId,
+                CreatedDate   = now
+            });
+        }
+        else
+        {
+            snapshot.UdfData         = UdfSectionMerge.Merge(snapshot.UdfData, section);
+            snapshot.LastUpdatedBy   = userId;
+            snapshot.LastUpdatedDate = now;
+        }
+    }
+
+    /// <summary>
+    /// Merges the <c>TmxBeneficiaryDetail</c> field section into the primary
+    /// beneficiary row's UDF (lowest BeneficiaryDetailId). Single-beneficiary
+    /// Trade flow: if no beneficiary row exists, one is created to hold the UDF.
+    /// </summary>
+    private async Task MergePrimaryBeneficiarySectionUdfAsync(int transactionId, int tenantId, JsonElement section, string userId, DateTime now, CancellationToken ct)
+    {
+        var ben = await _db.BeneficiaryDetails
+            .Where(b => b.TransactionId == transactionId)
+            .OrderBy(b => b.BeneficiaryDetailId)
+            .FirstOrDefaultAsync(ct);
+
+        if (ben is null)
+        {
+            _db.BeneficiaryDetails.Add(new BeneficiaryDetail
+            {
+                TenantId      = tenantId,
+                TransactionId = transactionId,
+                UdfData       = UdfSectionMerge.Merge(null, section),
+                CreatedBy     = userId,
+                CreatedDate   = now
+            });
+        }
+        else
+        {
+            ben.UdfData         = UdfSectionMerge.Merge(ben.UdfData, section);
+            ben.LastUpdatedBy   = userId;
+            ben.LastUpdatedDate = now;
         }
     }
 

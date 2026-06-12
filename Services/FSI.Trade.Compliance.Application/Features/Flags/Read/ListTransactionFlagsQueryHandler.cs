@@ -27,7 +27,10 @@ public class ListTransactionFlagsQueryHandler
             throw new NotFoundException("transaction_not_found",
                 $"Transaction {req.TransactionId} does not exist.");
 
-        return await TransactionFlagProjection.LoadAsync(
+        // Only the flags SET on the transaction (TmX_Transaction_Flag rows).
+        // The selectable catalogue scoped by product/sub-product is served
+        // separately by GET /Flag/Product/{productId}/Tab/{tabId}.
+        return await TransactionFlagProjection.LoadSetForTransactionAsync(
             _db, req.TransactionId, productId.Value, ct);
     }
 }

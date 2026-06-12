@@ -27,4 +27,11 @@ public class TransactionFlag
     public DateTime  CreatedDate           { get; set; }
     public string?   LastUpdatedBy         { get; set; }
     public DateTime? LastUpdatedDate       { get; set; }
+
+    // 2026_06_040 — auto-flag provenance. Manual rows default to "Manual";
+    // auto rows are engine-owned (recomputed on edit) and carry the rule
+    // that raised them plus a human-readable matched-condition detail.
+    public string    Source                { get; set; } = "Manual";  // Manual | Auto
+    public int?      RuleId                { get; set; }
+    public string?   MatchedValue          { get; set; }
 }

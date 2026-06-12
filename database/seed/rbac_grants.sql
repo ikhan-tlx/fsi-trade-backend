@@ -93,6 +93,10 @@ INSERT @scoped(Code, Description) VALUES
     (N'Transactions.AddNote',        N'Append a note / remark to a transaction'),
     (N'Transactions.UploadDocument', N'Attach a document directly to a transaction'),
 
+    -- Transactions data entry (Slice 14 — maker/checker; analysts excluded)
+    (N'Transactions.Create',         N'Create a new transaction (data entry)'),
+    (N'Transactions.Edit',           N'Edit an existing transaction''s data (the edit form)'),
+
     -- FieldSetup module (Slice 12 §A)
     (N'FieldSetup.Manage',           N'Edit dynamic-form field config (label, placeholder, visible, required)');
 
@@ -163,6 +167,8 @@ INSERT @grants(PrivCode) VALUES
     (N'Transactions.Resubmit'),
     (N'Transactions.AddNote'),
     (N'Transactions.UploadDocument'),
+    (N'Transactions.Create'),
+    (N'Transactions.Edit'),
     (N'FieldSetup.Manage');
 
 INSERT INTO dbo.TmX_Role_Privilege_Mapping

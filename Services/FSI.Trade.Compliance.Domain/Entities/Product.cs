@@ -19,17 +19,22 @@ namespace FSI.Trade.Compliance.Domain.Entities;
 public class Product
 {
     public int       ProductId            { get; set; }
+    public int       TenantId             { get; set; }    // Slice 14 — required (NOT NULL) for inserts
     public string?   ProductCode          { get; set; }
     public string    ProductName          { get; set; } = "";
     public string?   ProductDescription   { get; set; }
     public int?      ProductTypeLkp       { get; set; }    // Slice 6.5 — used by /Product/list for FE-side filtering
     public string?   WorkflowSchemeCode   { get; set; }
     public int?      CurrencyId           { get; set; }
+    public bool      GroupFlag            { get; set; }    // Slice 14 — NOT NULL in TmX_Product
+    public bool      IndividualFlag       { get; set; }    // Slice 14 — NOT NULL in TmX_Product
     public bool      ActiveFlag           { get; set; }
     public DateTime  EffectiveStartDate   { get; set; }
     public DateTime  EffectiveEndDate     { get; set; }
 
-    // Audit slots — touched when SaveProductMapping mutates WorkflowSchemeCode.
+    // Audit slots. Created_* added in Slice 14 for product CRUD inserts.
+    public string?   CreatedBy            { get; set; }
+    public DateTime  CreatedDate          { get; set; }
     public string?   LastUpdatedBy        { get; set; }
     public DateTime? LastUpdatedDate      { get; set; }
 }

@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using FSI.Trade.Compliance.Application.Features.Transactions.Detail;
 using MediatR;
 
@@ -58,6 +60,32 @@ public class UpdateTransactionCommand : IRequest<TransactionDetailDto>
     /// transition.
     /// </summary>
     public List<UpdateFlagInput>  flags         { get; set; } = new();
+
+    /// <summary>
+    /// 2026-06-04 — dynamic-form field sections, keyed by each field's
+    /// <c>TmX_Tenant_Field_Setup.Field_Table_Name</c>. The FE serializes a
+    /// tab's values into one object per source table and sends each as a
+    /// TOP-LEVEL property, e.g.:
+    /// <code>
+    /// { "TmxTransactionDetail": { "ILF_LCAmount": "123", ... },
+    ///   "TmxCustomerMaster":    { "ILF_CustomerNo": "123", ... },
+    ///   "TmxBeneficiaryDetail":  { "ILF_Currency": "26896" },
+    ///   "TmxHsCodeListILF":      { "GOODSDETAILF": [ { "tf554214": "1", ... } ] } }
+    /// </code>
+    /// These don't map to declared command properties, so System.Text.Json
+    /// collects them here via <see cref="JsonExtensionDataAttribute"/>. The
+    /// handler routes the sections that have a first-class entity
+    /// (<c>TmxTransactionDetail</c>, <c>TmxCustomerMaster</c>,
+    /// <c>TmxBeneficiaryDetail</c>) into that entity's <c>UDF_Data</c>;
+    /// unmodeled sections (HS-code grid, vessel, ports, …) are logged and
+    /// skipped pending dedicated child-table persistence.
+    ///
+    /// <para>This is also where the echoed GET-shape fields the FE round-trips
+    /// (tenantId, customers[], workflow, …) land harmlessly — the handler
+    /// only reads the known section keys.</para>
+    /// </summary>
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement> sections { get; set; } = new();
 }
 
 /// <summary>

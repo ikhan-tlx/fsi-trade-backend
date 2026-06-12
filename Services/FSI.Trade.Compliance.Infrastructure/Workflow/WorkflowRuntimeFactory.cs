@@ -58,6 +58,7 @@ public class WorkflowRuntimeFactory
             // Application contracts (IRoleQueryService, IApplicationDbContext).
             var actions = sp.GetRequiredService<FsiWorkflowActionProvider>();
             var rules   = sp.GetRequiredService<FsiWorkflowRuleProvider>();
+            var inboxSync = sp.GetRequiredService<WorkflowInboxSynchronizer>();
 
             // v3.5 bootstrap: explicit Builder<XElement> + XmlWorkflowParser
             // + MSSQLProvider chain (all-caps class name in v3.x), plus a
@@ -78,8 +79,18 @@ public class WorkflowRuntimeFactory
                 .WithTimerManager(new TimerManager())
                 .WithBus(new NullBus())
                 .SwitchAutoUpdateSchemeBeforeGetAvailableCommandsOn()
-                .RegisterAssemblyForCodeActions(Assembly.GetExecutingAssembly())
-                .Start();
+                .RegisterAssemblyForCodeActions(Assembly.GetExecutingAssembly());
+
+            // Legacy parity (WorkflowInit): keep the custom dbo.WorkflowInbox
+            // table in step with the engine. On every Idled/Finalized status
+            // change, resolve the new activity's actors and rewrite the inbox —
+            // this is what the rule provider's CheckRole/Boss gates read, and
+            // without it states reached by a claim (e.g. AuthorizerActivity via
+            // AssignToMe) had an empty inbox → no available commands. Subscribe
+            // BEFORE Start() so the very first transition is covered.
+            runtime.ProcessStatusChanged += (_, e) => inboxSync.OnProcessStatusChanged(runtime, e);
+
+            runtime.Start();
 
             log.LogInformation("OptimaJet WorkflowRuntime started (v3.5.0). RuntimeId={RuntimeId}.", workflowOpt.RuntimeId);
             return runtime;

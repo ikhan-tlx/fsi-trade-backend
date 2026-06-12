@@ -26,6 +26,7 @@ public class TransactionConfiguration : IEntityTypeConfiguration<Domain.Entities
         b.Property(x => x.TransactionTypeLkp)    .HasColumnName("Transaction_Type_Lkp");
         b.Property(x => x.TransactionDate)       .HasColumnName("Transaction_Date");
         b.Property(x => x.FccmCaseId)            .HasColumnName("Fccm_Case_Id").HasMaxLength(100);
+        b.Property(x => x.SubProductTabId)       .HasColumnName("Sub_Product_Tab_Id");
 
         b.Property(x => x.CreatedBy)             .HasColumnName("Created_By").HasMaxLength(100).IsRequired();
         b.Property(x => x.CreatedDate)           .HasColumnName("Created_Date");

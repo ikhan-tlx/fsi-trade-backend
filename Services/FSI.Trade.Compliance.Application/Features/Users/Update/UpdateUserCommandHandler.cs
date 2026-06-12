@@ -94,6 +94,43 @@ public class UpdateUserCommandHandler : IRequestHandler<UpdateUserCommand, Unit>
                 _db.UserRoleMappings.RemoveRange(toRemove);
         }
 
+        // Company-branch re-assignment — only if the FE explicitly sent the
+        // array (null = don't touch; empty = revoke all). Replace-in-full:
+        // drop existing mappings and re-insert the desired set. Simple and
+        // correct for the assignment volumes here.
+        if (req.companyBranchMappings is not null)
+        {
+            var desired = req.companyBranchMappings
+                .Where(m => m.companyBranchId > 0)
+                .GroupBy(m => m.companyBranchId)
+                .Select(g => g.First())
+                .ToList();
+
+            var existingBranches = await _db.CompanyBranchUserMappings
+                .Where(m => m.UserId == user.Id)
+                .ToListAsync(ct);
+
+            if (existingBranches.Count > 0)
+                _db.CompanyBranchUserMappings.RemoveRange(existingBranches);
+
+            var far = new DateTime(9999, 12, 31);
+            foreach (var m in desired)
+            {
+                _db.CompanyBranchUserMappings.Add(new CompanyBranchUserMapping
+                {
+                    CompanyBranchId    = m.companyBranchId,
+                    TenantId           = user.TenantId,
+                    UserId             = user.Id,
+                    ReportingBossId    = string.IsNullOrWhiteSpace(m.reportingBossId) ? null : m.reportingBossId,
+                    EffectiveStartDate = now,
+                    EffectiveEndDate   = far,
+                    ActiveFlag         = true,
+                    CreatedBy          = actor,
+                    CreatedDate        = now
+                });
+            }
+        }
+
         await _db.SaveChangesAsync(ct);
         return Unit.Value;
     }

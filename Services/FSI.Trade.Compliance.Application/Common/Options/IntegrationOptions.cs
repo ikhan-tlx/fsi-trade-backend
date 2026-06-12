@@ -10,14 +10,36 @@ public class IntegrationOptions
 {
     public const string SectionName = "Integration";
 
-    /// <summary>BRAINS HTTP screening service base URL (legacy: <c>BRAINSKYCUrl</c>).</summary>
-    public string BrainsKycBaseUrl       { get; set; } = "";
+    // BrainsKycBaseUrl removed 2026-06 — BRAINS now uses the v2.0 servlet
+    // configured under Integration:Brains (BrainsOptions.BaseUrl).
 
     /// <summary>Customer master HTTP service base URL (legacy: gateway <c>DLP/GetCustomerId</c>).</summary>
     public string CustomerMasterBaseUrl  { get; set; } = "";
 
     /// <summary>FCCM HTTP onboarding endpoint for case submission (legacy: <c>KYCOnboardingURL</c>).</summary>
     public string FccmOnboardingUrl      { get; set; } = "";
+
+    /// <summary>
+    /// HTTP Basic-auth username for the FCCM onboarding endpoint (legacy:
+    /// <c>KYCUsername</c>). The legacy controller built
+    /// <c>Authorization: Basic base64(user:pass)</c> from these. Empty =
+    /// no auth header sent.
+    /// </summary>
+    public string FccmOnboardingUsername { get; set; } = "";
+
+    /// <summary>HTTP Basic-auth password for the FCCM onboarding endpoint (legacy: <c>KYCPassword</c>).</summary>
+    public string FccmOnboardingPassword { get; set; } = "";
+
+    /// <summary>
+    /// Environment-configurable onboarding settings (auth + payload defaults +
+    /// field-inclusion toggles). Bound from <c>Integration:Onboarding</c>.
+    /// Prefer these over the deprecated top-level
+    /// <see cref="FccmOnboardingUsername"/> / <see cref="FccmOnboardingPassword"/>
+    /// (kept only as a fallback). This block makes an FCCM environment switch a
+    /// config change rather than a code edit — see
+    /// <see cref="FccmOnboardingOptions"/>.
+    /// </summary>
+    public FccmOnboardingOptions Onboarding { get; set; } = new();
 
     /// <summary>
     /// FCCM Oracle DB connection string — used for EVERYTHING FCCM:
@@ -34,6 +56,19 @@ public class IntegrationOptions
     /// see docs/LEGACY_FCCM_TRADE_FLOW.md §0.
     /// </summary>
     public string FccmOracleConnection   { get; set; } = "";
+
+    /// <summary>
+    /// Oracle schema the FCCM objects live in. The reader references most
+    /// objects UNQUALIFIED (RT_CASE_TRACKING, EVENT_STAGING, MESSAGE_ID_SEQ,
+    /// FCC_OB_RA, PR_CREATE_EVENT_DEMO, KDD_CASES, KDD_CASE_CUSTOMERS,
+    /// TMX_TRANS_FROM_REPO) plus a few <c>MANTAS.</c>-qualified staging tables.
+    /// On connection open the reader runs <c>ALTER SESSION SET CURRENT_SCHEMA</c>
+    /// to this value so the unqualified names resolve correctly even when the
+    /// login user isn't the schema owner (legacy logged in AS <c>mantas</c>;
+    /// we can log in as e.g. <c>ofsaafccm</c> and still target MANTAS).
+    /// Default "MANTAS". Empty = use the login user's default schema.
+    /// </summary>
+    public string FccmOracleSchema       { get; set; } = "MANTAS";
 
     /// <summary>
     /// HMAC shared secret used to validate inbound FCCM callbacks. Required —

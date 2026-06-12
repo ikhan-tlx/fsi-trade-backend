@@ -1,5 +1,6 @@
 using FSI.Trade.Compliance.Application.Common.Exceptions;
 using FSI.Trade.Compliance.Application.Features.Flags.Admin.Scopes;
+using FSI.Trade.Compliance.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
 
@@ -7,7 +8,7 @@ namespace FSI.Trade.Compliance.UnitTests;
 
 public class AddFlagScopeHandlerTests
 {
-    private static AddFlagScopeCommandHandler Handler(Infrastructure.Persistence.ApplicationDbContext db)
+    private static AddFlagScopeCommandHandler Handler(ApplicationDbContext db)
         => new(db, new FakeCurrentUserService("bob"));
 
     [Fact]

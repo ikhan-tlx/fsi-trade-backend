@@ -61,6 +61,7 @@ public class TransactionController : ControllerBase
     /// Response shape matches GET /Transaction/{id}.
     /// </summary>
     [HttpPost]
+    [RequiresPrivilege("Transactions.Create")]
     public async Task<IActionResult> Create([FromBody] CreateTransactionCommand body, CancellationToken ct)
     {
         var detail = await _mediator.Send(body, ct);
@@ -76,6 +77,7 @@ public class TransactionController : ControllerBase
     /// /Workflow/Process/{id}/Execute endpoint.
     /// </summary>
     [HttpPut("{id:int}")]
+    [RequiresPrivilege("Transactions.Edit")]
     public async Task<IActionResult> Update(int id, [FromBody] UpdateTransactionCommand body, CancellationToken ct)
     {
         // Bind the route id over whatever (if anything) the body included.
@@ -111,8 +113,10 @@ public class TransactionController : ControllerBase
     /// as part of <c>PUT /Transaction/{id}</c> (no separate save button
     /// on the form).
     /// </summary>
+    // Per-transaction flag rail — available to any authenticated caller, like
+    // the unprivileged GET /Transaction/{id} whose `flags` it mirrors.
+    // (Flags.View gates the flag-catalogue ADMIN screens, not this rail.)
     [HttpGet("{id:int}/Flags")]
-    [RequiresPrivilege("Flags.View")]
     public async Task<IActionResult> ListFlags(int id, CancellationToken ct)
     {
         var rows = await _mediator.Send(new ListTransactionFlagsQuery(id), ct);

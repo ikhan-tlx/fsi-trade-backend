@@ -26,9 +26,18 @@ public class LookupConfiguration : IEntityTypeConfiguration<Lookup>
         b.Property(l => l.LocaleLabel)     .HasColumnName("Locale_Label");
         b.Property(l => l.LocaleId)        .HasColumnName("Locale_ID");
         b.Property(l => l.CreatedBy)       .HasColumnName("Created_By");
-        b.Property(l => l.CreatedDate)     .HasColumnName("Created_Date");
         b.Property(l => l.LastUpdatedBy)   .HasColumnName("Last_Updated_By");
-        b.Property(l => l.LastUpdatedDate) .HasColumnName("Last_Updated_Date");
+
+        // IMPORTANT: TmX_Lookup.Created_Date is an nvarchar column in this DB
+        // (legacy, and migration 20260522_001 writes a CONVERT(NVARCHAR(...))
+        // date string into it), but these CLR properties are DateTime. Mapping
+        // them makes ANY full-entity Lookup load throw "Unable to cast
+        // String to DateTime". Lookups are read-only reference data — the app
+        // never writes them via EF and never reads these two fields — so leave
+        // them UNMAPPED to remove the landmine. (Every query that needs lookup
+        // data already projects the specific columns it uses.)
+        b.Ignore(l => l.CreatedDate);
+        b.Ignore(l => l.LastUpdatedDate);
 
         // Group-by-LookupType is the primary read path.
         b.HasIndex(l => l.LookupType);

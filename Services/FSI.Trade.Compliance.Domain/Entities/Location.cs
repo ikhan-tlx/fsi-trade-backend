@@ -25,4 +25,10 @@ public class Location
     public DateTime  EffectiveStartDate { get; set; }
     public DateTime  EffectiveEndDate   { get; set; }
     public int       LocationTypeLkpId  { get; set; }
+
+    // Audit slots — added in Slice 14 for location CRUD (Created_* are NOT NULL).
+    public string?   CreatedBy          { get; set; }
+    public DateTime  CreatedDate        { get; set; }
+    public string?   LastUpdatedBy      { get; set; }
+    public DateTime? LastUpdatedDate    { get; set; }
 }

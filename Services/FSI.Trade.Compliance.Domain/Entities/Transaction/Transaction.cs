@@ -36,6 +36,18 @@ public class Transaction
     /// </summary>
     public string?   FccmCaseId              { get; set; }
 
+    /// <summary>
+    /// 2026-06-03 — the sub-product tab (TmX_Tab.Tab_Id) the maker selected for
+    /// this transaction. Decides which fields are visible (and their values) on
+    /// the read-only "Transaction details" readout. Set ONCE at create — it is
+    /// required for products that have a sub-type selector (the create handler
+    /// rejects a missing value) and is NOT changed by update. NULL for KYC /
+    /// single-tab products (no sub-type) and for legacy rows — those fall back
+    /// to inference / all-tabs.
+    /// Added by migration 2026_06_033; legacy rows backfilled by 2026_06_034.
+    /// </summary>
+    public int?      SubProductTabId         { get; set; }
+
     public string    CreatedBy               { get; set; } = "";
     public DateTime  CreatedDate             { get; set; }
     public string?   LastUpdatedBy           { get; set; }

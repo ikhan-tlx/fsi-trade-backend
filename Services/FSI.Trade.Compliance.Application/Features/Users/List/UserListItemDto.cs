@@ -16,6 +16,11 @@ public class UserListItemDto
     public DateTime  createdDate     { get; set; }
     public string?   createdBy       { get; set; }
 
+    // Slice 14 — the user's (first active) mapped branch, for the grid's
+    // Branch Name column. Resolved via TmX_Company_Branch_Users_Mapping.
+    public int?      branchId        { get; set; }
+    public string?   branchName      { get; set; }
+
     public List<UserRoleRefDto> roles { get; set; } = new();
 }
 

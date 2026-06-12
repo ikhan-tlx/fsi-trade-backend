@@ -19,15 +19,20 @@ public class ProductConfiguration : IEntityTypeConfiguration<Product>
         b.HasKey(p => p.ProductId);
 
         b.Property(p => p.ProductId)          .HasColumnName("Product_ID");
+        b.Property(p => p.TenantId)           .HasColumnName("Tenant_ID");
         b.Property(p => p.ProductCode)        .HasColumnName("Product_Code").HasMaxLength(50);
         b.Property(p => p.ProductName)        .HasColumnName("Product_Name").HasMaxLength(100).IsRequired();
         b.Property(p => p.ProductDescription) .HasColumnName("Product_Description").HasMaxLength(100);
         b.Property(p => p.ProductTypeLkp)     .HasColumnName("Product_Type_Lkp");
         b.Property(p => p.WorkflowSchemeCode) .HasColumnName("Workflow_Scheme_Code").HasMaxLength(100);
         b.Property(p => p.CurrencyId)         .HasColumnName("Currency_ID");
+        b.Property(p => p.GroupFlag)          .HasColumnName("Group_Flag");
+        b.Property(p => p.IndividualFlag)     .HasColumnName("Individual_Flag");
         b.Property(p => p.ActiveFlag)         .HasColumnName("Active_Flag");
         b.Property(p => p.EffectiveStartDate) .HasColumnName("Effective_Start_Date");
         b.Property(p => p.EffectiveEndDate)   .HasColumnName("Effective_End_Date");
+        b.Property(p => p.CreatedBy)          .HasColumnName("Created_By").HasMaxLength(100);
+        b.Property(p => p.CreatedDate)        .HasColumnName("Created_Date");
         b.Property(p => p.LastUpdatedBy)      .HasColumnName("Last_Updated_By").HasMaxLength(100);
         b.Property(p => p.LastUpdatedDate)    .HasColumnName("Last_Updated_Date");
 

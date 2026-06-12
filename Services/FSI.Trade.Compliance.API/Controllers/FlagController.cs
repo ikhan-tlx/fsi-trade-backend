@@ -195,8 +195,11 @@ public class FlagController : ControllerBase
     /// state fields come back null / isFlagged=false so the FE renders
     /// the same component.
     /// </summary>
+    // NOTE: these per-product/tab reads back the transaction-form flag rail,
+    // so they're available to any authenticated caller (same as the
+    // unprivileged GET /Transaction/{id}). The Flags.View privilege gates the
+    // flag-catalogue ADMIN endpoints, not the per-transaction picker.
     [HttpGet("Product/{productId:int}")]
-    [RequiresPrivilege("Flags.View")]
     public async Task<IActionResult> ListByProduct(int productId, CancellationToken ct)
     {
         var rows = await _mediator.Send(new ListFlagsByScopeQuery(productId, null), ct);
@@ -209,7 +212,6 @@ public class FlagController : ControllerBase
     /// to lazy-load flags tab-by-tab on big-product forms.
     /// </summary>
     [HttpGet("Product/{productId:int}/Tab/{tabId:int}")]
-    [RequiresPrivilege("Flags.View")]
     public async Task<IActionResult> ListByProductAndTab(
         int productId,
         int tabId,

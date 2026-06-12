@@ -4,6 +4,7 @@ using FSI.Trade.Compliance.Application.Common.Models;
 using FSI.Trade.Compliance.Application.Contracts.Identity;
 using FSI.Trade.Compliance.Application.Features.Users.Create;
 using FSI.Trade.Compliance.Application.Features.Users.Get;
+using FSI.Trade.Compliance.Application.Features.Users.Holidays;
 using FSI.Trade.Compliance.Application.Features.Users.List;
 using FSI.Trade.Compliance.Application.Features.Users.SetActive;
 using FSI.Trade.Compliance.Application.Features.Users.Unlock;
@@ -51,6 +52,14 @@ public class UserController : ControllerBase
     {
         var paged = await _mediator.Send(query, ct);
         return Ok(ResponseViewModel<PagedResult<UserListItemDto>>.Ok(paged));
+    }
+
+    // ---------- User holidays (read) ----------
+    [HttpGet("GetHolidaysByUser/{id}")]
+    public async Task<IActionResult> GetHolidaysByUser(string id, CancellationToken ct)
+    {
+        var rows = await _mediator.Send(new GetUserHolidaysQuery(id), ct);
+        return Ok(ResponseViewModel<IReadOnlyList<UserHolidayDto>>.Ok(rows));
     }
 
     // ---------- Get one (self-bypass on caller's own ID) ----------

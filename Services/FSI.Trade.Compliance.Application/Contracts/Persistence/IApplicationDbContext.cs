@@ -4,6 +4,7 @@ using FSI.Trade.Compliance.Domain.Entities.Customer;
 using FSI.Trade.Compliance.Domain.Entities.Documents;
 using FSI.Trade.Compliance.Domain.Entities.Flags;
 using FSI.Trade.Compliance.Domain.Entities.Forms;
+using FSI.Trade.Compliance.Domain.Entities.Reference;
 using FSI.Trade.Compliance.Domain.Entities.Reports;
 using FSI.Trade.Compliance.Domain.Entities.Transaction;
 using FSI.Trade.Compliance.Domain.Entities.Workflow;
@@ -35,6 +36,9 @@ public interface IApplicationDbContext
     DbSet<CompanyBranchUserMapping> CompanyBranchUserMappings { get; }
     DbSet<CompanyBranch>           CompanyBranches         { get; }
     DbSet<Location>                Locations               { get; }
+    DbSet<Company>                 Companies               { get; }
+    DbSet<Request>                 Requests                { get; }
+    DbSet<UserHoliday>             UserHolidays            { get; }
 
     // Slice 6 Step 2: Transaction detail (the actual row + children).
     DbSet<Domain.Entities.Transaction.Transaction> Transactions { get; }
@@ -71,6 +75,12 @@ public interface IApplicationDbContext
     DbSet<FlagScope>               FlagScopes               { get; }
     DbSet<TransactionFlag>         TransactionFlags         { get; }
     DbSet<TransactionFlagHistory>  TransactionFlagHistories { get; }
+    // 2026_06_040 — Auto Flag rule engine.
+    DbSet<FlagRule>                FlagRules                { get; }
+    DbSet<ReferenceList>           ReferenceLists           { get; }
+    DbSet<ReferenceListValue>      ReferenceListValues      { get; }
+    DbSet<SanctionedCountry>       SanctionedCountries      { get; }
+    DbSet<ScreeningGood>           ScreeningGoods           { get; }
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

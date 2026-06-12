@@ -81,31 +81,45 @@ public class GetLookupsGroupedByCultureQueryHandler
             })
             .ToListAsync(ct);
 
-        // Per-LookupType ownership (caller > Tenant 1 > lowest).
-        var tenantByType = raw
-            .GroupBy(r => r.LookupType!)
-            .ToDictionary(
-                g => g.Key,
-                g => ResolveOwningTenant(g.Select(x => x.TenantId).Distinct(), callerTenantId));
-
+        // Cross-tenant lookups (2026-06-09, per FSI): the previous logic picked a
+        // SINGLE owning tenant per lookup type (caller > tenant 1 > lowest) and
+        // dropped every other tenant's rows. But the ICBC trade flow's reference
+        // data is split across tenants — e.g. APPLICATION_STATUS lives partly
+        // under 245 (Sent To Authorizer 422, Assigned To Authorizer 3053) and
+        // partly under 248 ("Proceeded To Screen" 424) — so the FE roster, owned
+        // by 245, could not label the post-Proceed status. Legacy did NOT
+        // tenant-filter the lookup catalogue.
+        //
+        // We now drop the single-tenant filter and include EVERY tenant's rows
+        // per type, de-duplicated by visible value with the same preference order
+        // (caller tenant > platform tenant 1 > lowest tenant id). Cross-tenant
+        // DISTINCT values (like "Proceeded To Screen") are all surfaced, while a
+        // value that genuinely exists in multiple tenants collapses to one stable
+        // id — so no duplicate dropdown options appear. This keeps the catalogue
+        // consistent with the (already tenant-agnostic) status-sync resolver.
         var grouped = raw
-            .Where(r => tenantByType[r.LookupType!] == r.TenantId)
             .GroupBy(r => r.LookupType!)
             .OrderBy(g => g.Key)
             .ToDictionary(
                 g => g.Key,
-                g => g.OrderBy(r => r.SortOrder)
-                      .ThenBy(r => r.VisibleValue)
-                      .Select(r => new LookupOptionDto
-                      {
-                          id     = r.Id,
-                          code   = r.HiddenValue,
-                          label  = isEnglish
-                                       ? r.VisibleValue
-                                       : (string.IsNullOrEmpty(r.LocaleLabel) ? r.VisibleValue : r.LocaleLabel),
-                          parent = r.ParentLookupId
-                      })
-                      .ToList());
+                g => g
+                    .GroupBy(r => (r.VisibleValue ?? string.Empty).Trim().ToLowerInvariant())
+                    .Select(vg => vg
+                        .OrderBy(r => TenantRank(r.TenantId, callerTenantId))
+                        .ThenBy(r => r.TenantId)
+                        .First())
+                    .OrderBy(r => r.SortOrder)
+                    .ThenBy(r => r.VisibleValue)
+                    .Select(r => new LookupOptionDto
+                    {
+                        id     = r.Id,
+                        code   = r.HiddenValue,
+                        label  = isEnglish
+                                     ? r.VisibleValue
+                                     : (string.IsNullOrEmpty(r.LocaleLabel) ? r.VisibleValue : r.LocaleLabel),
+                        parent = r.ParentLookupId
+                    })
+                    .ToList());
 
         var result = new LookupCatalogueDto
         {
@@ -124,12 +138,14 @@ public class GetLookupsGroupedByCultureQueryHandler
         return result;
     }
 
-    /// <summary>Same cascade as v1 — see <c>GetLookupsByCultureQueryHandler.ResolveOwningTenant</c>.</summary>
-    private static int ResolveOwningTenant(IEnumerable<int> tenantsWithData, int callerTenantId)
-    {
-        var set = tenantsWithData as ICollection<int> ?? tenantsWithData.ToList();
-        if (set.Contains(callerTenantId))         return callerTenantId;
-        if (set.Contains(PlatformDefaultTenantId)) return PlatformDefaultTenantId;
-        return set.Min();
-    }
+    /// <summary>
+    /// Cross-tenant de-dup preference (replaces the old single-owning-tenant
+    /// cascade): caller tenant first, then platform tenant 1, then any other
+    /// (lowest tenant id wins via the secondary ThenBy on TenantId). Used to
+    /// pick which row survives when the same visible value exists under more
+    /// than one tenant, so the catalogue surfaces every distinct value while
+    /// avoiding duplicate options.
+    /// </summary>
+    private static int TenantRank(int tenantId, int callerTenantId) =>
+        tenantId == callerTenantId ? 0 : tenantId == PlatformDefaultTenantId ? 1 : 2;
 }

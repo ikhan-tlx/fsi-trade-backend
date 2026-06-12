@@ -1,6 +1,7 @@
 using System.Collections.Specialized;
 using System.Text;
 using System.Text.Json;
+using FSI.Trade.Compliance.Application.Common.Exceptions;
 using FSI.Trade.Compliance.Application.Common.Options;
 using FSI.Trade.Compliance.Application.Contracts.Workflow;
 using Microsoft.Extensions.Logging;
@@ -95,13 +96,20 @@ public class OptimaJetWorkflowEngine : IWorkflowEngine
     public async Task<WorkflowExecutionResult> ExecuteCommandAsync(
         Guid processId, string identityId, string command,
         string? comments = null, IDictionary<string, object?>? parameters = null,
+        string? identityLabel = null,
         CancellationToken ct = default)
     {
         var available = await R.GetAvailableCommandsAsync(processId, identityId);
+        // Throw a typed ConflictException (→ HTTP 409 with this message surfaced
+        // to the FE) rather than a bare InvalidOperationException (→ generic 500
+        // "An unexpected error occurred."). The caller is named by the friendly
+        // label (username/email) instead of the opaque identity GUID.
+        var who = string.IsNullOrWhiteSpace(identityLabel) ? identityId : identityLabel;
         var match     = available.FirstOrDefault(c =>
                             string.Equals(c.CommandName, command, StringComparison.OrdinalIgnoreCase))
-                        ?? throw new InvalidOperationException(
-                            $"Command '{command}' is not available on process {processId} for identity {identityId}.");
+                        ?? throw new ConflictException(
+                            "workflow_command_unavailable",
+                            $"The action '{command}' is not available for {who} on this transaction in its current state.");
 
         // v3.5: WorkflowCommand.Parameters supports named indexer access —
         // surface caller's `comments` into the "Comments" slot if the scheme
