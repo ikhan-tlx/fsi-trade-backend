@@ -141,6 +141,16 @@ public sealed class KycOnboardingFieldResolver
             // ── HS_CD (first HS-code grid row's Hidden_Value) ──
             var hsIds = GridIds(cust, "TmxHsCodeList", "KycParam8");
             if (hsIds.Count > 0 && hidden.TryGetValue(hsIds[0], out var hs)) r.HsCode = hs;
+
+            // Verbose diagnostics — what the derivation produced for this txn
+            // (helps spot empty grids / unresolved lookups when a payload looks thin).
+            _log.LogDebug(
+                "KYC derivation for txn {TxnId}: CountryOfResidence={Cor} Industry={Ind} " +
+                "CountryOfIncorporation={Coi} OrgLegalStructure={Ols} TypeofRequest={Tor} " +
+                "CUST_PERF={Cp} DEF_SECT={Ds} HS_CD={Hs} StructBus={Sb} OVER_IMP={Oi}",
+                transactionId, r.CountryOfResidence, r.Industry, r.CountryOfIncorporation,
+                r.OrganizationLegalStructure, r.TypeofRequest, r.CustPerf, r.DefSect,
+                r.HsCode, r.StructBus, r.OverImp);
         }
         catch (Exception ex)
         {

@@ -87,11 +87,20 @@ public class FccmCaseIdPoller : BackgroundService
             .Take(50)                                              // soft batch cap per tick
             .ToListAsync(ct);
 
+        // Verbose diagnostics — one line per tick summarising what the poller is
+        // working on (helps confirm it is alive and which rows it is chasing).
+        if (awaiting.Count > 0)
+            _log.LogDebug("Poller tick: {Count} AwaitingCaseId row(s) -> [{Ids}]",
+                awaiting.Count, string.Join(",", awaiting.Select(r => $"{r.Id}:req{r.FccmRequestId}")));
+
         foreach (var row in awaiting)
         {
             row.LastPolledAt = now;
 
             var caseId = await oracle.ReadCaseIdAsync(row.FccmRequestId!, ct);
+            if (string.IsNullOrWhiteSpace(caseId) && row.SubmittedAt >= cutoff)
+                _log.LogDebug("KycCaseRequest {Id} (req {ReqId}): still awaiting CASE_ID (age {Age}).",
+                    row.Id, row.FccmRequestId, now - row.SubmittedAt);
             if (!string.IsNullOrWhiteSpace(caseId))
             {
                 row.FccmCaseId    = caseId;

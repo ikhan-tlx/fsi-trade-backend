@@ -107,7 +107,13 @@ public class FccmOracleReader
         await OpenAndPrepareAsync(con, ct);
 
         var result = await cmd.ExecuteScalarAsync(ct);
-        return result is null or DBNull ? null : result.ToString();
+        var caseId = result is null or DBNull ? null : result.ToString();
+        // Verbose diagnostics — the exact FCC_OB_RA poll result, so a stuck/timing
+        // case-id can be investigated (request id queried + whether a row/CASE_ID
+        // exists yet upstream).
+        _log.LogDebug("FCC_OB_RA poll: REQUEST_ID={RequestId} -> {Result}",
+            fccmRequestId, caseId ?? "(no CASE_ID yet)");
+        return caseId;
     }
 
     /// <summary>
@@ -165,7 +171,10 @@ public class FccmOracleReader
 
         await OpenAndPrepareAsync(con, ct);
         var result = await cmd.ExecuteScalarAsync(ct);
-        return result is null or DBNull ? null : result.ToString();
+        var maxCode = result is null or DBNull ? null : result.ToString();
+        _log.LogDebug("FCC_OB_RISK_PRMS_CODE_SCRE_MAP max-score: candidates=[{Codes}] -> {Chosen}",
+            string.Join(",", values), maxCode ?? "(none)");
+        return maxCode;
     }
 
     // =====================================================================

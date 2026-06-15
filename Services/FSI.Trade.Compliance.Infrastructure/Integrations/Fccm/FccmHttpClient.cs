@@ -73,8 +73,17 @@ public class FccmHttpClient
                 request.Headers.Authorization = new AuthenticationHeaderValue("Basic", token);
             }
 
+            // Verbose diagnostics (Integration:Diagnostics:FccmVerbose) — the exact
+            // outgoing onboarding payload. Debug level: only emitted/flushed to the
+            // FCCM diagnostics file when verbose is on; no-op otherwise.
+            _log.LogDebug("FCCM onboarding REQUEST for {CustomerId} -> {Url}\n{Payload}",
+                customerId, _opt.FccmOnboardingUrl, json);
+
             using var resp = await _http.SendAsync(request, ct);
             var bodyText = await resp.Content.ReadAsStringAsync(ct);
+
+            _log.LogDebug("FCCM onboarding RESPONSE for {CustomerId}: HTTP {Status}\n{Body}",
+                customerId, (int)resp.StatusCode, bodyText);
 
             if (!resp.IsSuccessStatusCode)
             {

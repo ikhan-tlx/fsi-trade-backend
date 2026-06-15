@@ -157,6 +157,20 @@ public class FccmKycCaseService : IKycCaseService
             }
         }
 
+        // Verbose diagnostics — summary of the resolved customer + classification
+        // fields going to FCCM (identity from the snapshot, classification from the
+        // derivation / config defaults, risk-param set gated by IncludeRiskParameterFields).
+        {
+            var oc = payload.OnboardingCustomer;
+            _log.LogDebug(
+                "KYC onboarding payload for txn {TxnId}: applicationId={AppId} applicant={Applicant} " +
+                "type={Type} jurisdiction={Jur} countryOfResidence={Cor} businessDomain={Bd} " +
+                "displayName={Name} riskParamFieldsIncluded={RiskInc}",
+                req.TransactionId, payload.applicationId, oc.ApplicantID, oc.CustomerType,
+                oc.Jurisdiction, oc.CountryOfResidence, oc.BusinessDomain, oc.DisplayName,
+                _onboarding.IncludeRiskParameterFields);
+        }
+
         // 3. Fire HTTP submit to upstream. If it fails, mark Failed and surface
         //    the upstream error detail — the FE will see Status=Failed + reason.
         string? upstreamRequestId;
