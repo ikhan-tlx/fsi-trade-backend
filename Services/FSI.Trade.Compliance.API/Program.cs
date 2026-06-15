@@ -8,14 +8,87 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using Serilog;
+using Serilog.Events;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // --- Logging ----------------------------------------------------------
-builder.Host.UseSerilog((ctx, lc) => lc
-    .ReadFrom.Configuration(ctx.Configuration)
-    .Enrich.FromLogContext()
-    .WriteTo.Console());
+// Module-wise diagnostic files — the new-stack equivalent of the legacy
+// custom-DLL + NLog dedicated logs. Driven by Integration:Diagnostics:
+//
+//   "Files": {
+//     "Application.UserManagement": { "Enabled": true, "Level": "Information" },
+//     "Application.Trade":          { "Enabled": true, "Level": "Information" },
+//     "BackgroundService":          { "Enabled": true, "Level": "Information" }
+//   }
+//
+//   • Application.<Module>-yyyyMMdd.log — end-to-end API request/response (body
+//     in + body out + status + elapsed) written by ApiRequestLoggingMiddleware;
+//     unhandled exceptions (full inner chain) land here too.
+//   • BackgroundService-yyyyMMdd.log — hosted services (FccmCaseIdPoller, the
+//     LogArchiver) plus the FCC_OB_RA poll detail.
+//   Level: "Error"/"Fatal" = errors only … "Information" = normal … "Debug"/
+//   "Verbose" = everything (payloads, FCCM responses, risk-param derivation).
+//   Rolled files older than RetentionDays are zipped by LogArchiverService.
+var diag   = builder.Configuration.GetSection("Integration:Diagnostics");
+var logDir = diag.GetValue<string>("LogDirectory") ?? "Logs";
+if (!Path.IsPathRooted(logDir))
+    logDir = Path.Combine(builder.Environment.ContentRootPath, logDir);
+
+static LogEventLevel ParseLevel(string? s, LogEventLevel fallback)
+    => Enum.TryParse<LogEventLevel>(s, ignoreCase: true, out var lvl) ? lvl : fallback;
+
+// Dedicated file -> predicate over SourceContext deciding what it captures.
+var fileDefs = new (string Key, Func<string, bool> Match)[]
+{
+    ("Application.UserManagement", sc => sc.Contains("Application.UserManagement")),
+    ("Application.Trade",          sc => sc.Contains("Application.Trade")
+                                       || (sc.Contains("Integrations.Fccm") && !sc.Contains("FccmCaseIdPoller"))),
+    ("BackgroundService",          sc => sc.Contains("FccmCaseIdPoller") || sc.Contains("LogArchiverService")),
+};
+
+var activeFiles = new List<(string Key, Func<string, bool> Match, LogEventLevel Level)>();
+foreach (var f in fileDefs)
+{
+    var sec = diag.GetSection($"Files:{f.Key}");
+    if (!sec.GetValue("Enabled", false)) continue;
+    activeFiles.Add((f.Key, f.Match, ParseLevel(sec.GetValue<string>("Level"), LogEventLevel.Information)));
+}
+
+builder.Host.UseSerilog((ctx, lc) =>
+{
+    lc.ReadFrom.Configuration(ctx.Configuration)
+      .Enrich.FromLogContext()
+      .WriteTo.Console();
+
+    if (activeFiles.Count > 0)
+    {
+        // Let events down to the lowest enabled file level reach the loggers
+        // the files care about (the API module loggers + the FCCM namespace).
+        var lowest = activeFiles.Min(s => s.Level);
+        lc.MinimumLevel.Override("Application", lowest);
+        lc.MinimumLevel.Override("FSI.Trade.Compliance.Infrastructure.Integrations.Fccm", lowest);
+
+        foreach (var f in activeFiles)
+        {
+            var match = f.Match;
+            var level = f.Level;
+            var key   = f.Key;
+            lc.WriteTo.Logger(sub => sub
+                .Filter.ByIncludingOnly(e =>
+                    e.Properties.TryGetValue("SourceContext", out var sc) &&
+                    match(sc.ToString().Trim('"')))
+                .WriteTo.File(
+                    path:                     Path.Combine(logDir, key + "-.log"),
+                    restrictedToMinimumLevel: level,
+                    rollingInterval:          Serilog.RollingInterval.Day,
+                    retainedFileCountLimit:   null,    // LogArchiverService owns retention/zip
+                    shared:                   true,
+                    outputTemplate:
+                        "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {SourceContext}{NewLine}{Message:lj}{NewLine}{Exception}{NewLine}"));
+        }
+    }
+});
 
 // --- DI ---------------------------------------------------------------
 builder.Services.AddControllers(opt =>
@@ -134,6 +207,7 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseSerilogRequestLogging();
+app.UseMiddleware<FSI.Trade.Compliance.API.Logging.ApiRequestLoggingMiddleware>();   // module-wise API request/response logs
 app.UseCors();
 app.UseAuthentication();
 app.UseMiddleware<CustomAuthorizationMiddleware>();   // whitelist + post-JWT gate

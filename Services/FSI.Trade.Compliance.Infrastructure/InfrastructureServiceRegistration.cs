@@ -159,6 +159,10 @@ public static class InfrastructureServiceRegistration
         // TmX_Lookup, and the Oracle FCC_OB_RISK_PRMS_CODE_SCRE_MAP max-score.
         services.AddScoped<KycOnboardingFieldResolver>();
 
+        // Diagnostic log archiver — zips rolled log files older than the
+        // retention window into backlogs_<from>-<to>.zip (config-driven).
+        services.AddHostedService<Diagnostics.LogArchiverService>();
+
         // Background poller — drives KycCaseRequest rows through the state machine.
         services.AddHostedService<FccmCaseIdPoller>();
 

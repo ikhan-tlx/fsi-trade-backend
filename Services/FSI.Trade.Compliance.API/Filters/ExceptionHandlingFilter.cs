@@ -1,3 +1,4 @@
+using FSI.Trade.Compliance.API.Logging;
 using FSI.Trade.Compliance.Application.Common.Exceptions;
 using FSI.Trade.Compliance.Application.Common.Models;
 using Microsoft.AspNetCore.Mvc;
@@ -15,7 +16,12 @@ namespace FSI.Trade.Compliance.API.Filters;
 public class ExceptionHandlingFilter : IExceptionFilter
 {
     private readonly ILogger<ExceptionHandlingFilter> _log;
-    public ExceptionHandlingFilter(ILogger<ExceptionHandlingFilter> log) => _log = log;
+    private readonly ILoggerFactory                   _loggerFactory;
+    public ExceptionHandlingFilter(ILogger<ExceptionHandlingFilter> log, ILoggerFactory loggerFactory)
+    {
+        _log           = log;
+        _loggerFactory = loggerFactory;
+    }
 
     public void OnException(ExceptionContext context)
     {
@@ -74,7 +80,14 @@ public class ExceptionHandlingFilter : IExceptionFilter
                 break;
 
             default:
-                _log.LogError(context.Exception, "Unhandled exception in API.");
+                // Log the FULL exception (Serilog renders the inner-exception
+                // chain via {Exception}) into the request's module file so it
+                // sits alongside that call's request/response entry.
+                var module    = LogModules.FromPath(context.HttpContext.Request.Path.Value);
+                var moduleLog = _loggerFactory.CreateLogger(LogModules.Category(module));
+                moduleLog.LogError(context.Exception,
+                    "Unhandled exception on {Method} {Path}",
+                    context.HttpContext.Request.Method, context.HttpContext.Request.Path.Value);
                 httpStatus = 500;
                 envelope   = new ResponseViewModel<object>
                 {
