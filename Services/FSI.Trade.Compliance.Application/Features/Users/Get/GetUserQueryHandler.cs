@@ -47,12 +47,15 @@ public class GetUserQueryHandler : IRequestHandler<GetUserQuery, UserDetailDto>
                 b => b.CompanyBranchId,
                 (m, b) => new UserBranchRefDto
                 {
-                    companyBranchId = b.CompanyBranchId,
-                    branchCode      = b.BranchCode,
-                    branchName      = b.BranchName,
-                    companyId       = b.CompanyId,
-                    reportingBossId = m.ReportingBossId,
-                    visibleValue    = string.IsNullOrWhiteSpace(b.BranchCode)
+                    companyBranchId    = b.CompanyBranchId,
+                    branchCode         = b.BranchCode,
+                    branchName         = b.BranchName,
+                    companyId          = b.CompanyId,
+                    reportingBossId    = m.ReportingBossId,
+                    effectiveStartDate = m.EffectiveStartDate,
+                    effectiveEndDate   = m.EffectiveEndDate,
+                    isActive           = m.ActiveFlag,
+                    visibleValue       = string.IsNullOrWhiteSpace(b.BranchCode)
                                         ? b.BranchName
                                         : b.BranchCode + "-" + b.BranchName
                 })

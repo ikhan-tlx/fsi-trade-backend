@@ -25,6 +25,18 @@ public class CreateUserCommand : IRequest<string>
 
 public class UserBranchMappingDto
 {
-    public int     companyBranchId { get; set; }
-    public string? reportingBossId { get; set; }
+    public int       companyBranchId    { get; set; }
+    public string?   reportingBossId    { get; set; }
+
+    /// <summary>
+    /// Effective window for THIS assignment (legacy "Company &amp; Branch
+    /// Association" now exposes these as controls). Null start = today;
+    /// null end = open-ended (9999-12-31). The branch LOV filters on this
+    /// window, so a closed/future window hides the branch from the user.
+    /// </summary>
+    public DateTime? effectiveStartDate { get; set; }
+    public DateTime? effectiveEndDate   { get; set; }
+
+    /// <summary>Active/inactive toggle for this branch assignment. Null = active.</summary>
+    public bool?     isActive           { get; set; }
 }

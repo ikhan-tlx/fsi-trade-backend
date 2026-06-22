@@ -41,10 +41,13 @@ public class UserDetailDto
 
 public class UserBranchRefDto
 {
-    public int     companyBranchId { get; set; }
-    public string? branchCode      { get; set; }
-    public string? branchName      { get; set; }
-    public int?    companyId       { get; set; }
-    public string? reportingBossId { get; set; }
-    public string? visibleValue    { get; set; }
+    public int      companyBranchId    { get; set; }
+    public string?  branchCode         { get; set; }
+    public string?  branchName         { get; set; }
+    public int?     companyId          { get; set; }
+    public string?  reportingBossId    { get; set; }
+    public string?  visibleValue       { get; set; }
+    public DateTime effectiveStartDate { get; set; }
+    public DateTime effectiveEndDate   { get; set; }
+    public bool     isActive           { get; set; }
 }

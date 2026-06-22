@@ -29,4 +29,20 @@ public class ReportOptions
     /// PuppeteerReportPdfGenerator.ResolveCachePath).
     /// </summary>
     public string ChromiumCachePath { get; set; } = "";
+
+    /// <summary>
+    /// Absolute path to an already-installed Chromium-based browser
+    /// (Chrome or Edge). When set AND the file exists, the PDF generator
+    /// launches THAT browser and SKIPS PuppeteerSharp's ~150 MB first-run
+    /// download — required for the OFFLINE deployment server, which has no
+    /// internet to fetch Chromium. Microsoft Edge ships with Windows, so the
+    /// usual value is:
+    ///
+    ///   "Reports": {
+    ///     "ChromiumExecutablePath": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
+    ///   }
+    ///
+    /// Empty = fall back to download/cache behaviour (fine for dev/online).
+    /// </summary>
+    public string ChromiumExecutablePath { get; set; } = "";
 }

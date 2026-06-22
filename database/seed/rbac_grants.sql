@@ -98,7 +98,17 @@ INSERT @scoped(Code, Description) VALUES
     (N'Transactions.Edit',           N'Edit an existing transaction''s data (the edit form)'),
 
     -- FieldSetup module (Slice 12 §A)
-    (N'FieldSetup.Manage',           N'Edit dynamic-form field config (label, placeholder, visible, required)');
+    (N'FieldSetup.Manage',           N'Edit dynamic-form field config (label, placeholder, visible, required)'),
+
+    -- Page-View privileges (authorization redesign 2026-06-22 — migration 2026_06_053)
+    (N'Dashboard.View',              N'See the Dashboard page'),
+    (N'Inbox.View',                  N'See the Inbox page'),
+    (N'Transactions.View',           N'See the Transactions / Trade Repository page'),
+    (N'Reports.View',                N'See the Reports page'),
+    (N'Requests.View',               N'See the Requests (maker/checker) page'),
+    (N'Masterdata.View',             N'See the Setup Data pages (branches, location, products)'),
+    (N'CaseManagement.View',         N'See the Cases (CMS) page'),
+    (N'FieldSetup.View',             N'See the Field Configuration page');
 
 INSERT INTO dbo.TmX_Privilege
     (Tenant_ID,
@@ -169,7 +179,16 @@ INSERT @grants(PrivCode) VALUES
     (N'Transactions.UploadDocument'),
     (N'Transactions.Create'),
     (N'Transactions.Edit'),
-    (N'FieldSetup.Manage');
+    (N'FieldSetup.Manage'),
+    -- Page-View privileges — IT Admin holds all (authorization redesign 2026-06-22)
+    (N'Dashboard.View'),
+    (N'Inbox.View'),
+    (N'Transactions.View'),
+    (N'Reports.View'),
+    (N'Requests.View'),
+    (N'Masterdata.View'),
+    (N'CaseManagement.View'),
+    (N'FieldSetup.View');
 
 INSERT INTO dbo.TmX_Role_Privilege_Mapping
     (Tenant_ID,             Role_ID,           Privilege_ID,
@@ -232,7 +251,17 @@ DECLARE @who3 nvarchar(100)      = N'System (rbac_grants.sql - Section 3)';
 DECLARE @universal TABLE (PrivCode nvarchar(100) PRIMARY KEY);
 INSERT @universal(PrivCode) VALUES
     -- FE bootstrap requirement — see header comment above.
-    (N'Privileges.View');
+    (N'Privileges.View'),
+    -- Operational page-View privileges — every role sees these pages
+    -- (authorization redesign 2026-06-22). Admin pages stay IT-Admin-only
+    -- (Users/Roles/Workflow in Section 2; FieldSetup.View not universal).
+    (N'Dashboard.View'),
+    (N'Inbox.View'),
+    (N'Transactions.View'),
+    (N'Reports.View'),
+    (N'Requests.View'),
+    (N'Masterdata.View'),
+    (N'CaseManagement.View');
 
 INSERT INTO dbo.TmX_Role_Privilege_Mapping
     (Tenant_ID,        Role_ID,         Privilege_ID,

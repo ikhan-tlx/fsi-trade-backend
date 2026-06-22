@@ -1,4 +1,5 @@
 using Asp.Versioning;
+using FSI.Trade.Compliance.API.Filters;
 using FSI.Trade.Compliance.Application.Common.Models;
 using FSI.Trade.Compliance.Application.Features.Locations.Create;
 using FSI.Trade.Compliance.Application.Features.Locations.GetById;
@@ -37,6 +38,7 @@ public class LocationController : ControllerBase
     /// Paged / sorted / filtered list of locations for the management grid.
     /// </summary>
     [HttpGet]
+    [RequiresPrivilege("Masterdata.View")]
     public async Task<IActionResult> List([FromQuery] ListLocationsQuery query, CancellationToken ct)
     {
         var paged = await _mediator.Send(query, ct);
@@ -56,6 +58,7 @@ public class LocationController : ControllerBase
 
     /// <summary>Single location by id (edit form). Slice 14.</summary>
     [HttpGet("{id:int}")]
+    [RequiresPrivilege("Masterdata.View")]
     public async Task<IActionResult> GetById(int id, CancellationToken ct)
     {
         var dto = await _mediator.Send(new GetLocationByIdQuery(id), ct);

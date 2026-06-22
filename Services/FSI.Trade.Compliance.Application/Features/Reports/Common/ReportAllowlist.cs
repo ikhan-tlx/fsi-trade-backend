@@ -38,11 +38,19 @@ public static class ReportAllowlist
 
         var trimmed = storedProcedureName.Trim();
 
+        // The SP name can live in HiddenValue / LookupName (older rows) OR in
+        // Description — which is where the real report rows keep it (HiddenValue
+        // holds the report code, e.g. "BuisnessReports.KYCReport"). The FE
+        // resolves the SP from Description's first comma-segment
+        // ("sp_name,param,..."), so the allowlist must accept the same: an exact
+        // Description match (zero-param report) or "sp_name," prefix (with params).
         var allowed = await db.Lookups
             .AsNoTracking()
             .Where(l => l.LookupType == ReportTypeLookup)
             .Where(l => l.HiddenValue == trimmed
-                     || l.LookupName  == trimmed)
+                     || l.LookupName  == trimmed
+                     || l.Description == trimmed
+                     || (l.Description != null && l.Description.StartsWith(trimmed + ",")))
             .AnyAsync(ct);
 
         if (!allowed)

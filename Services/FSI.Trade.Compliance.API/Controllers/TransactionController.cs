@@ -41,6 +41,7 @@ public class TransactionController : ControllerBase
     public TransactionController(IMediator mediator) => _mediator = mediator;
 
     [HttpGet]
+    [RequiresPrivilege("Transactions.View")]
     public async Task<IActionResult> List([FromQuery] ListTransactionsQuery query, CancellationToken ct)
     {
         var paged = await _mediator.Send(query, ct);
@@ -48,6 +49,7 @@ public class TransactionController : ControllerBase
     }
 
     [HttpGet("{id:int}")]
+    [RequiresPrivilege("Transactions.View")]
     public async Task<IActionResult> GetById(int id, CancellationToken ct)
     {
         var detail = await _mediator.Send(new GetTransactionByIdQuery(id), ct);

@@ -25,6 +25,11 @@ public class LookupItemDto
     public string localeLabel { get; set; }
     public string? hiddenValue { get; set; }
     public string? visibleValue { get; set; }
+    // Carries per-row metadata the FE parses (e.g. REPORT_TYPE rows encode the
+    // report's stored-procedure name + parameters here: "sp_name,from_date,...").
+    // Without this the Business Reports page can't resolve the SP and sends an
+    // empty StoredProcedure -> 400 "Stored procedure name is required".
+    public string? description { get; set; }
     public int? sortOrder { get; set; }
     public bool isActive { get; set; }
 }

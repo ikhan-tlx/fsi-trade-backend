@@ -12,11 +12,12 @@ public enum BrainsMode
 /// BRAINS↔TBML real-time KYC query interface (v2.0 —
 /// <c>QueryKycInfoServlet</c>). Bound from <c>Integration:Brains</c>.
 ///
-/// Request (GET query-string) — the BE sends ONLY the mandatory fields:
-///   TASK_NO, ZONENO, ADJUST_TYPE, CUSTNO, REG_TYPE, REG_NO.
-/// Of these, ZONENO / ADJUST_TYPE / REG_TYPE / REG_NO are configurable
-/// defaults (per FSI direction, 2026-06); CUSTNO is the customer code passed
-/// per call, and TASK_NO defaults to the customer code when not configured.
+/// Request (GET query-string). Matching the production legacy
+/// (INT IcbcService.GetKYC, verified from its int.log): CUSTNO is the customer
+/// code passed per call; ZONENO / ADJUST_TYPE are configurable fixed defaults
+/// (6001 / 1); APPLY_NO and TASK_NO are GENERATED per request (FileTime); and
+/// REG_TYPE / REG_NO are sent EMPTY — production keys the lookup on CUSTNO
+/// alone and never populated them.
 /// </summary>
 public class BrainsOptions
 {
@@ -36,14 +37,10 @@ public class BrainsOptions
     /// <summary>ADJUST_TYPE — 0 = new customer, 1 = existing customer. Trade flow = existing.</summary>
     public string AdjustType { get; set; } = "1";
 
-    /// <summary>REG_TYPE — identifier type (char 3). Configurable default.</summary>
-    public string RegType    { get; set; } = "";
-
-    /// <summary>REG_NO — identifier number. Configurable default.</summary>
-    public string RegNo      { get; set; } = "";
-
-    /// <summary>TASK_NO — the task id sent by TBML. When blank, the customer code is used.</summary>
-    public string? TaskNo    { get; set; }
+    // REG_TYPE / REG_NO are intentionally NOT configurable: the production
+    // legacy (INT IcbcService.GetKYC) sends them EMPTY and keys the BRAINS
+    // lookup on CUSTNO alone. TASK_NO and APPLY_NO are generated per request
+    // (see BrainsKycScreeningService.BuildUrl).
 
     // ---- Sandbox knobs ----
 

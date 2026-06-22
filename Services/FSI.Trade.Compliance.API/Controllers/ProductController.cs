@@ -1,4 +1,5 @@
 using Asp.Versioning;
+using FSI.Trade.Compliance.API.Filters;
 using FSI.Trade.Compliance.Application.Common.Models;
 using FSI.Trade.Compliance.Application.Features.Products.ActiveLov;
 using FSI.Trade.Compliance.Application.Features.Products.Create;
@@ -46,6 +47,7 @@ public class ProductController : ControllerBase
     /// The active-only flat read stays on <c>/list</c>.
     /// </summary>
     [HttpGet]
+    [RequiresPrivilege("Masterdata.View")]
     public async Task<IActionResult> ListPaged([FromQuery] ListProductsPagedQuery query, CancellationToken ct)
     {
         var paged = await _mediator.Send(query, ct);
@@ -54,6 +56,7 @@ public class ProductController : ControllerBase
 
     /// <summary>Single product by id (edit form). Slice 14.</summary>
     [HttpGet("{id:int}")]
+    [RequiresPrivilege("Masterdata.View")]
     public async Task<IActionResult> GetById(int id, CancellationToken ct)
     {
         var dto = await _mediator.Send(new GetProductByIdQuery(id), ct);

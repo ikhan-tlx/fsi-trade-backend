@@ -1,4 +1,5 @@
 using Asp.Versioning;
+using FSI.Trade.Compliance.API.Filters;
 using FSI.Trade.Compliance.Application.Common.Models;
 using FSI.Trade.Compliance.Application.Features.Reports.GeneratePdf;
 using FSI.Trade.Compliance.Application.Features.Reports.RunExcel;
@@ -39,6 +40,7 @@ public class ReportController : ControllerBase
     /// returns the rendered HTML wrapped in the standard envelope.
     /// </summary>
     [HttpPost("ReportHTML")]
+    [RequiresPrivilege("Reports.View")]
     public async Task<IActionResult> ReportHtml(
         [FromBody] RunReportHtmlCommand body,
         CancellationToken ct)
@@ -67,6 +69,7 @@ public class ReportController : ControllerBase
     /// XLSX. No template involved — Excel shows the rows as-is.
     /// </summary>
     [HttpPut("ReportExcel")]
+    [RequiresPrivilege("Reports.View")]
     public async Task<IActionResult> ReportExcel(
         [FromBody] RunReportExcelCommand body,
         CancellationToken ct)

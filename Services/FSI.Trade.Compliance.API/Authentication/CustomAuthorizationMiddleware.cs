@@ -23,7 +23,11 @@ public class CustomAuthorizationMiddleware
 
     public async Task Invoke(HttpContext ctx)
     {
-        var path = ctx.Request.Path.Value ?? string.Empty;
+        // Include PathBase so the whitelist still matches when the app is hosted
+        // under an IIS application path (e.g. "/api"). Under that layout
+        // Request.Path is "/v1/Health" while WhitelistedPaths are "/api/v1/...";
+        // matching (PathBase + Path) = "/api/v1/Health" makes both layouts work.
+        var path = (ctx.Request.PathBase + ctx.Request.Path).Value ?? string.Empty;
 
         // Whitelist — case-insensitive prefix match.
         foreach (var w in _opt.WhitelistedPaths)

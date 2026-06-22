@@ -47,10 +47,21 @@ internal class StoredProcedureRunner : IStoredProcedureRunner
             cmd.CommandType = CommandType.StoredProcedure;
             if (commandTimeoutSeconds is > 0) cmd.CommandTimeout = commandTimeoutSeconds.Value;
 
+            // Bind ONLY the parameters the SP actually declares. The report FE
+            // sends a generic "offset" (timezone) argument on every report run;
+            // a parameterless SP (sp_kyc_report, sp_tbml_report, …) would
+            // otherwise fail with "Procedure ... has no parameters and arguments
+            // were supplied." Discovering the declared set also protects every
+            // other SP from stray/extra args.
+            var declared = await GetDeclaredParameterNamesAsync(connection, storedProcedureName, ct);
+
             foreach (var kv in parameters)
             {
+                var bareName = kv.Key.StartsWith('@') ? kv.Key[1..] : kv.Key;
+                if (!declared.Contains(bareName)) continue; // skip args the SP doesn't accept
+
                 var p = cmd.CreateParameter();
-                p.ParameterName = kv.Key.StartsWith('@') ? kv.Key : "@" + kv.Key;
+                p.ParameterName = "@" + bareName;
                 p.Value         = CoerceParameterValue(kv.Value);
                 cmd.Parameters.Add(p);
             }
@@ -66,6 +77,34 @@ internal class StoredProcedureRunner : IStoredProcedureRunner
         {
             if (wasClosed) await connection.CloseAsync();
         }
+    }
+
+    /// <summary>
+    /// The parameter names (without the '@' prefix) the stored procedure
+    /// declares, read from sys.parameters. Lets the runner bind only the args
+    /// a proc actually accepts — the report FE sends a generic "offset" arg
+    /// that a parameterless SP would otherwise reject with a hard SqlException.
+    /// Returns an empty set for a parameterless (or unknown) proc.
+    /// </summary>
+    private static async Task<HashSet<string>> GetDeclaredParameterNamesAsync(
+        DbConnection connection, string storedProcedureName, CancellationToken ct)
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await using var cmd = connection.CreateCommand();
+        cmd.CommandText =
+            "SELECT REPLACE(name, '@', '') FROM sys.parameters WHERE object_id = OBJECT_ID(@sp)";
+        cmd.CommandType = CommandType.Text;
+        var p = cmd.CreateParameter();
+        p.ParameterName = "@sp";
+        p.Value         = storedProcedureName;
+        cmd.Parameters.Add(p);
+
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            if (!reader.IsDBNull(0)) names.Add(reader.GetString(0));
+        }
+        return names;
     }
 
     /// <summary>

@@ -338,12 +338,8 @@ SET     t.PasswordHash         = a.PasswordHash,
         t.EmailConfirmed       = ISNULL(a.EmailConfirmed, 0),
         t.PhoneNumberConfirmed = ISNULL(a.PhoneNumberConfirmed, 0),
         -- collapse the two 2FA flags: enabled if either source says so
-        t.TwoFactorEnabled     = CASE
-                                    WHEN ISNULL(a.TwoFactorEnabled, 0) = 1
-                                      OR ISNULL(a.IsTwoFAEnabled,   0) = 1 THEN 1
-                                    ELSE 0
-                                 END,
-        t.TwoFASecretKey       = a.TwoFASecretKey,
+        t.TwoFactorEnabled     = 0,
+        t.TwoFASecretKey       = null,
         t.LockoutEndDateUtc    = a.LockoutEndDateUtc,
         t.LockoutEnabled       = ISNULL(a.LockoutEnabled, 1),
         t.AccessFailedCount    = ISNULL(a.AccessFailedCount, 0),
@@ -476,9 +472,8 @@ SELECT
     a.SecurityStamp,
     ISNULL(a.EmailConfirmed, 0),
     ISNULL(a.PhoneNumberConfirmed, 0),
-    CASE WHEN ISNULL(a.TwoFactorEnabled, 0) = 1
-          OR ISNULL(a.IsTwoFAEnabled,   0) = 1 THEN 1 ELSE 0 END,
-    a.TwoFASecretKey,
+    ISNULL(a.TwoFactorEnabled, 0),
+    NULL,
     a.LockoutEndDateUtc,
     ISNULL(a.LockoutEnabled, 1),
     ISNULL(a.AccessFailedCount, 0),

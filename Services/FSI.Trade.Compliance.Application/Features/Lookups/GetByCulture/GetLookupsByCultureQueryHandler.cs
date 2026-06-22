@@ -63,6 +63,7 @@ public class GetLookupsByCultureQueryHandler
                 l.TenantId,
                 l.HiddenValue,
                 l.VisibleValue,
+                l.Description,
                 l.LocaleLabel,
                 l.SortOrder,
                 l.IsActive
@@ -93,6 +94,7 @@ public class GetLookupsByCultureQueryHandler
                 visibleValue   = isEnglish
                                     ? r.VisibleValue
                                     : (string.IsNullOrEmpty(r.LocaleLabel) ? r.VisibleValue : r.LocaleLabel),
+                description    = r.Description,
                 sortOrder      = r.SortOrder,
                 isActive       = r.IsActive
             })

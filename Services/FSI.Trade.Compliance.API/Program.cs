@@ -2,6 +2,7 @@ using System.Text;
 using Asp.Versioning;
 using FSI.Trade.Compliance.API.Authentication;
 using FSI.Trade.Compliance.API.Filters;
+using FSI.Trade.Compliance.API.Routing;
 using FSI.Trade.Compliance.Application;
 using FSI.Trade.Compliance.Infrastructure;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -45,6 +46,10 @@ var fileDefs = new (string Key, Func<string, bool> Match)[]
     ("Application.Trade",          sc => sc.Contains("Application.Trade")
                                        || (sc.Contains("Integrations.Fccm") && !sc.Contains("FccmCaseIdPoller"))),
     ("BackgroundService",          sc => sc.Contains("FccmCaseIdPoller") || sc.Contains("LogArchiverService")),
+    // API/controller layer + ASP.NET Core host logs. Without this, controller and
+    // framework logs reach only the Console sink, which is invisible under IIS.
+    ("Api",                        sc => sc.Contains("FSI.Trade.Compliance.API")
+                                       || sc.StartsWith("Microsoft.AspNetCore")),
 };
 
 var activeFiles = new List<(string Key, Func<string, bool> Match, LogEventLevel Level)>();
@@ -91,9 +96,15 @@ builder.Host.UseSerilog((ctx, lc) =>
 });
 
 // --- DI ---------------------------------------------------------------
+// Configurable API route prefix. Defaults to "api" (routes stay /api/v1/...).
+// When publishing under an IIS application named "api", set Api:RoutePrefix to ""
+// (e.g. env var Api__RoutePrefix=) so the public URL is /api/v1/... and not the
+// doubled /api/api/v1/... See ApiRoutePrefixConvention for the full rationale.
+var apiRoutePrefix = builder.Configuration["Api:RoutePrefix"] ?? "api";
 builder.Services.AddControllers(opt =>
 {
     opt.Filters.Add<ExceptionHandlingFilter>();
+    opt.Conventions.Add(new ApiRoutePrefixConvention(apiRoutePrefix));
 });
 builder.Services.AddApplicationServices();
 builder.Services.AddInfrastructureServices(builder.Configuration);

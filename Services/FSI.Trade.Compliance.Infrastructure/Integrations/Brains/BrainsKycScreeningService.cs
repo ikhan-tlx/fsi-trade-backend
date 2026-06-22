@@ -12,10 +12,13 @@ namespace FSI.Trade.Compliance.Infrastructure.Integrations.Brains;
 /// mandatory query params and maps the JSON response via
 /// <see cref="BrainsResponseMapper"/>.
 ///
-/// Mandatory request fields (interface doc v2.0):
-///   TASK_NO, ZONENO, ADJUST_TYPE, CUSTNO, REG_TYPE, REG_NO
-/// All except CUSTNO (the customer code) come from <see cref="BrainsOptions"/>
-/// configurable defaults; TASK_NO falls back to the customer code.
+/// Request shape mirrors the production legacy INT call (verified from its
+/// int.log):
+///   APPLY_NO=001, TASK_NO=&lt;FileTime&gt;, ZONENO=6001, ADJUST_TYPE=1,
+///   CUSTNO=&lt;code&gt;, REG_TYPE=, REG_NO=
+/// CUSTNO is the per-call customer code; ZONENO/ADJUST_TYPE are configurable
+/// defaults; APPLY_NO/TASK_NO are generated per request; REG_TYPE/REG_NO are
+/// sent EMPTY (BRAINS keys the lookup on CUSTNO alone).
 ///
 /// Sandbox mode is a SEPARATE implementation (<see cref="SandboxKycScreeningService"/>)
 /// selected by DI when <c>Integration:Brains:Mode = Sandbox</c> — this class
@@ -59,7 +62,7 @@ public class BrainsKycScreeningService : IKycScreeningService
             }
 
             var payload = await resp.Content.ReadAsStringAsync(ct);
-            var parsed  = JsonSerializer.Deserialize<BrainsKycResponse>(payload, JsonOpts);
+            var parsed  = ParseResponse(payload);
 
             // TRANSOK != "0" bundles not-found / multiple / error — log the
             // detail but return null (no usable screening result).
@@ -94,25 +97,56 @@ public class BrainsKycScreeningService : IKycScreeningService
     }
 
     /// <summary>
-    /// Builds the servlet URL with the six mandatory params only. Optional
-    /// fields (TELLER, BRNO, names, REPORT_TYPE, REMARK*) are deliberately
-    /// omitted per FSI direction (send mandatory only).
+    /// Builds the servlet URL. Mirrors the production legacy INT call
+    /// (verified from int.log):
+    ///   …QueryKycInfoServlet?APPLY_NO=001&amp;TASK_NO=&lt;FileTime&gt;
+    ///     &amp;ZONENO=6001&amp;ADJUST_TYPE=1&amp;CUSTNO=&lt;code&gt;
+    ///     &amp;REG_TYPE=&amp;REG_NO=
+    /// APPLY_NO + TASK_NO are generated per request; REG_TYPE/REG_NO are sent
+    /// EMPTY — BRAINS keys the lookup on CUSTNO alone (the optional name /
+    /// TELLER / BRNO / REPORT_TYPE / REMARK fields are omitted, as the legacy
+    /// sent them blank too).
     /// </summary>
     private string BuildUrl(string customerId)
     {
-        var taskNo = string.IsNullOrWhiteSpace(_opt.TaskNo) ? customerId : _opt.TaskNo!;
+        // TASK_NO is a generated unique id (legacy used DateTime.ToFileTime,
+        // e.g. 134263410405107182). APPLY_NO is the fixed value the legacy
+        // INT service sent.
+        var taskNo = DateTime.UtcNow.ToFileTime().ToString();
 
         var qs = string.Join("&", new[]
         {
+            "APPLY_NO=001",
             $"TASK_NO={Uri.EscapeDataString(taskNo)}",
             $"ZONENO={Uri.EscapeDataString(_opt.ZoneNo)}",
             $"ADJUST_TYPE={Uri.EscapeDataString(_opt.AdjustType)}",
             $"CUSTNO={Uri.EscapeDataString(customerId)}",
-            $"REG_TYPE={Uri.EscapeDataString(_opt.RegType)}",
-            $"REG_NO={Uri.EscapeDataString(_opt.RegNo)}"
+            "REG_TYPE=",
+            "REG_NO="
         });
 
         return $"{_opt.BaseUrl}?{qs}";
+    }
+
+    /// <summary>
+    /// Deserialize a BRAINS reply. BRAINS sometimes returns single-quoted
+    /// pseudo-JSON (e.g. <c>{'STATUS':'','TRANSOK':'1',…}</c>) which
+    /// System.Text.Json rejects; we retry once after normalising single
+    /// quotes to double quotes. Strict (double-quoted) replies parse on the
+    /// first attempt and are unaffected. A genuinely malformed payload still
+    /// throws <see cref="JsonException"/>, handled by the caller.
+    /// </summary>
+    private static BrainsKycResponse? ParseResponse(string payload)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<BrainsKycResponse>(payload, JsonOpts);
+        }
+        catch (JsonException)
+        {
+            var normalized = payload.Replace('\'', '"');
+            return JsonSerializer.Deserialize<BrainsKycResponse>(normalized, JsonOpts);
+        }
     }
 
     /// <summary>Masks the customer identifier in logs — keep only the last 4 chars.</summary>

@@ -1,4 +1,5 @@
 using Asp.Versioning;
+using FSI.Trade.Compliance.API.Filters;
 using FSI.Trade.Compliance.Application.Common.Models;
 using FSI.Trade.Compliance.Application.Features.Dashboard.Summary;
 using MediatR;
@@ -31,6 +32,7 @@ public class DashboardController : ControllerBase
     /// EDD and FATF come back null/empty until they're modeled.
     /// </summary>
     [HttpGet("Summary")]
+    [RequiresPrivilege("Dashboard.View")]
     public async Task<IActionResult> Summary([FromQuery] string? range, CancellationToken ct)
     {
         var dto = await _mediator.Send(new GetDashboardSummaryQuery(range), ct);

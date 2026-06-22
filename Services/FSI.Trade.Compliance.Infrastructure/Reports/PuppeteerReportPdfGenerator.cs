@@ -86,6 +86,33 @@ internal sealed class PuppeteerReportPdfGenerator : IReportPdfGenerator, IAsyncD
         {
             if (_browser is { IsClosed: false }) return _browser;
 
+            // OFFLINE PATH: if an installed Chromium/Edge is configured and present,
+            // launch it directly and SKIP BrowserFetcher.DownloadAsync (which needs
+            // internet). This is what the air-gapped deployment server uses.
+            var configuredExe = _options.ChromiumExecutablePath?.Trim();
+            if (!string.IsNullOrWhiteSpace(configuredExe))
+            {
+                var exe = Environment.ExpandEnvironmentVariables(configuredExe);
+                if (File.Exists(exe))
+                {
+                    _logger.LogInformation(
+                        "PuppeteerReportPdfGenerator: using configured browser at '{Path}' (no download)",
+                        exe);
+                    _browser = await Puppeteer.LaunchAsync(new LaunchOptions
+                    {
+                        Headless       = true,
+                        ExecutablePath = exe,
+                        Args           = new[] { "--no-sandbox", "--disable-dev-shm-usage" },
+                    });
+                    _logger.LogInformation("PuppeteerReportPdfGenerator: browser launched, ready for PDF requests");
+                    return _browser;
+                }
+
+                _logger.LogWarning(
+                    "PuppeteerReportPdfGenerator: configured ChromiumExecutablePath '{Path}' not found; falling back to cache/download",
+                    exe);
+            }
+
             var cachePath = ResolveCachePath(_options.ChromiumCachePath);
             Directory.CreateDirectory(cachePath);
 
@@ -95,7 +122,7 @@ internal sealed class PuppeteerReportPdfGenerator : IReportPdfGenerator, IAsyncD
             });
 
             _logger.LogInformation(
-                "PuppeteerReportPdfGenerator: ensuring Chromium revision is present at '{Path}' (first-run downloads ~150 MB)",
+                "PuppeteerReportPdfGenerator: ensuring Chromium revision is present at '{Path}' (first-run downloads ~150 MB — requires internet)",
                 cachePath);
 
             var installed = await fetcher.DownloadAsync();

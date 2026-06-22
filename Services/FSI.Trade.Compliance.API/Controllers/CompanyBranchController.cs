@@ -1,4 +1,5 @@
 using Asp.Versioning;
+using FSI.Trade.Compliance.API.Filters;
 using FSI.Trade.Compliance.Application.Common.Models;
 using FSI.Trade.Compliance.Application.Features.CompanyBranches.AllLov;
 using FSI.Trade.Compliance.Application.Features.CompanyBranches.ByCompany;
@@ -50,6 +51,7 @@ public class CompanyBranchController : ControllerBase
     ///   GET /api/v1/CompanyBranch?page=1&amp;pageSize=10&amp;sort=BranchName-asc&amp;filter=karachi
     /// </summary>
     [HttpGet]
+    [RequiresPrivilege("Masterdata.View")]
     public async Task<IActionResult> List([FromQuery] ListCompanyBranchesQuery query, CancellationToken ct)
     {
         var paged = await _mediator.Send(query, ct);
@@ -58,6 +60,7 @@ public class CompanyBranchController : ControllerBase
 
     /// <summary>Single branch by id (edit form). Slice 14.</summary>
     [HttpGet("{id:int}")]
+    [RequiresPrivilege("Masterdata.View")]
     public async Task<IActionResult> GetById(int id, CancellationToken ct)
     {
         var dto = await _mediator.Send(new GetCompanyBranchByIdQuery(id), ct);

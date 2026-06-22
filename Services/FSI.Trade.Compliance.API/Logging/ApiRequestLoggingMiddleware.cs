@@ -45,7 +45,11 @@ public class ApiRequestLoggingMiddleware
 
     public async Task Invoke(HttpContext ctx)
     {
-        var path = ctx.Request.Path.Value ?? "";
+        // Include PathBase so the "/api" guard still fires under an IIS application
+        // path: Request.Path is "/v1/..." there ("/api" lives in PathBase), so
+        // matching on Path alone would skip logging for every request under IIS.
+        // PathBase is empty off-IIS, so this is a no-op for Kestrel/dev.
+        var path = (ctx.Request.PathBase + ctx.Request.Path).Value ?? "";
         if (!path.StartsWith("/api", StringComparison.OrdinalIgnoreCase))
         {
             await _next(ctx);

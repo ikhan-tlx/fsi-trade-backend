@@ -35,7 +35,11 @@ public class DeviceTrackingMiddleware
 
     public async Task Invoke(HttpContext ctx, IDeviceService devices)
     {
-        var path = ctx.Request.Path.Value ?? string.Empty;
+        // Include PathBase so exempt paths still match under an IIS application
+        // path (e.g. "/api"): Request.Path is "/v1/..." there while
+        // DeviceCheckExemptPaths are "/api/v1/...". PathBase is empty off-IIS,
+        // so this is a no-op for Kestrel/dev.
+        var path = (ctx.Request.PathBase + ctx.Request.Path).Value ?? string.Empty;
 
         // Exempt paths — pass through with no device check.
         foreach (var exempt in _opt.DeviceCheckExemptPaths)

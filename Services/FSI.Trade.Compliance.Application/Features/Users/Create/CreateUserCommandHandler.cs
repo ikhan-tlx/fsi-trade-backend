@@ -125,9 +125,9 @@ public class CreateUserCommandHandler : IRequestHandler<CreateUserCommand, strin
                     TenantId           = user.TenantId,
                     UserId             = user.Id,
                     ReportingBossId    = string.IsNullOrWhiteSpace(m.reportingBossId) ? null : m.reportingBossId,
-                    EffectiveStartDate = now,
-                    EffectiveEndDate   = far,
-                    ActiveFlag         = true,
+                    EffectiveStartDate = m.effectiveStartDate ?? now,
+                    EffectiveEndDate   = m.effectiveEndDate   ?? far,
+                    ActiveFlag         = m.isActive ?? true,
                     CreatedBy          = actor,
                     CreatedDate        = now
                 });
