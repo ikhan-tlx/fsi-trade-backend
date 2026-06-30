@@ -1,8 +1,5 @@
-using System.Security.Cryptography;
-using System.Text;
 using Asp.Versioning;
 using FSI.Trade.Compliance.Application.Common.Models;
-using FSI.Trade.Compliance.Application.Common.Options;
 using FSI.Trade.Compliance.Application.Contracts.Integrations;
 using FSI.Trade.Compliance.Application.Features.Kyc.GetCaseStatus;
 using FSI.Trade.Compliance.Application.Features.Kyc.HandleCallback;
@@ -10,7 +7,6 @@ using FSI.Trade.Compliance.Application.Features.Kyc.SubmitCase;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Options;
 
 namespace FSI.Trade.Compliance.API.Controllers;
 
@@ -19,29 +15,24 @@ namespace FSI.Trade.Compliance.API.Controllers;
 ///
 ///   POST /api/v1/Kyc/Case                (Bearer)        submit a new case
 ///   GET  /api/v1/Kyc/Case/{requestId}    (Bearer)        poll status
-///   POST /api/v1/Kyc/Case/Callback       (Anonymous +    inbound webhook from FCCM
-///                                         HMAC header)
+///   POST /api/v1/Kyc/Case/Callback       (Anonymous)     inbound webhook from FCCM
 ///
 /// The Callback endpoint is anonymous because FCCM (the upstream) does NOT
-/// have our JWT. Instead, it signs the payload body with a shared secret
-/// (HMAC-SHA256) and includes the signature in the
-/// <c>X-FCCM-Signature</c> header. We verify before accepting.
+/// have our JWT. The legacy <c>updateTransactionStatusAPIController</c>
+/// also accepted plain POSTs with no header signing, so the new endpoint
+/// mirrors that contract for legacy parity (FSI direction 2026-06-XX:
+/// "if this is not there then we should not add this"). FCCM is on a
+/// private network — the security model is network isolation, not
+/// payload signing. If/when FCCM ops want to enable HMAC signing later,
+/// add it back behind a feature flag without changing the wire shape.
 /// </summary>
 [ApiController]
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/Kyc/Case")]
 public class KycCaseController : ControllerBase
 {
-    private const string SignatureHeader = "X-FCCM-Signature";
-
-    private readonly IMediator                    _mediator;
-    private readonly IOptions<IntegrationOptions> _opt;
-
-    public KycCaseController(IMediator mediator, IOptions<IntegrationOptions> opt)
-    {
-        _mediator = mediator;
-        _opt      = opt;
-    }
+    private readonly IMediator _mediator;
+    public KycCaseController(IMediator mediator) => _mediator = mediator;
 
     [HttpPost]
     [Authorize]
@@ -59,55 +50,44 @@ public class KycCaseController : ControllerBase
         return Ok(ResponseViewModel<KycCaseStatusDto>.Ok(dto));
     }
 
+    /// <summary>
+    /// FCCM verdict callback. Anonymous, no signature header — mirrors the
+    /// legacy <c>updateTransactionStatusAPIController.Post</c> contract
+    /// exactly (no auth at all; FCCM is on a private network).
+    ///
+    /// Body shape matches the legacy <c>updateTrnRequest</c>:
+    /// <c>caseID</c>, <c>actionCode</c>, <c>actionReason</c>.
+    ///
+    /// <para>
+    /// Routed under THREE URLs that hit the same handler — so FCCM ops can
+    /// keep their webhook config pointed at whichever shape they have on
+    /// file:
+    /// <list type="bullet">
+    ///   <item><c>POST /api/v1/Kyc/Case/Callback</c> — canonical (new BE).</item>
+    ///   <item><c>POST /api/v1/updateTransactionStatusAPI</c> — versioned
+    ///         legacy URL.</item>
+    ///   <item><c>POST /api/updateTransactionStatusAPI</c> — un-versioned
+    ///         legacy URL, exact match to the .NET Framework v1 controller
+    ///         path.</item>
+    /// </list>
+    /// </para>
+    ///
+    /// <para>
+    /// All three URLs are whitelisted in <c>Auth:WhitelistedPaths</c> +
+    /// <c>Auth:DeviceCheckExemptPaths</c> so the bearer-token middleware
+    /// lets them through.
+    /// </para>
+    /// </summary>
     [HttpPost("Callback")]
+    [HttpPost("/api/v{version:apiVersion}/updateTransactionStatusAPI")]
+    [HttpPost("/api/updateTransactionStatusAPI")]
     [AllowAnonymous]
-    public async Task<IActionResult> Callback(CancellationToken ct)
+    public async Task<IActionResult> Callback(
+        [FromBody] HandleKycCaseCallbackCommand cmd,
+        CancellationToken ct)
     {
-        // Read the raw body so we can both verify the HMAC AND deserialize.
-        Request.EnableBuffering();
-        using var reader = new StreamReader(Request.Body, Encoding.UTF8, leaveOpen: true);
-        var      raw     = await reader.ReadToEndAsync(ct);
-        Request.Body.Position = 0;
-
-        var secret = _opt.Value.FccmCallbackSharedSecret;
-        if (string.IsNullOrWhiteSpace(secret))
-            return Unauthorized(BuildEnvelope(401, "callback_secret_unset",
-                "FCCM callback secret is not configured. Refusing all callbacks."));
-
-        if (!Request.Headers.TryGetValue(SignatureHeader, out var sig) || string.IsNullOrWhiteSpace(sig))
-            return Unauthorized(BuildEnvelope(401, "missing_signature",
-                $"Inbound FCCM callback missing {SignatureHeader} header."));
-
-        var expected = ComputeSignature(secret, raw);
-        if (!CryptographicOperations.FixedTimeEquals(
-                Encoding.ASCII.GetBytes(expected),
-                Encoding.ASCII.GetBytes(sig.ToString())))
-        {
-            return Unauthorized(BuildEnvelope(401, "invalid_signature",
-                "FCCM callback signature did not match expected HMAC."));
-        }
-
-        // Signature valid — deserialize as a normal MediatR command.
-        var cmd = System.Text.Json.JsonSerializer.Deserialize<HandleKycCaseCallbackCommand>(
-                      raw,
-                      new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true })
-                  ?? new HandleKycCaseCallbackCommand();
-
+        cmd ??= new HandleKycCaseCallbackCommand();
         await _mediator.Send(cmd, ct);
         return Ok(ResponseViewModel<object>.Ok(new { received = true }));
     }
-
-    private static string ComputeSignature(string secret, string body)
-    {
-        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
-        var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(body));
-        return Convert.ToHexString(hash);
-    }
-
-    private static ResponseViewModel<object> BuildEnvelope(int code, string codeStr, string description) =>
-        new()
-        {
-            status = ResponseStatus.Error(code, codeStr, description),
-            data   = new { Success = 0, Code = codeStr }
-        };
 }

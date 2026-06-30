@@ -38,6 +38,7 @@ public interface IApplicationDbContext
     DbSet<Location>                Locations               { get; }
     DbSet<Company>                 Companies               { get; }
     DbSet<Request>                 Requests                { get; }
+    DbSet<AuditLog>             AuditLogs            { get; }
     DbSet<UserHoliday>             UserHolidays            { get; }
 
     // Slice 6 Step 2: Transaction detail (the actual row + children).

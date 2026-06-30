@@ -25,6 +25,7 @@ public class SubmitRequestCommand : IRequest<long>
     public string?  EntityStatusCode  { get; set; }
     public string?  RequestStatusCode { get; set; }   // the checker's decision
     public string?  EntityId          { get; set; }
+    public string?  RejectReason      { get; set; }   // required when rejecting
 }
 
 public class SubmitRequestCommandHandler : IRequestHandler<SubmitRequestCommand, long>
@@ -48,7 +49,13 @@ public class SubmitRequestCommandHandler : IRequestHandler<SubmitRequestCommand,
         var entity = await _db.Requests.FirstOrDefaultAsync(x => x.RequestId == req.RequestId, ct)
                      ?? throw new NotFoundException("request_not_found", $"Request '{req.RequestId}' not found.");
 
-        entity.RequestStatusCode = req.RequestStatusCode!.Trim();
+        var decision = req.RequestStatusCode!.Trim();
+        const string RejectCode = "0013";
+        if (decision == RejectCode && string.IsNullOrWhiteSpace(req.RejectReason))
+            throw new ConflictException("reject_reason_required", "A reason is required to reject a request.");
+
+        entity.RequestStatusCode = decision;
+        entity.RejectReason      = decision == RejectCode ? req.RejectReason!.Trim() : null;
         entity.LastUpdatedBy     = _current.UserName ?? _current.UserId ?? "unknown";
         entity.LastUpdatedDate   = DateTime.UtcNow;
 

@@ -49,6 +49,7 @@ public class AuthController : ControllerBase
 
     [HttpPost("Login")]
     [AllowAnonymous]
+    [FSI.Trade.Compliance.API.Filters.Audited("LOGIN", "Session")]
     public async Task<IActionResult> Login([FromForm] LoginCommand form, CancellationToken ct)
     {
         var ip  = HttpContext.Connection.RemoteIpAddress?.ToString();

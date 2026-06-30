@@ -1,6 +1,7 @@
 using Asp.Versioning;
 using FSI.Trade.Compliance.API.Filters;
 using FSI.Trade.Compliance.Application.Common.Models;
+using FSI.Trade.Compliance.Application.Features.FieldSetup.PublishSection;
 using FSI.Trade.Compliance.Application.Features.FieldSetup.Update;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
@@ -56,5 +57,27 @@ public class FieldSetupController : ControllerBase
         body.tenantFieldSetupId = tenantFieldSetupId;
         var result = await _mediator.Send(body, ct);
         return Ok(ResponseViewModel<UpdateFieldSetupResult>.Ok(result));
+    }
+
+    /// <summary>
+    /// Field Configuration — Builder (Option A) "Review &amp; publish" batch.
+    /// Applies a whole section's label / placeholder / visible / required /
+    /// type / section-move edits AND re-writes <c>Field_Sequence</c> from the
+    /// editor's display order, in one transaction. See
+    /// <see cref="PublishSectionCommand"/> for guardrails.
+    ///
+    /// <para>409 <c>unsafe_type_change</c> when a requested type conversion is
+    /// outside the safe matrix / on a lookup-bound or formula-managed field;
+    /// 409 <c>field_has_conditional_rule</c> when a Required toggle hits a
+    /// formula rule. FE should surface the message and keep the edits unsaved.</para>
+    /// </summary>
+    [HttpPost("Section/Publish")]
+    [RequiresPrivilege("FieldSetup.Manage")]
+    public async Task<IActionResult> PublishSection(
+        [FromBody] PublishSectionCommand body,
+        CancellationToken                ct)
+    {
+        var result = await _mediator.Send(body, ct);
+        return Ok(ResponseViewModel<PublishSectionResult>.Ok(result));
     }
 }

@@ -7,6 +7,7 @@ using FSI.Trade.Compliance.Application.Features.Transactions.Create;
 using FSI.Trade.Compliance.Application.Features.Transactions.Detail;
 using FSI.Trade.Compliance.Application.Features.Transactions.List;
 using FSI.Trade.Compliance.Application.Features.Transactions.ResubmitFccm;
+using FSI.Trade.Compliance.Application.Features.Transactions.Stats;
 using FSI.Trade.Compliance.Application.Features.Transactions.Update;
 using FSI.Trade.Compliance.Application.Features.Documents.Upload;
 using FSI.Trade.Compliance.Application.Features.Transactions.AuditTrail;
@@ -46,6 +47,20 @@ public class TransactionController : ControllerBase
     {
         var paged = await _mediator.Send(query, ct);
         return Ok(ResponseViewModel<PagedResult<TransactionListItemDto>>.Ok(paged));
+    }
+
+    /// <summary>
+    /// Trade Repository redesign (Option A) — KPI strip feed. Caller-scoped
+    /// counts (total / awaiting-my-action / sent-to-authorizer / created-today
+    /// / flagged) plus per-product buckets and the aging SLA. Same scope as
+    /// the grid, so the numbers reconcile with the list.
+    /// </summary>
+    [HttpGet("Stats")]
+    [RequiresPrivilege("Transactions.View")]
+    public async Task<IActionResult> Stats(CancellationToken ct)
+    {
+        var stats = await _mediator.Send(new GetTransactionStatsQuery(), ct);
+        return Ok(ResponseViewModel<TransactionStatsDto>.Ok(stats));
     }
 
     [HttpGet("{id:int}")]

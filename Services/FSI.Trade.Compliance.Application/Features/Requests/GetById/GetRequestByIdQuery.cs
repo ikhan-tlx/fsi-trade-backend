@@ -23,6 +23,7 @@ public class RequestDetailDto
     [JsonPropertyName("RequestStatusCode")] public string?   RequestStatusCode { get; set; }
     [JsonPropertyName("EntityId")]          public string?   EntityId          { get; set; }
     [JsonPropertyName("EntityJson")]        public string?   EntityJson        { get; set; }
+    [JsonPropertyName("RejectReason")]      public string?   RejectReason      { get; set; }
     [JsonPropertyName("CreatedBy")]         public string?   CreatedBy         { get; set; }
     [JsonPropertyName("CreatedDate")]       public DateTime  CreatedDate       { get; set; }
     [JsonPropertyName("ExecutedBy")]        public string?   ExecutedBy        { get; set; }
@@ -48,6 +49,7 @@ public class GetRequestByIdQueryHandler : IRequestHandler<GetRequestByIdQuery, R
             RequestStatusCode = r.RequestStatusCode,
             EntityId          = r.EntityId,
             EntityJson        = r.EntityJson,
+            RejectReason      = r.RejectReason,
             CreatedBy         = r.CreatedBy,
             CreatedDate       = r.CreatedDate,
             ExecutedBy        = r.LastUpdatedBy

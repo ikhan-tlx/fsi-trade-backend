@@ -30,6 +30,7 @@ public static class FieldTypeMapper
             4  => "textarea",    // Multiline text
             24 => "spacer",      // Visual gap (non-input)
             25 => "select",      // Single-select dropdown
+            65 => "searchableSelect", // Type-to-filter dropdown (large lookups, e.g. HS Code)
             26 => "multi",       // Multi-select dropdown
             27 => "repeat",      // Checkbox / RepeatTrigger — repeating table trigger
             28 => "boolean",     // Generic boolean checkbox

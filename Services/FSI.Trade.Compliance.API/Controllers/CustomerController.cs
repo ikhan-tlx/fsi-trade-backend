@@ -2,6 +2,8 @@ using Asp.Versioning;
 using FSI.Trade.Compliance.Application.Common.Models;
 using FSI.Trade.Compliance.Application.Features.Customer.Get;
 using FSI.Trade.Compliance.Application.Features.Customer.GetKyc;
+using FSI.Trade.Compliance.Application.Features.Customer.Insight;
+using FSI.Trade.Compliance.Application.Features.Customer.List;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -33,14 +35,40 @@ public class CustomerController : ControllerBase
     private readonly IMediator _mediator;
     public CustomerController(IMediator mediator) => _mediator = mediator;
 
+    /// <summary>
+    /// Paged customer listing for the Customer Insight page
+    /// (<c>GET /api/v1/Customer?page=&amp;pageSize=&amp;sort=&amp;filter=</c>).
+    /// Distinct customers from TmX_Customer_Master with risk band + activity.
+    /// </summary>
+    [HttpGet]
+    public async Task<IActionResult> List([FromQuery] ListCustomersQuery query, CancellationToken ct)
+    {
+        var paged = await _mediator.Send(query, ct);
+        return Ok(ResponseViewModel<PagedResult<CustomerListItemDto>>.Ok(paged));
+    }
+
     [HttpGet("{customerId}")]
+    [FSI.Trade.Compliance.API.Filters.Audited("READ", "Customer", "customerId")]
     public async Task<IActionResult> Get(string customerId, CancellationToken ct)
     {
         var dto = await _mediator.Send(new GetCustomerQuery(customerId), ct);
         return Ok(ResponseViewModel<CustomerMasterDto>.Ok(dto));
     }
 
+    /// <summary>
+    /// Per-customer insight aggregate (risk band, KPIs, transactions-over-time,
+    /// product mix, status mix) backing the Customer Insight detail charts.
+    /// </summary>
+    [HttpGet("{customerId}/Insight")]
+    [FSI.Trade.Compliance.API.Filters.Audited("READ", "Customer Insight", "customerId")]
+    public async Task<IActionResult> Insight(string customerId, CancellationToken ct)
+    {
+        var dto = await _mediator.Send(new GetCustomerInsightQuery(customerId), ct);
+        return Ok(ResponseViewModel<CustomerInsightDto>.Ok(dto));
+    }
+
     [HttpGet("{customerId}/Kyc")]
+    [FSI.Trade.Compliance.API.Filters.Audited("READ", "Customer KYC", "customerId")]
     public async Task<IActionResult> GetKyc(string customerId, CancellationToken ct)
     {
         var dto = await _mediator.Send(new GetCustomerKycQuery(customerId), ct);

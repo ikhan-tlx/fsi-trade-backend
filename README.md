@@ -72,13 +72,13 @@ Swagger opens at `https://localhost:<port>/swagger`.
 
 ## Verify
 
-| Endpoint                                                  | Expected |
-| --------------------------------------------------------- | -------- |
-| `GET  /api/v1/Health`                                     | 200, `{ data: { dbReachable: true, userCount: N } }` |
-| `POST /api/v1/Auth/Login` (form-urlencoded)               | 200 with `access_token` + `refresh_token`; legacy hashes verify (V2 → silent V3 upgrade) |
-| `POST /api/v1/Auth/Refresh` (json `{ refresh_token }`)    | 200 with new pair; old refresh token is now revoked |
-| `POST /api/v1/Auth/Logout` (Bearer)                       | 200, refresh token(s) revoked |
-| `POST /api/v1/Auth/ChangePassword` (Bearer + body)        | 200, hash updated, audit row written, all refresh tokens revoked |
+| Endpoint                                               | Expected                                                                                 |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
+| `GET  /api/v1/Health`                                  | 200, `{ data: { dbReachable: true, userCount: N } }`                                     |
+| `POST /api/v1/Auth/Login` (form-urlencoded)            | 200 with `access_token` + `refresh_token`; legacy hashes verify (V2 → silent V3 upgrade) |
+| `POST /api/v1/Auth/Refresh` (json `{ refresh_token }`) | 200 with new pair; old refresh token is now revoked                                      |
+| `POST /api/v1/Auth/Logout` (Bearer)                    | 200, refresh token(s) revoked                                                            |
+| `POST /api/v1/Auth/ChangePassword` (Bearer + body)     | 200, hash updated, audit row written, all refresh tokens revoked                         |
 
 ## Endpoints in this slice
 
@@ -115,7 +115,6 @@ is returned with `status.code` 4xx and `data.Success = 0` (matches the FE's
 > auditing, performance, security, and a copy-pasteable PR checklist. The conventions below are
 > the short version; the guidelines are the long version with examples and reasoning.
 
-
 1. **Single envelope shape** — `{ status, data }`. No top-level fields outside that. Tokens, pagination, errors all live inside `data`.
 2. **JSON casing** is camelCase (ASP.NET Core 8 default). Source-side use Pascal-case (`AccessToken`); serializer converts at runtime.
 3. **`data.success === 0`** on **every** failure response — auth, validation, unauthorized, and generic. The `ExceptionHandlingFilter` enforces this; new error paths must follow.
@@ -132,10 +131,10 @@ is returned with `status.code` 4xx and `data.Success = 0` (matches the FE's
 
 ## Database files — two conventions
 
-| Folder | What goes here | Run frequency |
-|---|---|---|
-| `database/migrations/` | Schema-altering scripts (CREATE/ALTER TABLE, FKs, indexes). Timestamped: `YYYY_MM_NNN_*.sql`. | Once per file. Never modified after applying to prod. |
-| `database/seed/` | Living, re-runnable, idempotent data baselines. Today: `rbac_grants.sql`. | Re-run on every deployment. Grows over time as new endpoints / roles / lookups are added. |
+| Folder                 | What goes here                                                                                | Run frequency                                                                             |
+| ---------------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `database/migrations/` | Schema-altering scripts (CREATE/ALTER TABLE, FKs, indexes). Timestamped: `YYYY_MM_NNN_*.sql`. | Once per file. Never modified after applying to prod.                                     |
+| `database/seed/`       | Living, re-runnable, idempotent data baselines. Today: `rbac_grants.sql`.                     | Re-run on every deployment. Grows over time as new endpoints / roles / lookups are added. |
 
 > **Looking for which tables we use vs which can be dropped?** [docs/DB_ENTITY_USAGE.md](./docs/DB_ENTITY_USAGE.md)
 > catalogs every entity, the slice that introduced it, and the cleanup candidates for after stable prod deploy.
@@ -158,6 +157,104 @@ to delete:
 
 ```powershell
 Remove-Item -Recurse -Force "D:\ICBC - Latest\src"
+
+
 ```
 
+
+
+## IIS Deployment (Backend)
+
+
+
+
+```powershell
+Remove-Item -Recurse -Force "D:\ICBC - Latest\src"
+
+
+cd "D:\ICBC - Latest\FSI.Trade.Compliance\Services\FSI.Trade.Compliance.API"
+Remove-Item .\bin, .\obj -Recurse -Force -ErrorAction SilentlyContinue
+dotnet restore
+dotnet publish -c Release -o D:\publish_api
+(Get-Item 'D:\publish_api\Microsoft.IdentityModel.Protocols.dll').VersionInfo.FileVersion
+```
+
+
+
+
+
 Nothing in `FSI.Trade.Compliance` references it.
+
+### IIS WebDAV — REQUIRED or transaction PUT/DELETE return HTTP 405
+
+**Symptom:** `GET`/`POST` work, but the transaction edit/save (`PUT /api/v1/Transaction/{id}`)
+and any `DELETE` fail with **`405 Method Not Allowed` — "The HTTP verb used to access this
+page is not allowed."** Typically shows up on a server (UAT/Prod) but not on a dev machine.
+
+**Cause:** IIS ships an optional **WebDAV Publishing** module (`WebDAVModule`) that claims
+the `PUT`/`DELETE` verbs and returns 405 *before* the request reaches ASP.NET Core. It is
+installed on most full Windows Server builds but usually absent on dev boxes — which is why
+"works locally, 405 on the server" happens with the **same** `web.config` and app.
+
+**1. Check whether WebDAV is installed / loaded** (run PowerShell **as Administrator**):
+
+```powershell
+# Windows Server — is the IIS WebDAV feature installed?  (note the hyphens: Web-DAV-Publishing)
+Get-WindowsFeature Web-DAV-Publishing          # Install State: Installed  => it's the culprit
+
+# Is the module actually loaded in IIS? (must be elevated, else "Process should have elevated status")
+Import-Module WebAdministration
+Get-WebGlobalModule | Where-Object { $_.Name -like '*DAV*' }   # lists WebDAVModule if loaded
+
+# Client OS (Win 10/11) equivalent:
+Get-WindowsOptionalFeature -Online -FeatureName IIS-WebDAV
+```
+
+> Do **not** confuse this with `WebDAV-Redirector` — that is the unrelated *client* redirector
+> and has no effect on IIS serving. Also `Install State: Available` means **not** installed.
+
+**2. Remove it** (run **as Administrator**):
+
+```powershell
+Uninstall-WindowsFeature Web-DAV-Publishing    # Windows Server
+# Client OS: Disable-WindowsOptionalFeature -Online -FeatureName IIS-WebDAV
+iisreset
+```
+
+> If `Get-WindowsFeature Web-DAV-Publishing` then reports **`UninstallPending`**, the removal
+> is staged and needs a **server reboot** to finalize — the module stays loaded (PUT keeps
+> 405ing) until UAT is rebooted. After reboot it should read `Available`.
+
+**3. Belt-and-braces in `web.config`** (already shipped in this repo's
+`Services/FSI.Trade.Compliance.API/web.config`, preserved by `dotnet publish`). This
+neutralizes WebDAV **without a reboot** even if the feature stays installed — useful when you
+can't reboot or remove the server feature. After deploying it, recycle the **application pool**
+(a site restart alone is not enough); confirm the lines are in the *live* app's physical
+`web.config`:
+
+```xml
+<system.webServer>
+  <modules runAllManagedModulesForAllRequests="false">
+    <remove name="WebDAVModule" />
+  </modules>
+  <handlers>
+    <remove name="WebDAV" />
+    <add name="aspNetCore" path="*" verb="*" modules="AspNetCoreModuleV2" resourceType="Unspecified" />
+  </handlers>
+  <security>
+    <requestFiltering>
+      <verbs allowUnlisted="true">
+        <add verb="PUT" allowed="true" />
+        <add verb="DELETE" allowed="true" />
+        <add verb="PATCH" allowed="true" />
+      </verbs>
+    </requestFiltering>
+  </security>
+</system.webServer>
+```
+
+**4. Verify:** retry the transaction save (PUT) — it should return 200. If it still 405s,
+read the IIS 405 detailed-error **Module/Handler** field or the response **`Allow:`** header:
+`RequestFilteringModule` => verb deny-list (fix the `<requestFiltering>` scope, possibly in the
+parent `applicationHost.config`); `StaticFileModule` => the URL is hitting static content, not
+the API app; anything in front of IIS (proxy/WAF) can also block PUT and must be fixed there.

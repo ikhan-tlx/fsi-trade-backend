@@ -14,6 +14,7 @@ using FSI.Trade.Compliance.Infrastructure.Integrations.CustomerMaster;
 using FSI.Trade.Compliance.Infrastructure.Integrations.Fccm;
 using FSI.Trade.Compliance.Infrastructure.Locations;
 using FSI.Trade.Compliance.Infrastructure.Persistence;
+using FSI.Trade.Compliance.Infrastructure.Persistence.Interceptors;
 using FSI.Trade.Compliance.Infrastructure.Persistence.Repositories;
 using FSI.Trade.Compliance.Infrastructure.Reports;
 using FSI.Trade.Compliance.Infrastructure.Services;
@@ -42,12 +43,26 @@ public static class InfrastructureServiceRegistration
         services.Configure<WorkflowOptions>      (config.GetSection(WorkflowOptions.SectionName));
         services.Configure<ReportOptions>        (config.GetSection(ReportOptions.SectionName));
         services.Configure<DocumentOptions>      (config.GetSection(DocumentOptions.SectionName));
+        services.Configure<TradeRepositoryOptions>(config.GetSection(TradeRepositoryOptions.SectionName));
 
-        // EF Core
-        services.AddDbContext<ApplicationDbContext>(opt =>
+        // EF Core (+ generic audit interceptor — writes TmX_Audit_Log on every save)
+        services.AddScoped<AuditSaveChangesInterceptor>();
+        services.AddDbContext<ApplicationDbContext>((sp, opt) =>
+        {
             opt.UseSqlServer(config.GetConnectionString("DefaultConnection"),
-                             sql => sql.EnableRetryOnFailure()));
+                             sql => sql.EnableRetryOnFailure());
+            opt.AddInterceptors(sp.GetRequiredService<AuditSaveChangesInterceptor>());
+        });
         services.AddScoped<IApplicationDbContext>(sp => sp.GetRequiredService<ApplicationDbContext>());
+
+        // Explicit audit writer (reads / login / export / failures — events the
+        // SaveChanges interceptor cannot see).
+        services.AddScoped<FSI.Trade.Compliance.Application.Contracts.Audit.IAuditWriter,
+                           FSI.Trade.Compliance.Infrastructure.Persistence.Auditing.AuditWriter>();
+
+        // Auto-flag rule engine (P1: reference-list / field / static archetypes).
+        services.AddScoped<FSI.Trade.Compliance.Application.Contracts.Flags.IAutoFlagEvaluator,
+                           FSI.Trade.Compliance.Infrastructure.Flags.AutoFlagEvaluator>();
 
         // Slice 9 — FCCM staging lives on the same Oracle DB the rest
         // of FccmOracleReader uses (not a separate SQL Server). No

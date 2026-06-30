@@ -154,6 +154,16 @@ public static class TransactionFlagProjection
         int? tabId,
         CancellationToken ct)
     {
+        // The manual flag-picker must show ONLY manual flags — never the
+        // rule-driven automated flags (Flag_Type = AUTOMATED, raised by the
+        // auto-flag engine). Resolve the AUTOMATED lookup id once and exclude
+        // catalogue entries of that type. Untyped/legacy flags (NULL type) are
+        // treated as manual and kept.
+        var automatedTypeId = await db.Lookups.AsNoTracking()
+            .Where(l => l.LookupType == "FLAG_TYPE" && l.HiddenValue == "AUTOMATED")
+            .Select(l => (int?)l.Id)
+            .FirstOrDefaultAsync(ct);
+
         var query =
             from s in db.FlagScopes.AsNoTracking()
             // Product-specific scopes PLUS "all products" (global) scopes.
@@ -161,7 +171,10 @@ public static class TransactionFlagProjection
                && s.ActiveFlag
 
             join c in db.FlagCatalogues.AsNoTracking()
-                 .Where(c => c.ActiveFlag && !c.IsDeleted) on s.FlagId equals c.FlagId
+                 .Where(c => c.ActiveFlag && !c.IsDeleted
+                          && (automatedTypeId == null
+                              || c.FlagTypeLkpId == null
+                              || c.FlagTypeLkpId != automatedTypeId)) on s.FlagId equals c.FlagId
 
             // Tab filter applies only to product-specific scopes; global
             // (all-products) scopes always surface regardless of tab.

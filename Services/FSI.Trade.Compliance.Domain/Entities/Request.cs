@@ -14,6 +14,7 @@ public class Request
     public string?   RequestStatusCode { get; set; }
     public string?   EntityId          { get; set; }
     public string?   EntityJson        { get; set; }   // serialized entity being maker/checker'd
+    public string?   RejectReason      { get; set; }   // checker reject reason / comment
     public string?   CreatedBy         { get; set; }
     public DateTime  CreatedDate       { get; set; }
     public string?   LastUpdatedBy     { get; set; }   // the checker who executed (approve/reject)

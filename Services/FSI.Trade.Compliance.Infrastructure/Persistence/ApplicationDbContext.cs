@@ -38,6 +38,7 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public DbSet<Location>                 Locations                 => Set<Location>();
     public DbSet<Company>                  Companies                 => Set<Company>();
     public DbSet<Request>                  Requests                  => Set<Request>();
+    public DbSet<AuditLog>              AuditLogs            => Set<AuditLog>();
     public DbSet<UserHoliday>              UserHolidays              => Set<UserHoliday>();
 
     // Slice 6 Step 2: Transaction detail (row + children).

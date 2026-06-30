@@ -92,4 +92,35 @@ public class IntegrationOptions
 
     /// <summary>HTTP timeout per outbound call (BRAINS, Customer master, FCCM submit). Default 30s.</summary>
     public TimeSpan HttpTimeout          { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Slice 14 — maps FCCM action codes to <c>APPLICATION_STATUS</c>
+    /// lookup names that the callback handler resolves and writes to
+    /// <c>TmX_Transaction.Transaction_Status_Lkp</c>. The legacy
+    /// <c>updateTransactionStatusAPIController</c> hardcoded the mapping
+    /// (30004→3057 Approved, 30003→3058 Rejected, 983/984 same); this
+    /// makes the mapping a config switch so action codes can be added /
+    /// re-pointed without a redeploy.
+    ///
+    /// <para>
+    /// Values are <c>Visible_Value</c> strings on <c>TmX_Lookup</c> where
+    /// <c>Lookup_Type = 'APPLICATION_STATUS'</c>. The handler does a
+    /// cross-tenant cascade lookup at runtime (caller's tenant first,
+    /// fall back to Tenant 1), so tenant-specific Lookup_IDs are picked
+    /// up automatically — no hardcoded 3057 / 3058 anywhere.
+    /// </para>
+    ///
+    /// <para>
+    /// Defaults below mirror the legacy contract. Override in
+    /// appsettings.json under <c>Integration:FccmActionCodeStatusMap</c>
+    /// if FCCM changes its code set.
+    /// </para>
+    /// </summary>
+    public Dictionary<string, string> FccmActionCodeStatusMap { get; set; } = new()
+    {
+        { "30004", "APPROVED" },
+        { "30003", "REJECTED" },
+        { "983",   "APPROVED" },
+        { "984",   "REJECTED" }
+    };
 }

@@ -26,8 +26,14 @@ public class TransactionFlagConfiguration : IEntityTypeConfiguration<Transaction
         b.Property(x => x.Source)               .HasColumnName("Source")            .HasMaxLength(10).IsRequired();
         b.Property(x => x.RuleId)               .HasColumnName("Rule_ID");
         b.Property(x => x.MatchedValue)         .HasColumnName("Matched_Value")     .HasMaxLength(400);
+        b.Property(x => x.MatchProof)           .HasColumnName("Match_Proof");
 
-        b.HasIndex(x => new { x.TransactionId, x.FlagId }).IsUnique();
+        // Uniqueness includes Matched_Value (2026_06_061): per-match auto flags store
+        // one row per matching (field × value); aggregate/manual rows keep one row
+        // (NULL Matched_Value compares equal → a single NULL per txn/flag).
+        b.HasIndex(x => new { x.TransactionId, x.FlagId, x.MatchedValue })
+            .IsUnique()
+            .HasDatabaseName("UQ_TmX_Transaction_Flag_TxnFlagValue");
         b.HasIndex(x => new { x.FlagId, x.IsFlagged });
     }
 }

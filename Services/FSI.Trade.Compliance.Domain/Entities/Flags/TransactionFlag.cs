@@ -34,4 +34,10 @@ public class TransactionFlag
     public string    Source                { get; set; } = "Manual";  // Manual | Auto
     public int?      RuleId                { get; set; }
     public string?   MatchedValue          { get; set; }
+
+    // 2026_06_061 — developer/QA diagnostic. For Source="Auto" rows the engine
+    // writes a JSON trace of why the flag did/didn't raise (per-condition resolved
+    // candidates, operator, list, matched value, group verdict). NULL on manual
+    // rows. Never surfaced in the analyst UI — only via the dry-run/Test panel.
+    public string?   MatchProof            { get; set; }
 }

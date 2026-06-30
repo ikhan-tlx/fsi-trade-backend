@@ -151,7 +151,7 @@ internal class FccmTradeCaseService : IFccmTradeCaseService
             where tf.TransactionId == transactionId && tf.IsFlagged
             join c in _db.FlagCatalogues.AsNoTracking() on tf.FlagId equals c.FlagId
             where c.ActiveFlag
-            select new { c.FlagCode, c.FlagDescription })
+            select new { c.FlagCode, c.FlagDescription, tf.Source, tf.MatchedValue })
             .ToListAsync(ct);
 
         var redflagsCount = tickedFlags.Count;
@@ -186,16 +186,22 @@ internal class FccmTradeCaseService : IFccmTradeCaseService
             TsDate      = now,
         }, ct);
 
-        // N flag event rows — catalogue-driven, NO hardcoded indicator text
+        // N flag event rows — catalogue-driven, NO hardcoded indicator text.
+        // Auto rows append the matched value (e.g. the sanctioned country/good) so
+        // a per-match flag emits one event NAMING each hit, mirroring legacy
+        // PopulateRedflags_Event_Staging which logged the specific country/good.
         foreach (var f in tickedFlags)
         {
+            var description = f.Source == "Auto" && !string.IsNullOrWhiteSpace(f.MatchedValue)
+                ? $"{f.FlagDescription} [{f.MatchedValue}]"
+                : f.FlagDescription;
             await _oracle.InsertEventStagingAsync(new EventStaging
             {
                 MsgId       = messageId,
                 Title       = clientRef,
                 InputMatch  = "Customer",
                 InputName   = "Manual Redflag",
-                Description = f.FlagDescription,
+                Description = description,
                 TsDate      = now,
             }, ct);
         }

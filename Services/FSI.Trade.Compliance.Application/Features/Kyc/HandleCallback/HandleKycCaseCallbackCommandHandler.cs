@@ -12,7 +12,7 @@ public class HandleKycCaseCallbackCommandHandler : IRequestHandler<HandleKycCase
     {
         await _cases.HandleCallbackAsync(new KycCaseCallback
         {
-            FccmCaseId   = req.fccmCaseId,
+            CaseID       = req.caseID,
             ActionCode   = req.actionCode,
             ActionReason = req.actionReason
         }, ct);

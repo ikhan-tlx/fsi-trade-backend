@@ -19,6 +19,7 @@ public class FlagCatalogueConfiguration : IEntityTypeConfiguration<FlagCatalogue
         b.Property(x => x.SeverityLkpId)        .HasColumnName("Severity_Lkp_ID");
         b.Property(x => x.DefaultWeight)        .HasColumnName("Default_Weight")       .HasColumnType("decimal(8,2)");
         b.Property(x => x.RequiresEvidence)     .HasColumnName("Requires_Evidence");
+        b.Property(x => x.RaisePerMatch)        .HasColumnName("Raise_Per_Match");
         b.Property(x => x.SourceSystem)         .HasColumnName("Source_System")        .HasMaxLength(50);
         b.Property(x => x.ActiveFlag)           .HasColumnName("Active_Flag");
         b.Property(x => x.IsBuiltIn)            .HasColumnName("Is_Built_In");
@@ -29,6 +30,15 @@ public class FlagCatalogueConfiguration : IEntityTypeConfiguration<FlagCatalogue
         b.Property(x => x.CreatedDate)          .HasColumnName("Created_Date");
         b.Property(x => x.LastUpdatedBy)        .HasColumnName("Last_Updated_By")      .HasMaxLength(100);
         b.Property(x => x.LastUpdatedDate)      .HasColumnName("Last_Updated_Date");
+
+        // Auto-flag maker-checker lifecycle (2026_06_059)
+        b.Property(x => x.Status)               .HasColumnName("Status")               .HasMaxLength(20);
+        b.Property(x => x.VersionNo)            .HasColumnName("Version_No");
+        b.Property(x => x.SubmittedBy)          .HasColumnName("Submitted_By")         .HasMaxLength(100);
+        b.Property(x => x.SubmittedDate)        .HasColumnName("Submitted_Date");
+        b.Property(x => x.ApprovedBy)           .HasColumnName("Approved_By")          .HasMaxLength(100);
+        b.Property(x => x.ApprovedDate)         .HasColumnName("Approved_Date");
+        b.Property(x => x.ChangeReason)         .HasColumnName("Change_Reason")        .HasMaxLength(1000);
 
         b.HasIndex(x => x.FlagCode).IsUnique();
     }

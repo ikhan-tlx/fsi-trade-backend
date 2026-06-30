@@ -53,7 +53,22 @@ public class KycCaseStatusDto
 
 public class KycCaseCallback
 {
-    public string?  FccmCaseId   { get; set; }
-    public int      ActionCode   { get; set; }       // 30004 = approve, 30003 = reject (legacy codes)
+    /// <summary>
+    /// Inbound FCCM case ID. Wire field is <c>caseID</c> per the legacy
+    /// <c>updateTrnRequest</c> contract. For the KYC tracking row this
+    /// matches <c>KycCaseRequest.FccmCaseId</c>; for Trade transactions
+    /// this is matched against <c>TransactionCode</c> in
+    /// <c>TmX_Transaction_Detail.UDF_Data</c>.
+    /// </summary>
+    public string?  CaseID       { get; set; }
+
+    /// <summary>
+    /// Legacy action code as a string ("30004", "30003", "983", "984", …).
+    /// Kept as string to match the legacy <c>updateTrnRequest.actionCode</c>
+    /// shape — FCCM sometimes wires these as quoted strings. The handler
+    /// matches against <c>IntegrationOptions.FccmActionCodeStatusMap</c>
+    /// (keyed by string) for the Trade verdict path.
+    /// </summary>
+    public string?  ActionCode   { get; set; }
     public string?  ActionReason { get; set; }
 }

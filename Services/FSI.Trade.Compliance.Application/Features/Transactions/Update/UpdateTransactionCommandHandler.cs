@@ -1,5 +1,6 @@
 using System.Text.Json;
 using FSI.Trade.Compliance.Application.Common.Exceptions;
+using FSI.Trade.Compliance.Application.Contracts.Flags;
 using FSI.Trade.Compliance.Application.Contracts.Identity;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
 using FSI.Trade.Compliance.Application.Features.Flags.Write;
@@ -37,18 +38,21 @@ public class UpdateTransactionCommandHandler
     private readonly IApplicationDbContext   _db;
     private readonly ICurrentUserService     _current;
     private readonly IMediator               _mediator;
+    private readonly IAutoFlagEvaluator      _autoFlags;
     private readonly ILogger<UpdateTransactionCommandHandler> _log;
 
     public UpdateTransactionCommandHandler(
         IApplicationDbContext db,
         ICurrentUserService   current,
         IMediator             mediator,
+        IAutoFlagEvaluator    autoFlags,
         ILogger<UpdateTransactionCommandHandler> log)
     {
-        _db       = db;
-        _current  = current;
-        _mediator = mediator;
-        _log      = log;
+        _db        = db;
+        _current   = current;
+        _mediator  = mediator;
+        _autoFlags = autoFlags;
+        _log       = log;
     }
 
     public async Task<TransactionDetailDto> Handle(UpdateTransactionCommand req, CancellationToken ct)
@@ -170,6 +174,19 @@ public class UpdateTransactionCommandHandler
         // children + flag state + history atomically.
         await TransactionFlagDiffer.ApplyAsync(
             _db, req.transactionId, req.flags ?? new(), userId, now, ct);
+
+        // 5.6 Auto flags (rule engine) — evaluate the configured auto red-flag
+        // rules in scope and stage Source=Auto results onto the same context,
+        // committed by the SaveChanges below. Best-effort: a rule-engine fault
+        // must not block the transaction save.
+        try
+        {
+            await _autoFlags.EvaluateAndStageAsync(req.transactionId, userId, now, ct);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Auto-flag evaluation failed for transaction {Txn}; continuing save.", req.transactionId);
+        }
 
         await _db.SaveChangesAsync(ct);
 

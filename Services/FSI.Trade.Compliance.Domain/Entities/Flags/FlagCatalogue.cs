@@ -46,6 +46,15 @@ public class FlagCatalogue
     /// <summary>Whether an evidence attachment is required when this flag is set.</summary>
     public bool      RequiresEvidence      { get; set; }
 
+    /// <summary>
+    /// Auto-flag engine behaviour (2026_06_061). FALSE (default) = AGGREGATE:
+    /// one TmX_Transaction_Flag row per (txn, flag), Matched_Value summarises all
+    /// matches, one FCCM event. TRUE = PER-MATCH: one row per matching
+    /// (field × value) — each sanctioned country / good raises its own flag and
+    /// FCCM event (legacy "flag every field" parity). Ignored for manual flags.
+    /// </summary>
+    public bool      RaisePerMatch         { get; set; }
+
     /// <summary>NULL = manual / analyst-set. Non-NULL = origin upstream system (BRAINS, FCCM, etc.).</summary>
     public string?   SourceSystem          { get; set; }
 
@@ -68,4 +77,14 @@ public class FlagCatalogue
     public DateTime  CreatedDate           { get; set; }
     public string?   LastUpdatedBy         { get; set; }
     public DateTime? LastUpdatedDate       { get; set; }
+
+    // ---- Auto-flag maker-checker lifecycle (2026_06_059) ----
+    /// <summary>Draft | PendingApproval | Active | Retired. Null on legacy manual rows.</summary>
+    public string?   Status                { get; set; }
+    public int?      VersionNo             { get; set; }
+    public string?   SubmittedBy           { get; set; }
+    public DateTime? SubmittedDate         { get; set; }
+    public string?   ApprovedBy            { get; set; }
+    public DateTime? ApprovedDate          { get; set; }
+    public string?   ChangeReason          { get; set; }
 }

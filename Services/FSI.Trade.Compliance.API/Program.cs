@@ -104,6 +104,7 @@ var apiRoutePrefix = builder.Configuration["Api:RoutePrefix"] ?? "api";
 builder.Services.AddControllers(opt =>
 {
     opt.Filters.Add<ExceptionHandlingFilter>();
+    opt.Filters.Add<FSI.Trade.Compliance.API.Filters.AuditActionFilter>();
     opt.Conventions.Add(new ApiRoutePrefixConvention(apiRoutePrefix));
 });
 builder.Services.AddApplicationServices();

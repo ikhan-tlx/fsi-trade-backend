@@ -101,6 +101,31 @@ public class ListTransactionsQueryHandler
                    (t.ProductName             != null && EF.Functions.Like(t.ProductName,             $"%{f}%")));
         }
 
+        // 3b. Structured KPI / segment filters (Option A redesign). Additive,
+        //     AND-combined on top of scope + freetext. Omitted filters are
+        //     no-ops, so the classic list call is unaffected.
+        if (req.ProductId is int productId)
+            q = q.Where(t => t.ProductId == productId);
+
+        if (!string.IsNullOrWhiteSpace(req.Status))
+        {
+            var s = req.Status.Trim();
+            q = q.Where(t => t.Status != null && EF.Functions.Like(t.Status, $"%{s}%"));
+        }
+
+        if (req.Mine == true)
+            q = q.Where(t => t.InboxUserId == userId);
+
+        if (req.CreatedToday == true)
+        {
+            var todayStart    = DateTime.UtcNow.Date;
+            var tomorrowStart = todayStart.AddDays(1);
+            q = q.Where(t => t.CreatedDate >= todayStart && t.CreatedDate < tomorrowStart);
+        }
+
+        if (req.Flagged == true)
+            q = q.Where(t => _db.TransactionFlags.Any(f => f.TransactionId == t.TransactionId && f.IsFlagged));
+
         // 4. Sort. Default: most recent Created_Date first (matches FE
         //    "transactionId-desc" only loosely — Created_Date is the user-
         //    meaningful chronology).
@@ -108,7 +133,7 @@ public class ListTransactionsQueryHandler
 
         // 5. Page + project. Projection keeps the wire payload tight —
         //    20 columns instead of the view's 30.
-        return await q.ToPagedResultAsync(req,
+        var result = await q.ToPagedResultAsync(req,
             source => source.Select(t => new TransactionListItemDto
             {
                 transactionId           = t.TransactionId,
@@ -131,7 +156,99 @@ public class ListTransactionsQueryHandler
                 transactionStatusLkp    = t.TransactionStatusLkp
             }),
             ct);
+
+        // 6. Enrich the page (Option A redesign). Two batched lookups keyed
+        //    on JUST the current page's transaction ids — never the whole
+        //    scoped set — so the cost is bounded by PageSize. Neither field
+        //    exists on TmX_Transaction_VW, hence the secondary round-trips.
+        await EnrichPageAsync(result.items, ct);
+
+        return result;
     }
+
+    /// <summary>
+    /// Fills <see cref="TransactionListItemDto.subProductName"/> and
+    /// <see cref="TransactionListItemDto.flagCount"/> for the rows on the
+    /// current page. Both are additive; absent data leaves the chip blank /
+    /// the count at 0. Sub-product = TmX_Transaction.Sub_Product_Tab_Id →
+    /// TmX_Tab.Tab_Name (NULL for KYC / single-tab / legacy rows). Flag count
+    /// = number of TmX_Transaction_Flag rows currently set (Is_Flagged = 1).
+    /// </summary>
+    private async Task EnrichPageAsync(List<TransactionListItemDto> items, CancellationToken ct)
+    {
+        if (items.Count == 0) return;
+
+        var ids = items.Select(i => i.transactionId).ToList();
+
+        // Sub-product tab name (one query, joined to the tab master).
+        var subProducts = await (
+                from t in _db.Transactions.AsNoTracking()
+                where ids.Contains(t.TransactionId) && t.SubProductTabId != null
+                join tab in _db.Tabs.AsNoTracking() on t.SubProductTabId.Value equals tab.TabId
+                select new { t.TransactionId, tab.TabName })
+            .ToListAsync(ct);
+
+        var subMap = subProducts
+            .GroupBy(x => x.TransactionId)
+            .ToDictionary(g => g.Key, g => g.First().TabName);
+
+        // Flagged-count per transaction (only currently-raised flags).
+        var flagCounts = await _db.TransactionFlags.AsNoTracking()
+            .Where(f => ids.Contains(f.TransactionId) && f.IsFlagged)
+            .GroupBy(f => f.TransactionId)
+            .Select(g => new { TransactionId = g.Key, Count = g.Count() })
+            .ToListAsync(ct);
+
+        var flagMap = flagCounts.ToDictionary(x => x.TransactionId, x => x.Count);
+
+        // Row severity = highest severity among the row's currently-raised
+        // flags. Join active flags → flag catalogue's Severity_Lkp_Id →
+        // FLAG_SEVERITY lookup. One batched query for the page's ids.
+        var sevRows = await (
+                from f in _db.TransactionFlags.AsNoTracking()
+                where ids.Contains(f.TransactionId) && f.IsFlagged
+                join c in _db.FlagCatalogues.AsNoTracking() on f.FlagId equals c.FlagId
+                where c.SeverityLkpId != null
+                join l in _db.Lookups.AsNoTracking() on c.SeverityLkpId.Value equals l.Id
+                where l.LookupType == "FLAG_SEVERITY"
+                select new { f.TransactionId, l.VisibleValue, l.HiddenValue })
+            .ToListAsync(ct);
+
+        // Pick the max-rank severity per transaction.
+        var sevMap = sevRows
+            .GroupBy(x => x.TransactionId)
+            .ToDictionary(
+                g => g.Key,
+                g => g
+                    .Select(x => new { Name = x.VisibleValue, Rank = SeverityRank(x.HiddenValue) })
+                    .OrderByDescending(x => x.Rank)
+                    .First());
+
+        foreach (var item in items)
+        {
+            if (subMap.TryGetValue(item.transactionId, out var name))
+                item.subProductName = name;
+            item.flagCount = flagMap.TryGetValue(item.transactionId, out var c) ? c : 0;
+            if (sevMap.TryGetValue(item.transactionId, out var sev))
+            {
+                item.severity     = sev.Name;
+                item.severityRank = sev.Rank;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Ranks a FLAG_SEVERITY hidden value so we can pick the worst flag on a
+    /// transaction. Unknown values rank 0 (treated as informational).
+    /// </summary>
+    private static int SeverityRank(string? hidden) => (hidden ?? "").Trim().ToUpperInvariant() switch
+    {
+        "CRITICAL" => 4,
+        "HIGH"     => 3,
+        "MEDIUM"   => 2,
+        "LOW"      => 1,
+        _          => 0,
+    };
 
     private static IQueryable<TransactionListView> ApplySort(
         IQueryable<TransactionListView> q, string? sort)
