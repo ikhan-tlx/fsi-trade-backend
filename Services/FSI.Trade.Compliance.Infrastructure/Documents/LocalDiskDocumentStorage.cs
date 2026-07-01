@@ -209,11 +209,27 @@ internal class LocalDiskDocumentStorage : IDocumentStorage
         return Path.GetFileName(trimmed);
     }
 
+    /// <summary>
+    /// Sanitises a subfolder hint into a SAFE, possibly-NESTED relative path
+    /// (e.g. "transaction/detail" → transaction/detail/yyyy/MM/…). Splits on
+    /// both separators, cleans each segment of forbidden chars, and drops
+    /// empty / "."/".." segments so a hint can't traverse out of the base path.
+    /// </summary>
     private static string Sanitise(string subfolder)
     {
-        var trimmed = subfolder.Trim().Trim('/', '\\');
-        foreach (var ch in ForbiddenFileNameChars)
-            trimmed = trimmed.Replace(ch.ToString(), "_");
-        return string.IsNullOrWhiteSpace(trimmed) ? "general" : trimmed;
+        if (string.IsNullOrWhiteSpace(subfolder)) return "general";
+
+        var clean = new List<string>();
+        foreach (var rawSegment in subfolder.Replace('\\', '/').Split('/'))
+        {
+            var seg = rawSegment.Trim();
+            if (seg.Length == 0 || seg == "." || seg == "..") continue;
+            foreach (var ch in ForbiddenFileNameChars)
+                seg = seg.Replace(ch.ToString(), "_");
+            seg = seg.Trim();
+            if (seg.Length > 0) clean.Add(seg);
+        }
+
+        return clean.Count == 0 ? "general" : string.Join("/", clean);
     }
 }

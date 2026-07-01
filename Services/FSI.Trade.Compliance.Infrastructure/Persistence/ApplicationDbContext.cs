@@ -27,6 +27,7 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public DbSet<Lookup>               Lookups                => Set<Lookup>();
     public DbSet<AppConfiguration>     AppConfigurations      => Set<AppConfiguration>();
     public DbSet<KycCaseRequest>       KycCaseRequests        => Set<KycCaseRequest>();
+    public DbSet<CstmBrains>           CstmBrains             => Set<CstmBrains>();
     public DbSet<UserDevice>           UserDevices          => Set<UserDevice>();
     public DbSet<LoginAuditEntry>      LoginAudit           => Set<LoginAuditEntry>();
     public DbSet<Product>              Products             => Set<Product>();

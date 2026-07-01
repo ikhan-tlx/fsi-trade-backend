@@ -24,6 +24,7 @@ public interface IApplicationDbContext
     DbSet<Lookup>               Lookups                { get; }
     DbSet<AppConfiguration>     AppConfigurations      { get; }
     DbSet<KycCaseRequest>       KycCaseRequests        { get; }
+    DbSet<CstmBrains>           CstmBrains             { get; }
     DbSet<UserDevice>           UserDevices          { get; }
     DbSet<LoginAuditEntry>      LoginAudit           { get; }
 

@@ -25,8 +25,17 @@ public class UnlockUserCommandHandler : IRequestHandler<UnlockUserCommand, Unit>
         // touch, applied through UpdateUserAsync so the timestamp lands on the row.
         await _userAuth.UnlockAsync(user, ct);
 
-        user.LastUpdatedBy   = _current.UserName ?? _current.UserId ?? "unknown";
-        user.LastUpdatedDate = DateTime.UtcNow;
+        var actor = _current.UserName ?? _current.UserId ?? "unknown";
+        var now   = DateTime.UtcNow;
+
+        // Clear lock telemetry (auto or admin) and stamp who/when unlocked.
+        user.LockoutReason   = null;
+        user.LockedAt        = null;
+        user.LockedBy        = null;
+        user.UnlockedAt      = now;
+        user.UnlockedBy      = actor;
+        user.LastUpdatedBy   = actor;
+        user.LastUpdatedDate = now;
         await _userAuth.UpdateUserAsync(user, ct);
 
         return Unit.Value;

@@ -1,5 +1,6 @@
 using FSI.Trade.Compliance.Application.Common.Exceptions;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
+using FSI.Trade.Compliance.Application.Features.Users.Common;
 using FSI.Trade.Compliance.Application.Features.Users.List;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
@@ -76,12 +77,24 @@ public class GetUserQueryHandler : IRequestHandler<GetUserQuery, UserDetailDto>
             userTypeLkpId       = u.UserTypeLkpId,
             designationLkpId    = u.DesignationLkpId,
             status              = u.Status,
+            accountStatus       = UserAccountStatus.Derive(u.ActiveFlag, u.LockoutEndDateUtc, u.PasswordExpiryDate, now),
             isActive            = u.ActiveFlag,
             isLockedOut         = u.LockoutEndDateUtc.HasValue && u.LockoutEndDateUtc.Value > now,
+            lockoutEndDateUtc   = u.LockoutEndDateUtc,
+            lockoutReason       = u.LockoutReason,
+            accessFailedCount   = u.AccessFailedCount,
+            lockedAt            = u.LockedAt,
+            lockedBy            = u.LockedBy,
+            unlockedAt          = u.UnlockedAt,
+            unlockedBy          = u.UnlockedBy,
+            deactivatedAt       = u.DeactivatedAt,
+            deactivatedBy       = u.DeactivatedBy,
             twoFactorEnabled    = u.TwoFactorEnabled,
             firstPasswordChange = u.FirstPasswordChange,
+            mustChangePassword  = u.MustChangePassword,
             passwordExpiryDate  = u.PasswordExpiryDate,
             lastLoginDate       = u.LastLoginDate,
+            lastFailedLoginDate = u.LastFailedLoginDate,
             effectiveStartDate  = u.EffectiveStartDate,
             effectiveEndDate    = u.EffectiveEndDate,
             createdDate         = u.CreatedDate,

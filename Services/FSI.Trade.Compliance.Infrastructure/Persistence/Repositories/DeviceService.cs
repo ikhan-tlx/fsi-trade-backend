@@ -102,6 +102,38 @@ public class DeviceService : IDeviceService
         await _db.SaveChangesAsync(ct);
     }
 
+    public async Task RevokeAllForUserAsync(string userId, string reason, string? actingIp, CancellationToken ct = default)
+    {
+        var devices = await _db.UserDevices
+            .Where(d => d.UserId == userId && d.RevokedAt == null)
+            .ToListAsync(ct);
+
+        var now = DateTime.UtcNow;
+        var ids = devices.Select(d => d.DeviceId).ToList();
+
+        // Revoke tokens for this user's devices, plus any user-scoped tokens
+        // whose device link is null, so no live session survives.
+        var tokens = await _db.RefreshTokens
+            .Where(t => t.RevokedAt == null
+                        && ((t.DeviceId != null && ids.Contains(t.DeviceId)) || t.UserId == userId))
+            .ToListAsync(ct);
+
+        foreach (var d in devices)
+        {
+            d.RevokedAt    = now;
+            d.RevokeReason = reason;
+        }
+        foreach (var t in tokens)
+        {
+            t.RevokedAt    = now;
+            t.RevokeReason = reason;
+            t.RevokedByIp  = actingIp;
+        }
+
+        if (devices.Count > 0 || tokens.Count > 0)
+            await _db.SaveChangesAsync(ct);
+    }
+
     private static string NewDeviceId()
     {
         Span<byte> bytes = stackalloc byte[48];

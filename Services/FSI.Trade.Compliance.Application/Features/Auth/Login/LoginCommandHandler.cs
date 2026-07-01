@@ -72,6 +72,16 @@ public class LoginCommandHandler : IRequestHandler<LoginCommand, AuthResponse>
         if (!await _userAuth.CheckPasswordAsync(user, req.password, ct))
         {
             await _userAuth.RecordFailedAccessAsync(user, ct);
+            // Telemetry: stamp last-failed, and when this failure trips the
+            // auto-lockout threshold, record the reason + moment so admins can
+            // distinguish auto-lock from a manual admin lock.
+            user.LastFailedLoginDate = DateTime.UtcNow;
+            if (await _userAuth.IsLockedOutAsync(user, ct) && user.LockoutReason is null)
+            {
+                user.LockoutReason = "Auto";
+                user.LockedAt      = DateTime.UtcNow;
+            }
+            await _userAuth.UpdateUserAsync(user, ct);
             await AuditFail(user.Id, req.username, LoginAuditResult.BadCredentials, "wrong_password", req, ct);
             throw new AuthenticationException("invalid_grant", "Username or password is incorrect.");
         }

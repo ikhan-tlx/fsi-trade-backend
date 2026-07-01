@@ -25,4 +25,7 @@ public interface IDeviceService
 
     /// <summary>Revokes every device for a user EXCEPT the one supplied. The "log me out everywhere else" action.</summary>
     Task RevokeAllExceptAsync(string userId, string keepDeviceId, string reason, string? actingIp, CancellationToken ct = default);
+
+    /// <summary>Revokes ALL of a user's devices and their refresh tokens — used when an admin deactivates or locks the account.</summary>
+    Task RevokeAllForUserAsync(string userId, string reason, string? actingIp, CancellationToken ct = default);
 }

@@ -56,4 +56,21 @@ public class UserAuthenticationService : IUserAuthenticationService
         await _users.SetLockoutEndDateAsync(user, null);
         await _users.ResetAccessFailedCountAsync(user);
     }
+
+    public async Task<(bool ok, IReadOnlyList<string> errors)> SetPasswordAsync(
+        ApplicationUser user, string newPassword, CancellationToken ct = default)
+    {
+        // Admin reset: no old password. Remove-then-add is the UserManager path
+        // that (re-)hashes with the configured V3 hasher.
+        if (await _users.HasPasswordAsync(user))
+        {
+            var removed = await _users.RemovePasswordAsync(user);
+            if (!removed.Succeeded)
+                return (false, removed.Errors.Select(e => e.Description).ToArray());
+        }
+
+        var added = await _users.AddPasswordAsync(user, newPassword);
+        if (added.Succeeded) return (true, Array.Empty<string>());
+        return (false, added.Errors.Select(e => e.Description).ToArray());
+    }
 }

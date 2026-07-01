@@ -11,7 +11,7 @@ public class ApplicationUserConfiguration : IEntityTypeConfiguration<Application
         b.ToTable("TmX_User", "dbo");
         b.HasKey(u => u.Id);
 
-        b.Property(u => u.Id)                       .HasColumnName("User_ID").IsRequired();
+        b.Property(u => u.Id)                       .HasColumnName("User_ID").HasMaxLength(50).IsRequired();
         b.Property(u => u.UserName)                 .HasColumnName("User_Name");
         b.Property(u => u.Email)                    .HasColumnName("Email_Address");
         b.Property(u => u.PhoneNumber)              .HasColumnName("Contact_Number");
@@ -38,6 +38,17 @@ public class ApplicationUserConfiguration : IEntityTypeConfiguration<Application
         b.Property(u => u.LastLoginDate)            .HasColumnName("LastLoginDate");
         b.Property(u => u.PasswordExpiryDate)       .HasColumnName("PasswordExpiryDate");
         b.Property(u => u.FirstPasswordChange)      .HasColumnName("FirstPasswordChange");
+
+        // lockout / lifecycle telemetry from migration 2026_07_002
+        b.Property(u => u.LastFailedLoginDate)      .HasColumnName("Last_Failed_Login_Date");
+        b.Property(u => u.LockoutReason)            .HasColumnName("Lockout_Reason").HasMaxLength(30);
+        b.Property(u => u.LockedAt)                 .HasColumnName("Locked_At");
+        b.Property(u => u.LockedBy)                 .HasColumnName("Locked_By").HasMaxLength(100);
+        b.Property(u => u.UnlockedAt)               .HasColumnName("Unlocked_At");
+        b.Property(u => u.UnlockedBy)               .HasColumnName("Unlocked_By").HasMaxLength(100);
+        b.Property(u => u.DeactivatedAt)            .HasColumnName("Deactivated_At");
+        b.Property(u => u.DeactivatedBy)            .HasColumnName("Deactivated_By").HasMaxLength(100);
+        b.Property(u => u.MustChangePassword)       .HasColumnName("Must_Change_Password");
 
         // lifecycle / audit
         b.Property(u => u.ActiveFlag)               .HasColumnName("Active_Flag");

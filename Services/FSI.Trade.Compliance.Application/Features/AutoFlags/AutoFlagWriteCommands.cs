@@ -8,6 +8,44 @@ using Microsoft.EntityFrameworkCore;
 
 namespace FSI.Trade.Compliance.Application.Features.AutoFlags;
 
+/// <summary>Shared writer for a flag's scope rows. Priority: explicit `scopes`
+/// (product + sub-product tab) → legacy `scopeProductIds` (product-level) → global.
+/// One TmX_Flag_Scope row per entry; dedupes on (Product_ID, Tab_ID).</summary>
+internal static class AutoFlagScopeWriter
+{
+    public static void Write(IApplicationDbContext db, int flagId,
+        List<ScopeEntryDto>? scopes, List<int>? productIds, string user, DateTime now)
+    {
+        var order = 0;
+        if (scopes is { Count: > 0 })
+        {
+            foreach (var key in scopes.Select(s => (s.productId, s.tabId)).Distinct())
+                db.FlagScopes.Add(new FlagScope
+                {
+                    FlagId = flagId, ProductId = key.productId, TabId = key.tabId,
+                    SortOrder = order++, ActiveFlag = true, CreatedBy = user, CreatedDate = now,
+                });
+            return;
+        }
+        if (productIds is { Count: > 0 })
+        {
+            foreach (var pid in productIds.Distinct())
+                db.FlagScopes.Add(new FlagScope
+                {
+                    FlagId = flagId, ProductId = pid, TabId = null,
+                    SortOrder = order++, ActiveFlag = true, CreatedBy = user, CreatedDate = now,
+                });
+            return;
+        }
+        // Nothing specified → applies to all products (global).
+        db.FlagScopes.Add(new FlagScope
+        {
+            FlagId = flagId, ProductId = null, TabId = null,
+            SortOrder = 0, ActiveFlag = true, CreatedBy = user, CreatedDate = now,
+        });
+    }
+}
+
 // ===================== Create ==========================================
 /// <summary>POST /api/v1/AutoFlag — create an auto flag (Draft) + its rules + scope.</summary>
 public class CreateAutoFlagCommand : AutoFlagWriteModel, IRequest<int> { }
@@ -51,24 +89,10 @@ public class CreateAutoFlagCommandHandler : IRequestHandler<CreateAutoFlagComman
         _db.FlagCatalogues.Add(flag);
         await _db.SaveChangesAsync(ct);   // get FlagId
 
-        WriteScopes(flag.FlagId, req.scopeProductIds, user, now);
+        AutoFlagScopeWriter.Write(_db, flag.FlagId, req.scopes, req.scopeProductIds, user, now);
         WriteRules(flag.FlagId, req.rules, user, now);
         await _db.SaveChangesAsync(ct);
         return flag.FlagId;
-    }
-
-    private void WriteScopes(int flagId, List<int>? productIds, string user, DateTime now)
-    {
-        if (productIds is { Count: > 0 })
-        {
-            var order = 0;
-            foreach (var pid in productIds.Distinct())
-                _db.FlagScopes.Add(new FlagScope { FlagId = flagId, ProductId = pid, SortOrder = order++, ActiveFlag = true, CreatedBy = user, CreatedDate = now });
-        }
-        else
-        {
-            _db.FlagScopes.Add(new FlagScope { FlagId = flagId, ProductId = null, SortOrder = 0, ActiveFlag = true, CreatedBy = user, CreatedDate = now });
-        }
     }
 
     private void WriteRules(int flagId, List<AutoFlagRuleDto>? rules, string user, DateTime now)
@@ -133,16 +157,7 @@ public class UpdateAutoFlagCommandHandler : IRequestHandler<UpdateAutoFlagComman
         _db.FlagRules.RemoveRange(oldRules);
         await _db.SaveChangesAsync(ct);
 
-        if (req.scopeProductIds is { Count: > 0 })
-        {
-            var order = 0;
-            foreach (var pid in req.scopeProductIds.Distinct())
-                _db.FlagScopes.Add(new FlagScope { FlagId = flag.FlagId, ProductId = pid, SortOrder = order++, ActiveFlag = true, CreatedBy = user, CreatedDate = now });
-        }
-        else
-        {
-            _db.FlagScopes.Add(new FlagScope { FlagId = flag.FlagId, ProductId = null, SortOrder = 0, ActiveFlag = true, CreatedBy = user, CreatedDate = now });
-        }
+        AutoFlagScopeWriter.Write(_db, flag.FlagId, req.scopes, req.scopeProductIds, user, now);
 
         if (req.rules != null)
             foreach (var r in req.rules)

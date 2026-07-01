@@ -1,5 +1,6 @@
 using FSI.Trade.Compliance.Application.Common.Models;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
+using FSI.Trade.Compliance.Application.Features.Users.Common;
 using FSI.Trade.Compliance.Domain.Entities;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
@@ -44,7 +45,9 @@ public class ListUsersQueryHandler : IRequestHandler<ListUsersQuery, PagedResult
             {
                 u.Id, u.UserName, u.Email, u.FirstName, u.MiddleName, u.LastName,
                 u.PhoneNumber, u.Status, u.ActiveFlag,
-                u.LockoutEndDateUtc, u.LastLoginDate, u.CreatedDate, u.CreatedBy
+                u.LockoutEndDateUtc, u.LockoutReason, u.AccessFailedCount,
+                u.LastLoginDate, u.LastFailedLoginDate, u.PasswordExpiryDate,
+                u.MustChangePassword, u.CreatedDate, u.CreatedBy
             })
             .ToListAsync(ct);
 
@@ -100,9 +103,16 @@ public class ListUsersQueryHandler : IRequestHandler<ListUsersQuery, PagedResult
             lastName      = u.LastName,
             phoneNumber   = u.PhoneNumber,
             status        = u.Status,
+            accountStatus = UserAccountStatus.Derive(u.ActiveFlag, u.LockoutEndDateUtc, u.PasswordExpiryDate, now),
             isActive      = u.ActiveFlag,
             isLockedOut   = u.LockoutEndDateUtc.HasValue && u.LockoutEndDateUtc.Value > now,
-            lastLoginDate = u.LastLoginDate,
+            lockoutEndDateUtc   = u.LockoutEndDateUtc,
+            lockoutReason       = u.LockoutReason,
+            accessFailedCount   = u.AccessFailedCount,
+            lastLoginDate       = u.LastLoginDate,
+            lastFailedLoginDate = u.LastFailedLoginDate,
+            passwordExpiryDate  = u.PasswordExpiryDate,
+            mustChangePassword  = u.MustChangePassword,
             createdDate   = u.CreatedDate,
             createdBy     = u.CreatedBy,
             branchId      = branchLookup.TryGetValue(u.Id, out var br) ? br?.CompanyBranchId : null,

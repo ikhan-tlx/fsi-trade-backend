@@ -190,6 +190,23 @@ public class UpdateTransactionCommandHandler
 
         await _db.SaveChangesAsync(ct);
 
+        // ---------- 6. checkbox_file → TransactionDocument bridge ----------
+        // Surface attestation documents (checkbox_file fields) in the Documents
+        // tab by linking their uploaded Document id into the TransactionDocument
+        // bridge. Best-effort + add-only (the bridge also holds manual uploads,
+        // so we never remove here) — a fault must not block the save.
+        try
+        {
+            await LinkCheckboxFileDocumentsAsync(
+                req.transactionId, tx.ProductId, tx.TenantId, req.sections, userId, now, ct);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex,
+                "Linking checkbox_file documents failed for transaction {Txn}; continuing.",
+                req.transactionId);
+        }
+
         _log.LogInformation(
             "Transaction {TransactionId} updated by {UserId} — beneficiaries={BCount}, stakeholders={SCount}, flagChanges={FCount}.",
             req.transactionId, userId,
@@ -199,6 +216,112 @@ public class UpdateTransactionCommandHandler
 
         // 6. Return the canonical detail shape via the existing read handler.
         return await _mediator.Send(new GetTransactionByIdQuery(req.transactionId), ct);
+    }
+
+    // ============================================================
+    // checkbox_file → TransactionDocument bridge
+    // ============================================================
+
+    /// <summary>
+    /// Links the documents attached to <c>checkbox_file</c> attestation fields
+    /// into the <c>TransactionDocument</c> bridge so they appear in the
+    /// Documents tab. ADD-ONLY: the bridge also stores manually-uploaded
+    /// attachments and carries no source marker, so we never remove here.
+    /// checkbox_file is identified by the tenant's 'field' lookup display name
+    /// ("Checkbox_file") — the same name-based detection the FE uses, since the
+    /// type shares Field_Type_Lkp 2 with the date picker.
+    /// </summary>
+    private async Task LinkCheckboxFileDocumentsAsync(
+        int transactionId, int productId, int tenantId,
+        IReadOnlyDictionary<string, JsonElement> sections,
+        string userId, DateTime now, CancellationToken ct)
+    {
+        if (sections is null || sections.Count == 0) return;
+
+        // checkbox_file field-type codes (by lookup display name).
+        var docTypeCodes = (await _db.Lookups.AsNoTracking()
+                .Where(l => l.LookupType == "field"
+                         && l.HiddenValue != null
+                         && l.VisibleValue != null)
+                .Select(l => new { l.HiddenValue, l.VisibleValue })
+                .ToListAsync(ct))
+            .Where(r => (r.VisibleValue ?? string.Empty)
+                            .Replace("_", "").Replace("-", "").Trim()
+                            .Equals("checkboxfile", StringComparison.OrdinalIgnoreCase)
+                     && int.TryParse(r.HiddenValue, out _))
+            .Select(r => int.Parse(r.HiddenValue!))
+            .ToHashSet();
+        if (docTypeCodes.Count == 0) return;
+
+        // checkbox_file field NAMES configured for this product.
+        var fieldNames = (await _db.TenantFieldSetups.AsNoTracking()
+                .Where(f => f.ProductId == productId
+                         && f.IsActive
+                         && f.FieldTypeLkp != null
+                         && f.FieldName != null
+                         && docTypeCodes.Contains(f.FieldTypeLkp.Value))
+                .Select(f => f.FieldName!)
+                .ToListAsync(ct))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (fieldNames.Count == 0) return;
+
+        // Collect submitted documentIds for those fields (scan every section bag;
+        // field names are unique across sections).
+        var docIds = new HashSet<int>();
+        foreach (var section in sections.Values)
+        {
+            if (section.ValueKind != JsonValueKind.Object) continue;
+            foreach (var prop in section.EnumerateObject())
+            {
+                if (!fieldNames.Contains(prop.Name)) continue;
+                if (TryReadDocumentId(prop.Value, out var id)) docIds.Add(id);
+            }
+        }
+        if (docIds.Count == 0) return;
+
+        var alreadyLinked = (await _db.TransactionDocuments.AsNoTracking()
+                .Where(td => td.TransactionId == transactionId && td.ActiveFlag)
+                .Select(td => td.DocumentId)
+                .ToListAsync(ct))
+            .ToHashSet();
+
+        var toLink = docIds.Where(id => !alreadyLinked.Contains(id)).ToList();
+        if (toLink.Count == 0) return;
+
+        // Only bridge ids backed by a real Document row (skip stale/legacy values).
+        var validIds = (await _db.Documents.AsNoTracking()
+                .Where(d => toLink.Contains(d.DocumentId))
+                .Select(d => d.DocumentId)
+                .ToListAsync(ct))
+            .ToHashSet();
+
+        var added = 0;
+        foreach (var id in toLink)
+        {
+            if (!validIds.Contains(id)) continue;
+            _db.TransactionDocuments.Add(new Domain.Entities.Documents.TransactionDocument
+            {
+                TransactionId = transactionId,
+                DocumentId    = id,
+                TenantId      = tenantId,
+                ActiveFlag    = true,
+                CreatedBy     = userId,
+                CreatedDate   = now,
+            });
+            added++;
+        }
+        if (added > 0) await _db.SaveChangesAsync(ct);
+    }
+
+    private static bool TryReadDocumentId(JsonElement value, out int id)
+    {
+        id = 0;
+        return value.ValueKind switch
+        {
+            JsonValueKind.Number => value.TryGetInt32(out id) && id > 0,
+            JsonValueKind.String => int.TryParse(value.GetString(), out id) && id > 0,
+            _ => false,
+        };
     }
 
     // ============================================================

@@ -90,13 +90,27 @@ public class SandboxKycScreeningService : IKycScreeningService
             if (string.Equals(_opt.SandboxForceStatus, "fail", StringComparison.OrdinalIgnoreCase))
                 return new BrainsKycResponse { Status = "", TransOk = "1", ErrorNo = "-1", ErrorMsg = "SANDBOX simulated failure" };
 
-            return new BrainsKycResponse { Status = _opt.SandboxForceStatus!.Trim(), TransOk = "0", ErrorNo = "", ErrorMsg = "" };
+            // Legacy servlet shape: STATUS = "{riskCode}|{customerName}".
+            return new BrainsKycResponse
+            {
+                Status   = $"{_opt.SandboxForceStatus!.Trim()}|{SandboxName(customerId)}",
+                TransOk  = "0", ErrorNo = "", ErrorMsg = ""
+            };
         }
 
-        // 3. Deterministic band by customer code (stable per customer).
+        // 3. Deterministic band by customer code (stable per customer). Emit the
+        //    legacy pipe-delimited "{riskCode}|{customerName}" STATUS so the mapper
+        //    and downstream parity pipeline exercise the real contract.
         var bucket = (uint)(customerId?.GetHashCode() ?? 0) % (uint)Bands.Length;
-        return new BrainsKycResponse { Status = Bands[bucket], TransOk = "0", ErrorNo = "", ErrorMsg = "" };
+        return new BrainsKycResponse
+        {
+            Status   = $"{Bands[bucket]}|{SandboxName(customerId)}",
+            TransOk  = "0", ErrorNo = "", ErrorMsg = ""
+        };
     }
+
+    private static string SandboxName(string? customerId)
+        => string.IsNullOrWhiteSpace(customerId) ? "SANDBOX CUSTOMER" : $"SANDBOX {customerId}";
 
     private static string Mask(string? id)
         => string.IsNullOrEmpty(id) ? "(none)"

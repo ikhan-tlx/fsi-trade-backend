@@ -48,6 +48,11 @@ public class AutoFlagController : ControllerBase
     public async Task<IActionResult> ReferenceLists(CancellationToken ct)
         => Ok(ResponseViewModel<List<ReferenceListOptionDto>>.Ok(await _mediator.Send(new ListAutoFlagReferenceListsQuery(), ct)));
 
+    [HttpGet("SubProducts")]
+    [RequiresPrivilege("AutoFlags.View")]
+    public async Task<IActionResult> SubProducts(CancellationToken ct)
+        => Ok(ResponseViewModel<List<SubProductGroupDto>>.Ok(await _mediator.Send(new ListAutoFlagSubProductsQuery(), ct)));
+
     [HttpGet("{id:int}")]
     [RequiresPrivilege("AutoFlags.View")]
     public async Task<IActionResult> Get(int id, CancellationToken ct)

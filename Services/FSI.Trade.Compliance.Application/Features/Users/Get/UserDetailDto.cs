@@ -17,12 +17,25 @@ public class UserDetailDto
     public int?      userTypeLkpId      { get; set; }
     public int?      designationLkpId   { get; set; }
     public string?   status             { get; set; }
+    /// <summary>Derived single badge: Active | Inactive | Locked | PasswordExpired.</summary>
+    public string?   accountStatus      { get; set; }
     public bool      isActive           { get; set; }
     public bool      isLockedOut        { get; set; }
+    public DateTime? lockoutEndDateUtc  { get; set; }
+    public string?   lockoutReason      { get; set; }
+    public int       accessFailedCount  { get; set; }
+    public DateTime? lockedAt           { get; set; }
+    public string?   lockedBy           { get; set; }
+    public DateTime? unlockedAt         { get; set; }
+    public string?   unlockedBy         { get; set; }
+    public DateTime? deactivatedAt      { get; set; }
+    public string?   deactivatedBy      { get; set; }
     public bool      twoFactorEnabled   { get; set; }
     public bool      firstPasswordChange{ get; set; }
+    public bool      mustChangePassword { get; set; }
     public DateTime? passwordExpiryDate { get; set; }
     public DateTime? lastLoginDate      { get; set; }
+    public DateTime? lastFailedLoginDate{ get; set; }
     public DateTime  effectiveStartDate { get; set; }
     public DateTime  effectiveEndDate   { get; set; }
     public DateTime  createdDate        { get; set; }

@@ -75,9 +75,16 @@ public class GetAutoFlagByIdQueryHandler : IRequestHandler<GetAutoFlagByIdQuery,
         if (f is null) return null;
 
         var sev = await AutoFlagLookup.SeverityNamesAsync(_db, ct);
-        var scopeIds = await _db.FlagScopes.AsNoTracking()
-            .Where(s => s.FlagId == f.FlagId && s.ActiveFlag && s.ProductId != null)
-            .Select(s => s.ProductId!.Value).Distinct().ToListAsync(ct);
+        // Full scope incl. sub-product (tab); + legacy product-id list for back-compat.
+        var scopeRows = await _db.FlagScopes.AsNoTracking()
+            .Where(s => s.FlagId == f.FlagId && s.ActiveFlag)
+            .Select(s => new { s.ProductId, s.TabId })
+            .ToListAsync(ct);
+        var scopes = scopeRows
+            .Select(s => new ScopeEntryDto { productId = s.ProductId, tabId = s.TabId })
+            .ToList();
+        var scopeIds = scopeRows.Where(s => s.ProductId != null)
+            .Select(s => s.ProductId!.Value).Distinct().ToList();
 
         var ruleRows = await _db.FlagRules.AsNoTracking()
             .Where(r => r.FlagId == f.FlagId)
@@ -110,6 +117,7 @@ public class GetAutoFlagByIdQueryHandler : IRequestHandler<GetAutoFlagByIdQuery,
             status          = f.Status ?? (f.ActiveFlag ? "Active" : "Draft"),
             products        = scopeIds.Select(i => i.ToString()).ToList(),
             scopeProductIds = scopeIds,
+            scopes          = scopes,
             raisePerMatch   = f.RaisePerMatch,
             updatedAt       = (f.LastUpdatedDate ?? f.CreatedDate).ToString("o"),
             rules           = rules,
@@ -275,6 +283,50 @@ public class ListAutoFlagReferenceListsQueryHandler : IRequestHandler<ListAutoFl
             .Select(l => new ReferenceListOptionDto { code = l.ListCode, name = l.ListName })
             .ToListAsync(ct);
         return built.Concat(custom).ToList();
+    }
+}
+
+// ===================== Sub-products (scope tree) =======================
+/// <summary>GET /api/v1/AutoFlag/SubProducts — every product with its sub-product tabs,
+/// for the scope editor. Sourced from TmX_Entity_Tab_Product_Mapping + Tabs + Products.</summary>
+public class ListAutoFlagSubProductsQuery : IRequest<List<SubProductGroupDto>> { }
+
+public class ListAutoFlagSubProductsQueryHandler : IRequestHandler<ListAutoFlagSubProductsQuery, List<SubProductGroupDto>>
+{
+    private readonly IApplicationDbContext _db;
+    public ListAutoFlagSubProductsQueryHandler(IApplicationDbContext db) => _db = db;
+
+    public async Task<List<SubProductGroupDto>> Handle(ListAutoFlagSubProductsQuery req, CancellationToken ct)
+    {
+        var prods = (await _db.Products.AsNoTracking()
+                .Select(p => new { p.ProductId, p.ProductName }).ToListAsync(ct))
+            .GroupBy(p => p.ProductId).ToDictionary(g => g.Key, g => g.First().ProductName);
+
+        var tabNames = (await _db.Tabs.AsNoTracking()
+                .Select(t => new { t.TabId, t.TabName }).ToListAsync(ct))
+            .GroupBy(t => t.TabId).ToDictionary(g => g.Key, g => g.First().TabName);
+
+        var maps = await _db.EntityTabProductMappings.AsNoTracking()
+            .Select(m => new { m.ProductId, m.TabId })
+            .Distinct().ToListAsync(ct);
+
+        return maps
+            .GroupBy(m => m.ProductId)
+            .Where(g => prods.ContainsKey(g.Key))
+            .Select(g => new SubProductGroupDto
+            {
+                productId   = g.Key,
+                productName = prods.TryGetValue(g.Key, out var pn) && !string.IsNullOrWhiteSpace(pn) ? pn : $"Product {g.Key}",
+                tabs = g.Select(m => m.TabId).Distinct()
+                        .Select(tid => new SubProductTabDto
+                        {
+                            tabId = tid,
+                            tabName = tabNames.TryGetValue(tid, out var tn) && !string.IsNullOrWhiteSpace(tn) ? tn : $"Tab {tid}",
+                        })
+                        .OrderBy(t => t.tabName).ToList(),
+            })
+            .OrderBy(x => x.productName)
+            .ToList();
     }
 }
 

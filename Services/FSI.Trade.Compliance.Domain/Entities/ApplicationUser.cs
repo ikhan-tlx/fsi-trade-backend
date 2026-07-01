@@ -37,6 +37,18 @@ public class ApplicationUser
     public DateTime? PasswordExpiryDate { get; set; }
     public bool FirstPasswordChange { get; set; }
 
+    // Lockout / lifecycle telemetry added by 2026_07_002 (additive).
+    public DateTime? LastFailedLoginDate { get; set; }
+    public string? LockoutReason { get; set; }      // 'Auto' | 'AdminLock'
+    public DateTime? LockedAt { get; set; }
+    public string? LockedBy { get; set; }
+    public DateTime? UnlockedAt { get; set; }
+    public string? UnlockedBy { get; set; }
+    public DateTime? DeactivatedAt { get; set; }
+    public string? DeactivatedBy { get; set; }
+    /// <summary>Must change password on next login (first-login OR admin-forced).</summary>
+    public bool MustChangePassword { get; set; }
+
     // Lifecycle
     public bool ActiveFlag { get; set; }
     public DateTime EffectiveStartDate { get; set; }

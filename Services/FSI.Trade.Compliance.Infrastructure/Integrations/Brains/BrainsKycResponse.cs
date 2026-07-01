@@ -41,14 +41,32 @@ public static class BrainsResponseMapper
     public static bool IsSuccess(string? transOk)
         => string.Equals(transOk?.Trim(), "0", StringComparison.Ordinal);
 
-    public static string? RiskBand(string? status) => status?.Trim() switch
+    /// <summary>
+    /// Legacy BRAINS servlet returns STATUS as a pipe-delimited
+    /// "{riskCode}|{customerName}" string (e.g. "2|ACME Corp"); older builds sent
+    /// just the code. Take the first segment as the risk code, then map it.
+    /// </summary>
+    public static string? RiskBand(string? status)
     {
-        "0" => "PEP",
-        "1" => "High",
-        "2" => "Medium",
-        "3" => "Low",
-        _   => null
-    };
+        if (string.IsNullOrWhiteSpace(status)) return null;
+        var code = status.Split('|')[0].Trim();
+        return code switch
+        {
+            "0" => "PEP",
+            "1" => "High",
+            "2" => "Medium",
+            "3" => "Low",
+            _   => null
+        };
+    }
+
+    /// <summary>Second pipe segment of STATUS, if present, is the customer name.</summary>
+    public static string? CustomerNameFromStatus(string? status)
+    {
+        if (string.IsNullOrWhiteSpace(status)) return null;
+        var parts = status.Split('|');
+        return parts.Length > 1 && !string.IsNullOrWhiteSpace(parts[1]) ? parts[1].Trim() : null;
+    }
 
     public static KycResult? ToKycResult(BrainsKycResponse? resp)
     {
@@ -57,6 +75,6 @@ public static class BrainsResponseMapper
         var band = RiskBand(resp.Status);
         if (band is null) return null;
 
-        return new KycResult { RiskScore = band, CustomerName = null };
+        return new KycResult { RiskScore = band, CustomerName = CustomerNameFromStatus(resp.Status) };
     }
 }

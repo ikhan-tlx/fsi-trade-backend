@@ -6,6 +6,8 @@ using FSI.Trade.Compliance.Application.Features.Users.Create;
 using FSI.Trade.Compliance.Application.Features.Users.Get;
 using FSI.Trade.Compliance.Application.Features.Users.Holidays;
 using FSI.Trade.Compliance.Application.Features.Users.List;
+using FSI.Trade.Compliance.Application.Features.Users.Lock;
+using FSI.Trade.Compliance.Application.Features.Users.ResetPassword;
 using FSI.Trade.Compliance.Application.Features.Users.SetActive;
 using FSI.Trade.Compliance.Application.Features.Users.Unlock;
 using FSI.Trade.Compliance.Application.Features.Users.Update;
@@ -123,6 +125,25 @@ public class UserController : ControllerBase
     {
         await _mediator.Send(new UnlockUserCommand(id), ct);
         return Ok(ResponseViewModel<object>.Ok(new { userId = id, isLockedOut = false }));
+    }
+
+    // ---------- Manual lock (admin) ----------
+    [HttpPost("{id}/Lock")]
+    [RequiresPrivilege("Users.UnlockUser")]
+    public async Task<IActionResult> Lock(string id, CancellationToken ct)
+    {
+        await _mediator.Send(new LockUserCommand(id), ct);
+        return Ok(ResponseViewModel<object>.Ok(new { userId = id, isLockedOut = true }));
+    }
+
+    // ---------- Admin password reset (force change on next login) ----------
+    [HttpPost("{id}/ResetPassword")]
+    [RequiresPrivilege("Users.Update")]
+    public async Task<IActionResult> ResetPassword(string id, [FromBody] ResetUserPasswordCommand body, CancellationToken ct)
+    {
+        body.userId = id;
+        await _mediator.Send(body, ct);
+        return Ok(ResponseViewModel<object>.Ok(new { userId = id, mustChangePassword = true }));
     }
 
     // ----------------------------------------------------------------

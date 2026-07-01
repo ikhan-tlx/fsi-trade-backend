@@ -40,4 +40,12 @@ public interface IUserAuthenticationService
     /// AccessFailedCount to 0.
     /// </summary>
     Task                   UnlockAsync(ApplicationUser user, CancellationToken ct = default);
+
+    /// <summary>
+    /// Admin-initiated password set (no old-password check). Removes the current
+    /// password and adds the supplied one. Caller is responsible for forcing a
+    /// change-on-next-login and revoking sessions.
+    /// </summary>
+    Task<(bool ok, IReadOnlyList<string> errors)>
+                           SetPasswordAsync(ApplicationUser user, string newPassword, CancellationToken ct = default);
 }

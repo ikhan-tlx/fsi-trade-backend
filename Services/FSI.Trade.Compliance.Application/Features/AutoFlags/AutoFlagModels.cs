@@ -34,11 +34,22 @@ public class AutoFlagSummaryDto
     public string?   updatedAt { get; set; }
 }
 
+/// <summary>One flag-scope entry. tabId = null means "all sub-products of the product";
+/// productId = null means "all products" (global). Maps 1:1 to TmX_Flag_Scope.</summary>
+public class ScopeEntryDto
+{
+    public int?  productId { get; set; }
+    public int?  tabId     { get; set; }
+}
+
 public class AutoFlagDetailDto : AutoFlagSummaryDto
 {
     public string?            description     { get; set; }
     public string?            category        { get; set; }
+    /// <summary>Legacy product-level scope (kept for back-compat; product ids only).</summary>
     public List<int>          scopeProductIds { get; set; } = new();
+    /// <summary>Full scope incl. sub-product (tab). Preferred over scopeProductIds.</summary>
+    public List<ScopeEntryDto> scopes         { get; set; } = new();
     /// <summary>FALSE (default) = one flag summarising all matches; TRUE = one flag per matching value.</summary>
     public bool               raisePerMatch   { get; set; }
     public List<AutoFlagRuleDto> rules        { get; set; } = new();
@@ -69,6 +80,20 @@ public class ReferenceListOptionDto
     public string name { get; set; } = "";
 }
 
+/// <summary>Products with their sub-product tabs — for the scope editor tree.</summary>
+public class SubProductGroupDto
+{
+    public int    productId   { get; set; }
+    public string productName { get; set; } = "";
+    public List<SubProductTabDto> tabs { get; set; } = new();
+}
+
+public class SubProductTabDto
+{
+    public int    tabId   { get; set; }
+    public string tabName { get; set; } = "";
+}
+
 public class AutoFlagTestResultDto
 {
     public bool         wouldRaise    { get; set; }
@@ -87,7 +112,8 @@ public class AutoFlagWriteModel
     public string?  name            { get; set; }
     public string?  description     { get; set; }
     public string?  severity        { get; set; }      // Critical|High|Medium|Low|Info
-    public List<int>? scopeProductIds { get; set; }
+    public List<int>? scopeProductIds { get; set; }     // legacy product-level scope (back-compat)
+    public List<ScopeEntryDto>? scopes { get; set; }    // preferred: product + sub-product (tab) scope
     public bool?    raisePerMatch   { get; set; }       // null = leave unchanged on update; defaults false on create
     public List<AutoFlagRuleDto>? rules { get; set; }
 }
