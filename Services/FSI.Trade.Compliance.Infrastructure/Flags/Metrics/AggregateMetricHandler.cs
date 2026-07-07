@@ -41,6 +41,13 @@ public sealed class AggregateMetricHandler : IRuleMetricHandler
         new MetricParamDef("filterOp", "Only include where — operator", "enum",
             Options: new[] { "LessThan", "GreaterThan", "Equals", "NotEquals" }),
         new MetricParamDef("filterValue", "Only include where — value", "text"),
+        // Structural scope layered ON TOP of the (always-customer) window: customer → product →
+        // sub-product. Optional; omitting them counts the customer's whole in-window history.
+        new MetricParamDef("productId", "Restrict to product", "number"),
+        new MetricParamDef("subProductTabId", "Restrict to sub-product", "number"),
+        // "SubProduct" makes CountDistinct count distinct sub-products (SubProductTabId) rather
+        // than distinct field values — powers the "distinct sub-product count" scenario.
+        new MetricParamDef("dimension", "Count of", "enum", Options: new[] { "Transaction", "SubProduct" }),
     };
 
     public async Task<MetricResult> ComputeAsync(MetricContext ctx, CancellationToken ct)
@@ -55,6 +62,11 @@ public sealed class AggregateMetricHandler : IRuleMetricHandler
         var mode     = Str(spec, "mode") ?? "IntraTransaction";
         var field    = Str(spec, "field");
         var window   = Int(spec, "windowDays");
+
+        // Structural scope + distinct dimension (all optional, layered on the customer window).
+        var dimension       = Str(spec, "dimension");
+        var restrictProduct = Int(spec, "productId");
+        var restrictSubProd = Int(spec, "subProductTabId");
 
         var filter = ParseFilter(spec);
 
@@ -90,7 +102,28 @@ public sealed class AggregateMetricHandler : IRuleMetricHandler
         var includeSelf = Bool(spec, "includeSelf") ?? true;
         if (!includeSelf) rows = rows.Where(r => r.TransactionId != ctx.Tx.TransactionId).ToList();
 
+        // Structural narrowing layered ON TOP of the always-customer window: customer → product
+        // → sub-product. Both optional; omitting them keeps the whole-customer-history behaviour.
+        if (restrictProduct is int rp) rows = rows.Where(r => r.ProductId == rp).ToList();
+        if (restrictSubProd is int rs) rows = rows.Where(r => r.SubProductTabId == rs).ToList();
+
+        // Distinct sub-product count: how many *different* sub-products the customer used in the
+        // window (within the product scope), independent of any UDF field. Powers the
+        // "distinct sub-products > N" scenario.
+        if (string.Equals(function, "CountDistinct", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(dimension, "SubProduct", StringComparison.OrdinalIgnoreCase))
+        {
+            var distinctSub = rows.Where(r => r.SubProductTabId != null)
+                                  .Select(r => r.SubProductTabId!.Value)
+                                  .Distinct().Count();
+            return MetricResult.Ok(distinctSub.ToString(CultureInfo.InvariantCulture),
+                new { function, mode, dimension = "SubProduct", windowDays = window, from, to,
+                      productId = restrictProduct, distinctSubProducts = distinctSub, txnCount = rows.Count });
+        }
+
         // Pre-flatten once so both the filter and the value collection read the same map.
+        // (For a plain Count the structural restriction above already yields the sub-product
+        // frequency, so no field is needed — powers the "sub-product used > N times" scenario.)
         var flats = rows.Select(r => (row: r, flat: UdfFlatten.Flatten(r.UdfData))).ToList();
         if (filter is not null && !string.IsNullOrWhiteSpace(filter.Field))
             flats = flats.Where(x =>
