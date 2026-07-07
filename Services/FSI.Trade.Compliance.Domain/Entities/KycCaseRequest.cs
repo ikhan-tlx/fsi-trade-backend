@@ -25,6 +25,14 @@ public class KycCaseRequest
     public DateTime? LastPolledAt    { get; set; }
     public string?   ErrorDetail     { get; set; }
 
+    /// <summary>Stamped by the poller when the row transitions to
+    /// <see cref="KycCaseStatus.CaseCreated"/>. Feeds the FE lifecycle stepper.</summary>
+    public DateTime? CaseCreatedAt   { get; set; }
+
+    /// <summary>Stamped by the poller when the row transitions to
+    /// <see cref="KycCaseStatus.RiskAssessed"/>. Feeds the FE lifecycle stepper.</summary>
+    public DateTime? RiskAssessedAt  { get; set; }
+
     public DateTime  LastUpdatedAt   { get; set; }
 }
 

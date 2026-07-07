@@ -35,6 +35,7 @@ public class TenantFieldSetupConfiguration : IEntityTypeConfiguration<TenantFiel
 
         // Added by migration 20260522_001_DynamicFormEnhancements.
         b.Property(x => x.IsActive)                 .HasColumnName("Is_Active");
+        b.Property(x => x.IsAmountField)            .HasColumnName("Is_Amount_Field");
         b.Property(x => x.UdfData)                  .HasColumnName("UDF_Data");
 
         // Added by migration 2026_05_029_AddPlaceholderToTenantFieldSetup.

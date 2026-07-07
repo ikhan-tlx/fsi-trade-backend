@@ -18,6 +18,21 @@
     <ProjectReference Include="..\FSI.Trade.Compliance.Infrastructure\FSI.Trade.Compliance.Infrastructure.csproj" />
   </ItemGroup>
 
+  <!-- Onboarding mapping profiles (onboarding.*.mapping.json): the mapping loader
+       reads these from Integration:Onboarding:MappingDirectory at runtime, so they
+       MUST ship with every deployment. The Web SDK already globs *.json as Content;
+       we set the copy metadata on those existing items. Setting BOTH
+       CopyToOutputDirectory (dev/run -> bin) AND CopyToPublishDirectory (publish
+       output) guarantees they are present in every environment. Only these two files
+       are required at runtime; mapping.schema.json is a dev-time authoring aid kept
+       under docs/ and is deliberately NOT shipped. -->
+  <ItemGroup>
+    <Content Update="Mappings\onboarding\*.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.10" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.8.1" />

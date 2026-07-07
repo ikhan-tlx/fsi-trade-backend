@@ -29,6 +29,13 @@ public class FlagRule
     public string?   StaticValue       { get; set; }
     public string?   ReferenceListCode { get; set; }
 
+    /// <summary>Optional scale applied to the RIGHT operand value:
+    /// rhs = fieldValue * (RightFactorUnit == "Percent" ? RightFactor/100 : RightFactor).
+    /// Null => x1 (unchanged). Lets a rule read "&gt; KYC field x 1.5" or "&gt; x 60%".</summary>
+    public decimal?  RightFactor       { get; set; }
+    /// <summary>"Multiplier" | "Percent". Null treated as Multiplier.</summary>
+    public string?   RightFactorUnit   { get; set; }
+
     /// <summary>JSON spec for an aggregate operand, e.g. {"metric":"TxnVolume","window":90}.</summary>
     public string?   AggregateSpec     { get; set; }
 

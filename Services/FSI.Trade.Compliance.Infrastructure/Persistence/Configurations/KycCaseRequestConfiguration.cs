@@ -25,6 +25,8 @@ public class KycCaseRequestConfiguration : IEntityTypeConfiguration<KycCaseReque
         b.Property(x => x.Status)          .HasColumnName("Status")          .HasMaxLength(50).IsRequired();
         b.Property(x => x.LastPolledAt)    .HasColumnName("Last_Polled_At");
         b.Property(x => x.ErrorDetail)     .HasColumnName("Error_Detail")    .HasMaxLength(1000);
+        b.Property(x => x.CaseCreatedAt)   .HasColumnName("Case_Created_At");
+        b.Property(x => x.RiskAssessedAt)  .HasColumnName("Risk_Assessed_At");
         b.Property(x => x.LastUpdatedAt)   .HasColumnName("Last_Updated_At");
 
         b.HasIndex(x => x.Status);

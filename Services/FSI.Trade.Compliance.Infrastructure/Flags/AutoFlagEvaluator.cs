@@ -3,6 +3,8 @@ using System.Text.Json;
 using FSI.Trade.Compliance.Application.Contracts.Flags;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
 using FSI.Trade.Compliance.Domain.Entities.Flags;
+using FSI.Trade.Compliance.Domain.Entities.Transaction;
+using FSI.Trade.Compliance.Infrastructure.Flags.Metrics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -22,15 +24,70 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
 {
     private readonly IApplicationDbContext _db;
     private readonly ILogger<AutoFlagEvaluator> _log;
+    private readonly MetricHandlerRegistry _metrics;
+    private readonly IRuleDataProvider _data;
 
-    public AutoFlagEvaluator(IApplicationDbContext db, ILogger<AutoFlagEvaluator> log)
+    public AutoFlagEvaluator(
+        IApplicationDbContext db, ILogger<AutoFlagEvaluator> log,
+        MetricHandlerRegistry metrics, IRuleDataProvider data)
     {
-        _db  = db;
-        _log = log;
+        _db      = db;
+        _log     = log;
+        _metrics = metrics;
+        _data    = data;
     }
 
-    public async Task<IReadOnlyList<AutoFlagHit>> EvaluateAndStageAsync(
+    /// <summary>Aggregate/Derived left-operands are computed by a metric handler, not read
+    /// from the UDF. This test routes them to <see cref="ComputeMetricsAsync"/>.</summary>
+    private static bool IsMetricSource(string? src)
+        => string.Equals(src, "Aggregate", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(src, "Derived", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Pre-compute every aggregate/derived rule's scalar (async, may hit the DB)
+    /// keyed by Rule_ID, so the synchronous rule evaluation can read them. Never throws.</summary>
+    private async Task<Dictionary<int, MetricResult>> ComputeMetricsAsync(
+        IReadOnlyList<FlagRule> rules, Transaction tx,
+        IReadOnlyDictionary<string, List<string>> udf, CancellationToken ct)
+    {
+        var result = new Dictionary<int, MetricResult>();
+        var metricRules = rules.Where(r => IsMetricSource(r.LeftSource)).ToList();
+        if (metricRules.Count == 0) return result;
+
+        var customerCode = await _data.ResolveCustomerCodeAsync(tx.TransactionId, ct);
+        foreach (var r in metricRules)
+        {
+            if (!_metrics.TryGet(r.HandlerKey, out var handler))
+            {
+                result[r.RuleId] = MetricResult.NotComputable(new { reason = "unknown handler", handler = r.HandlerKey });
+                continue;
+            }
+            var ctx = new MetricContext
+            {
+                Tx = tx, Udf = udf, SpecJson = r.AggregateSpec, CustomerCode = customerCode, Data = _data,
+            };
+            try { result[r.RuleId] = await handler.ComputeAsync(ctx, ct); }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "Metric '{Key}' failed for rule {Rule}.", r.HandlerKey, r.RuleId);
+                result[r.RuleId] = MetricResult.NotComputable(new { reason = "error", message = ex.Message });
+            }
+        }
+        return result;
+    }
+
+    /// <summary>Save path: stage the synchronous (non-aggregate) flags, then enqueue an async
+    /// job if any aggregate flag is in scope. The caller's SaveChanges commits both.</summary>
+    public Task<IReadOnlyList<AutoFlagHit>> EvaluateAndStageAsync(
         int transactionId, string userId, DateTime now, CancellationToken ct)
+        => StageAsync(transactionId, userId, now, aggregatePass: false, ct);
+
+    /// <summary>Worker path: stage only the aggregate flags for a transaction.</summary>
+    public Task<IReadOnlyList<AutoFlagHit>> EvaluateAndStageAggregateAsync(
+        int transactionId, string userId, DateTime now, CancellationToken ct)
+        => StageAsync(transactionId, userId, now, aggregatePass: true, ct);
+
+    private async Task<IReadOnlyList<AutoFlagHit>> StageAsync(
+        int transactionId, string userId, DateTime now, bool aggregatePass, CancellationToken ct)
     {
         var hits = new List<AutoFlagHit>();
 
@@ -65,6 +122,21 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
             .ToListAsync(ct);
         var rulesByFlag = rules.GroupBy(r => r.FlagId).ToDictionary(g => g.Key, g => g.ToList());
 
+        static bool FlagIsAggregate(List<FlagRule> fr) => fr.Any(r => IsMetricSource(r.LeftSource));
+
+        // This pass owns only the flags whose aggregate-ness matches aggregatePass:
+        // save path (false) → non-aggregate flags; worker (true) → aggregate flags.
+        var passFlagIds = flags
+            .Where(f => rulesByFlag.TryGetValue(f.FlagId, out var fr) && FlagIsAggregate(fr) == aggregatePass)
+            .Select(f => f.FlagId).ToHashSet();
+
+        // On the save path, note whether any aggregate flag is in scope → enqueue a job.
+        var anyAggregateInScope = flags.Any(f => rulesByFlag.TryGetValue(f.FlagId, out var fr) && FlagIsAggregate(fr));
+
+        // Metrics only for the rules of flags this pass processes (avoids wasted DB work).
+        var passRules = rules.Where(r => passFlagIds.Contains(r.FlagId)).ToList();
+        var metrics = await ComputeMetricsAsync(passRules, tx, udf, ct);
+
         // Existing rows for this txn. Auto rows are engine-owned and rebuilt every
         // run (so removed/changed matches don't leave stale flags); manual rows are
         // never touched here.
@@ -74,10 +146,11 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
 
         foreach (var f in flags)
         {
+            if (!passFlagIds.Contains(f.FlagId)) continue;
             if (!rulesByFlag.TryGetValue(f.FlagId, out var flagRules) || flagRules.Count == 0)
                 continue;
 
-            var eval = EvaluateFlag(flagRules, udf, tx.ProductId, f.RaisePerMatch);
+            var eval = EvaluateFlag(flagRules, udf, tx.ProductId, f.RaisePerMatch, metrics);
 
             // The desired Auto rows for this flag: PER-MATCH → one per matched value;
             // AGGREGATE → a single summary row. Empty when the flag didn't raise.
@@ -138,6 +211,26 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
                     _db.TransactionFlags.Remove(r);
         }
 
+        // Save path: if any aggregate flag is in scope, enqueue one async job (coalesced —
+        // at most one pending per transaction). The caller's SaveChanges commits it.
+        if (!aggregatePass && anyAggregateInScope)
+        {
+            var alreadyPending = await _db.AutoFlagJobs
+                .AnyAsync(j => j.TransactionId == transactionId && j.Status == "Pending", ct);
+            if (!alreadyPending)
+            {
+                var code = await _data.ResolveCustomerCodeAsync(transactionId, ct);
+                _db.AutoFlagJobs.Add(new AutoFlagJob
+                {
+                    TransactionId = transactionId,
+                    CustomerCode  = code,
+                    TriggerType   = "Save",
+                    Status        = "Pending",
+                    EnqueuedDate  = now,
+                });
+            }
+        }
+
         if (hits.Count > 0)
             _log.LogInformation("Auto-flag engine raised {Count} flag-row(s) on transaction {Txn}.", hits.Count, transactionId);
 
@@ -159,8 +252,9 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
             .ToListAsync(ct);
         if (rules.Count == 0) return new AutoFlagDryRun { WouldRaise = false, Detail = "No active rules configured for this flag." };
 
-        var eval = EvaluateFlag(rules, udf, tx.ProductId, perMatch);
-        var matchedRuleIds = rules.Where(r => EvaluateRule(r, udf, tx.ProductId).ok).Select(r => r.RuleId).ToList();
+        var metrics = await ComputeMetricsAsync(rules, tx, udf, ct);
+        var eval = EvaluateFlag(rules, udf, tx.ProductId, perMatch, metrics);
+        var matchedRuleIds = rules.Where(r => EvaluateRule(r, udf, tx.ProductId, metrics).ok).Select(r => r.RuleId).ToList();
         var detail = eval.Hits.Count > 0
             ? string.Join(perMatch ? "; " : " · ", eval.Hits.Select(h => h.MatchedValue))
             : "No rule group satisfied.";
@@ -183,7 +277,8 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
     private sealed record FlagEval(bool Raised, List<MatchHit> Hits, string Proof);
 
     private FlagEval EvaluateFlag(
-        List<FlagRule> rules, IReadOnlyDictionary<string, List<string>> udf, int productId, bool perMatch)
+        List<FlagRule> rules, IReadOnlyDictionary<string, List<string>> udf, int productId, bool perMatch,
+        IReadOnlyDictionary<int, MetricResult> metrics)
     {
         var hits        = new List<MatchHit>();
         var seenValues  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -194,7 +289,7 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
         foreach (var group in rules.GroupBy(r => r.RuleGroup).OrderBy(g => g.Key))
         {
             var ordered  = group.OrderBy(r => r.EvaluationOrder).ToList();
-            var results  = ordered.Select(r => (rule: r, res: EvaluateRule(r, udf, productId))).ToList();
+            var results  = ordered.Select(r => (rule: r, res: EvaluateRule(r, udf, productId, metrics))).ToList();
             var satisfied = results.All(x => x.res.ok);
 
             proofGroups.Add(new
@@ -250,13 +345,29 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
     }
 
     private (bool ok, string detail, List<string> candidates, List<string> matchedValues) EvaluateRule(
-        FlagRule r, IReadOnlyDictionary<string, List<string>> udf, int productId)
+        FlagRule r, IReadOnlyDictionary<string, List<string>> udf, int productId,
+        IReadOnlyDictionary<int, MetricResult> metrics)
     {
         var op = (r.Operator ?? "").Trim();
-        var leftCandidates = ResolveCandidates(r.LeftSource, r.LeftFieldCode, udf);
-        var leftShown = leftCandidates.FirstOrDefault() ?? "∅";
-        var field = r.LeftFieldCode ?? "field";
         var none = new List<string>();
+
+        // Aggregate/Derived left operands are supplied by a metric handler (pre-computed
+        // in ComputeMetricsAsync), not read from the UDF. A non-computable metric yields
+        // no candidates → numeric/set comparisons resolve to not-satisfied (never throws).
+        List<string> leftCandidates;
+        string field;
+        if (IsMetricSource(r.LeftSource))
+        {
+            field = r.HandlerKey ?? "metric";
+            leftCandidates = (metrics.TryGetValue(r.RuleId, out var m) && m.Computable && m.Value is not null)
+                ? new List<string> { m.Value } : new List<string>();
+        }
+        else
+        {
+            field = r.LeftFieldCode ?? "field";
+            leftCandidates = ResolveCandidates(r.LeftSource, r.LeftFieldCode, udf);
+        }
+        var leftShown = leftCandidates.FirstOrDefault() ?? "∅";
 
         switch ((r.RightOperandType ?? "").Trim())
         {
@@ -289,6 +400,7 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
             case "Threshold":
             {
                 var rv = (r.StaticValue ?? "").Trim();
+                var rvScaled = ApplyFactor(rv, r.RightFactor, r.RightFactorUnit);
                 var ok = op switch
                 {
                     "Equals"      => leftCandidates.Any(c => string.Equals(c, rv, StringComparison.OrdinalIgnoreCase)),
@@ -296,29 +408,35 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
                     "In"          => SplitList(rv).Intersect(leftCandidates, StringComparer.OrdinalIgnoreCase).Any(),
                     "NotIn"       => leftCandidates.Count > 0 && !SplitList(rv).Intersect(leftCandidates, StringComparer.OrdinalIgnoreCase).Any(),
                     "Contains"    => leftCandidates.Any(c => c.Contains(rv, StringComparison.OrdinalIgnoreCase)),
-                    "GreaterThan" => NumCompare(leftShown, rv, (a, b) => a > b),
-                    "LessThan"    => NumCompare(leftShown, rv, (a, b) => a < b),
+                    "GreaterThan" => NumCompare(leftShown, rvScaled, (a, b) => a > b),
+                    "LessThan"    => NumCompare(leftShown, rvScaled, (a, b) => a < b),
                     _             => false,
                 };
                 var matchedValues = ok ? new List<string> { $"{field}={leftShown}" } : none;
-                return (ok, $"{field}({leftShown}) {op} '{rv}'", leftCandidates, matchedValues);
+                return (ok, $"{field}({leftShown}) {op} '{rvScaled}'", leftCandidates, matchedValues);
             }
 
             case "Field":
             {
                 var rightCandidates = ResolveCandidates(r.RightSource ?? r.LeftSource, r.RightFieldCode, udf);
                 var rightShown = rightCandidates.FirstOrDefault() ?? "∅";
+                // Numeric operators compare against the (optionally factored) right field value —
+                // e.g. aggregate volume > (Declared Turnover x 1.5 / x 60%).
+                var rightScaled = ApplyFactor(rightShown, r.RightFactor, r.RightFactorUnit);
                 var ok = op switch
                 {
-                    "Equals"    => leftCandidates.Intersect(rightCandidates, StringComparer.OrdinalIgnoreCase).Any(),
-                    "NotEquals" => leftCandidates.Count > 0 && !leftCandidates.Intersect(rightCandidates, StringComparer.OrdinalIgnoreCase).Any(),
-                    "In"        => leftCandidates.Intersect(rightCandidates, StringComparer.OrdinalIgnoreCase).Any(),
-                    "NotIn"     => leftCandidates.Count > 0 && !leftCandidates.Intersect(rightCandidates, StringComparer.OrdinalIgnoreCase).Any(),
-                    _           => false,
+                    "Equals"      => leftCandidates.Intersect(rightCandidates, StringComparer.OrdinalIgnoreCase).Any(),
+                    "NotEquals"   => leftCandidates.Count > 0 && !leftCandidates.Intersect(rightCandidates, StringComparer.OrdinalIgnoreCase).Any(),
+                    "In"          => leftCandidates.Intersect(rightCandidates, StringComparer.OrdinalIgnoreCase).Any(),
+                    "NotIn"       => leftCandidates.Count > 0 && !leftCandidates.Intersect(rightCandidates, StringComparer.OrdinalIgnoreCase).Any(),
+                    "GreaterThan" => NumCompare(leftShown, rightScaled, (a, b) => a > b),
+                    "LessThan"    => NumCompare(leftShown, rightScaled, (a, b) => a < b),
+                    _             => false,
                 };
-                var matchedValues = ok && op is "Equals" or "In"
+                var matchedValues = ok && op is "Equals" or "In" or "GreaterThan" or "LessThan"
                     ? new List<string> { $"{field}={leftShown}" } : none;
-                return (ok, $"{field}({leftShown}) {op} {r.RightFieldCode}({rightShown})", leftCandidates, matchedValues);
+                var rhsShown = op is "GreaterThan" or "LessThan" ? rightScaled : rightShown;
+                return (ok, $"{field}({leftShown}) {op} {r.RightFieldCode}({rhsShown})", leftCandidates, matchedValues);
             }
 
             default:
@@ -520,6 +638,17 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
         => decimal.TryParse(a, NumberStyles.Any, CultureInfo.InvariantCulture, out var x)
            && decimal.TryParse(b, NumberStyles.Any, CultureInfo.InvariantCulture, out var y)
            && cmp(x, y);
+
+    /// <summary>Scale a numeric RHS by the rule's Right_Factor:
+    /// value * (unit == "Percent" ? factor/100 : factor). Null factor or a non-numeric
+    /// value returns the input unchanged (so existing rules are unaffected).</summary>
+    private static string ApplyFactor(string value, decimal? factor, string? unit)
+    {
+        if (factor is null) return value;
+        if (!decimal.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var v)) return value;
+        var mult = string.Equals(unit, "Percent", StringComparison.OrdinalIgnoreCase) ? factor.Value / 100m : factor.Value;
+        return (v * mult).ToString(CultureInfo.InvariantCulture);
+    }
 
     private static string Trunc(string s, int max) => s.Length > max ? s[..max] : s;
 }

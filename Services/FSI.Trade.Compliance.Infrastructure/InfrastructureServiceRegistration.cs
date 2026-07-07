@@ -64,6 +64,17 @@ public static class InfrastructureServiceRegistration
         services.AddScoped<FSI.Trade.Compliance.Application.Contracts.Flags.IAutoFlagEvaluator,
                            FSI.Trade.Compliance.Infrastructure.Flags.AutoFlagEvaluator>();
 
+        // Phase 1 aggregate engine — metric handler registry (compute-on-read, no fact table).
+        services.AddScoped<FSI.Trade.Compliance.Infrastructure.Flags.Metrics.IRuleDataProvider,
+                           FSI.Trade.Compliance.Infrastructure.Flags.Metrics.RuleDataProvider>();
+        services.AddScoped<FSI.Trade.Compliance.Infrastructure.Flags.Metrics.IRuleMetricHandler,
+                           FSI.Trade.Compliance.Infrastructure.Flags.Metrics.AggregateMetricHandler>();
+        services.AddScoped<FSI.Trade.Compliance.Infrastructure.Flags.Metrics.IRuleMetricHandler,
+                           FSI.Trade.Compliance.Infrastructure.Flags.Metrics.RecencyMetricHandler>();
+        services.AddScoped<FSI.Trade.Compliance.Infrastructure.Flags.Metrics.IRuleMetricHandler,
+                           FSI.Trade.Compliance.Infrastructure.Flags.Metrics.VarianceMetricHandler>();
+        services.AddScoped<FSI.Trade.Compliance.Infrastructure.Flags.Metrics.MetricHandlerRegistry>();
+
         // Slice 9 — FCCM staging lives on the same Oracle DB the rest
         // of FccmOracleReader uses (not a separate SQL Server). No
         // additional DbContext registration — all Oracle access flows
@@ -160,6 +171,10 @@ public static class InfrastructureServiceRegistration
         // a normal scoped service mapped to the interface.
         services.AddScoped<IKycCaseService,             FccmKycCaseService>();
 
+        // Risk Assessment tab — privileged (Kyc.Operate) operational actions
+        // (retry / re-poll / re-fetch). Reuses the poller's shared reconcile.
+        services.AddScoped<IKycCaseOperationsService,   KycCaseOperationsService>();
+
         // Slice 9 — Trade-to-FCCM submission. Same composition pattern as
         // FccmKycCaseService: scoped, composes the shared FccmHttpClient
         // + FccmOracleReader + DbContext. Phase 1 ships the scaffold;
@@ -174,12 +189,23 @@ public static class InfrastructureServiceRegistration
         // TmX_Lookup, and the Oracle FCC_OB_RISK_PRMS_CODE_SCRE_MAP max-score.
         services.AddScoped<KycOnboardingFieldResolver>();
 
+        // Configurable onboarding payload mapping (externalized field mappings).
+        // Provider is a singleton (loads + caches profile files); the mapper is
+        // scoped (uses the request-scoped DbContext + Oracle reader). Active
+        // profile chosen by Integration:Onboarding:MappingProfile.
+        services.AddSingleton<Integrations.Fccm.Mapping.IOnboardingMappingProvider,
+                              Integrations.Fccm.Mapping.OnboardingMappingProvider>();
+        services.AddScoped<Integrations.Fccm.Mapping.OnboardingPayloadMapper>();
+
         // Diagnostic log archiver — zips rolled log files older than the
         // retention window into backlogs_<from>-<to>.zip (config-driven).
         services.AddHostedService<Diagnostics.LogArchiverService>();
 
         // Background poller — drives KycCaseRequest rows through the state machine.
         services.AddHostedService<FccmCaseIdPoller>();
+
+        // Aggregate auto-flag queue worker — evaluates cross-transaction flags off the save path.
+        services.AddHostedService<Flags.AutoFlagJobWorker>();
 
         // ---------- Slice 5: Workflow ----------
         // Action + rule providers consume Application contracts via DI.

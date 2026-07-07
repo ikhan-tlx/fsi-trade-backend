@@ -20,24 +20,11 @@ public class IntegrationOptions
     public string FccmOnboardingUrl      { get; set; } = "";
 
     /// <summary>
-    /// HTTP Basic-auth username for the FCCM onboarding endpoint (legacy:
-    /// <c>KYCUsername</c>). The legacy controller built
-    /// <c>Authorization: Basic base64(user:pass)</c> from these. Empty =
-    /// no auth header sent.
-    /// </summary>
-    public string FccmOnboardingUsername { get; set; } = "";
-
-    /// <summary>HTTP Basic-auth password for the FCCM onboarding endpoint (legacy: <c>KYCPassword</c>).</summary>
-    public string FccmOnboardingPassword { get; set; } = "";
-
-    /// <summary>
-    /// Environment-configurable onboarding settings (auth + payload defaults +
-    /// field-inclusion toggles). Bound from <c>Integration:Onboarding</c>.
-    /// Prefer these over the deprecated top-level
-    /// <see cref="FccmOnboardingUsername"/> / <see cref="FccmOnboardingPassword"/>
-    /// (kept only as a fallback). This block makes an FCCM environment switch a
-    /// config change rather than a code edit — see
-    /// <see cref="FccmOnboardingOptions"/>.
+    /// Environment-configurable onboarding settings — auth (Username/Password),
+    /// payload defaults, field-inclusion toggles, and the configurable mapping
+    /// profile. Bound from <c>Integration:Onboarding</c>. This block makes an
+    /// FCCM environment / payload-shape switch a config change rather than a code
+    /// edit — see <see cref="FccmOnboardingOptions"/>.
     /// </summary>
     public FccmOnboardingOptions Onboarding { get; set; } = new();
 

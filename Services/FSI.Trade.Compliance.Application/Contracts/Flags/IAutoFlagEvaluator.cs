@@ -19,6 +19,14 @@ public interface IAutoFlagEvaluator
         int transactionId, string userId, DateTime now, CancellationToken ct);
 
     /// <summary>
+    /// Stage ONLY the aggregate (cross-transaction) flags for a transaction. Called by the
+    /// background worker off the save path; commits its own SaveChanges. Non-aggregate flags
+    /// are handled synchronously by <see cref="EvaluateAndStageAsync"/> at save time.
+    /// </summary>
+    Task<IReadOnlyList<AutoFlagHit>> EvaluateAndStageAggregateAsync(
+        int transactionId, string userId, DateTime now, CancellationToken ct);
+
+    /// <summary>
     /// Dry-run a single flag's rules against a transaction without writing —
     /// backs the rule-builder "Test" panel.
     /// </summary>

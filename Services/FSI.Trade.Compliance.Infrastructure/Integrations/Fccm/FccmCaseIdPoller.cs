@@ -108,6 +108,7 @@ public class FccmCaseIdPoller : BackgroundService
             {
                 row.FccmCaseId    = caseId;
                 row.Status        = KycCaseStatus.CaseCreated;
+                row.CaseCreatedAt = now;
                 row.LastUpdatedAt = now;
                 _log.LogInformation("KycCaseRequest {Id}: CaseId provisioned ({CaseId}).", row.Id, caseId);
                 continue;
@@ -139,12 +140,14 @@ public class FccmCaseIdPoller : BackgroundService
             {
                 row.RiskCategoryKey = risk;
                 row.Status          = KycCaseStatus.RiskAssessed;
+                row.RiskAssessedAt  = now;
                 row.LastUpdatedAt   = now;
                 _log.LogInformation("KycCaseRequest {Id}: risk key {Risk} captured; flow complete.", row.Id, risk);
 
                 // Legacy parity: reconcile FCCM (TBML) vs BRAINS and write the
-                // display band back to the customer snapshot + Cstm_Brains.
-                await ReconcileRiskAsync(db, kyc, row, risk!, now, ct);
+                // display band back to the customer snapshot + Cstm_Brains, then
+                // push the FCCM-side write-backs (case priority + customer name).
+                await ReconcileRiskAsync(db, oracle, kyc, row, risk!, now, _log, ct);
             }
         }
         if (caseCreated.Count > 0) await db.SaveChangesAsync(ct);
@@ -160,16 +163,24 @@ public class FccmCaseIdPoller : BackgroundService
     /// UDF_Data.$.RiskScore (what the dashboard risk-mix reads) and upserted
     /// into dbo.Cstm_Brains keyed by Transaction_ID.
     /// </summary>
-    private async Task ReconcileRiskAsync(
-        IApplicationDbContext db, IKycScreeningService kyc,
-        KycCaseRequest row, string riskCategoryKey, DateTime now, CancellationToken ct)
+    /// <summary>
+    /// Reconciles FCCM (TBML) vs BRAINS for a case row and persists the result
+    /// (Cstm_Brains upsert + snapshot RiskScore + FCCM-side write-backs). Static
+    /// + <see cref="ILogger"/>-parameterised so the on-demand operational actions
+    /// (Re-poll / Re-fetch in <c>KycCaseOperationsService</c>) reuse the exact
+    /// same logic as the background poller. Does NOT call SaveChanges — the caller
+    /// commits (the poller batches per tick; the ops service saves per action).
+    /// </summary>
+    internal static async Task ReconcileRiskAsync(
+        IApplicationDbContext db, FccmOracleReader oracle, IKycScreeningService kyc,
+        KycCaseRequest row, string riskCategoryKey, DateTime now, ILogger log, CancellationToken ct)
     {
         if (row.TransactionId is null)
         {
-            _log.LogDebug("KycCaseRequest {Id}: no TransactionId; skipping Cstm_Brains reconciliation.", row.Id);
+            log.LogDebug("KycCaseRequest {Id}: no TransactionId; skipping Cstm_Brains reconciliation.", row.Id);
             return;
         }
-        var txnId = row.TransactionId.Value;
+        var txnId = (int)row.TransactionId.Value;
 
         // ---- FCCM (TBML) numeric: RISK_CATEGORY_KEY 1 Low / 2 Medium / 3 High (default Low). ----
         var fccmScore = int.TryParse(riskCategoryKey.Trim(), out var fk) && fk is 1 or 2 or 3 ? fk : 1;
@@ -183,36 +194,60 @@ public class FccmCaseIdPoller : BackgroundService
         }
         catch (Exception ex)
         {
-            _log.LogWarning(ex, "KycCaseRequest {Id}: BRAINS screening failed; reconciling on FCCM only.", row.Id);
+            log.LogWarning(ex, "KycCaseRequest {Id}: BRAINS screening failed; reconciling on FCCM only.", row.Id);
         }
 
-        var (finalLabel, display) = Reconcile(fccmScore, brainsScore);
+        var (finalNum, _, display) = Reconcile(fccmScore, brainsScore);
 
-        // ---- Upsert Cstm_Brains (one row per transaction). ----
+        // ---- Upsert Cstm_Brains (one row per transaction; legacy varchar columns). ----
         var cstm = await db.CstmBrains.FirstOrDefaultAsync(x => x.TransactionId == txnId, ct);
         if (cstm is null)
         {
-            cstm = new CstmBrains { TransactionId = txnId, CreatedAt = now };
+            cstm = new CstmBrains { TransactionId = txnId };
             db.CstmBrains.Add(cstm);
         }
-        cstm.CustomerNo    = row.CustomerId;
-        cstm.FccmScore     = fccmScore;
-        cstm.BrainsScore   = brainsScore;
-        cstm.FinalScore    = finalLabel;
-        cstm.Display       = display;
-        cstm.LastUpdatedAt = now;
+        cstm.CustomerNo  = row.CustomerId;
+        cstm.FccmScore   = fccmScore.ToString();
+        cstm.BrainsScore = brainsScore?.ToString();
+        cstm.FinalScore  = finalNum.ToString();
+        cstm.Display     = display;
 
         // ---- Write the display band into the customer snapshot(s) for this txn. ----
         var snapshots = await db.TransactionCustomerSnapshots
-            .Where(s => s.TransactionId == (int)txnId)
+            .Where(s => s.TransactionId == txnId)
             .ToListAsync(ct);
 
         foreach (var snap in snapshots)
             snap.UdfData = SetRiskScoreJson(snap.UdfData, display);
 
-        _log.LogInformation(
+        log.LogInformation(
             "KycCaseRequest {Id}: reconciled risk txn {Txn} — FCCM={Fccm}, BRAINS={Brains} => {Display} (updated {Snaps} snapshot(s)).",
             row.Id, txnId, fccmScore, brainsScore?.ToString() ?? "(none)", display, snapshots.Count);
+
+        // ---- Legacy FCCM-side write-backs (best-effort) ----
+        // Ports the two Oracle writes legacy did alongside UpdateRiskInRepo:
+        //   1. KDD_CASE_CUSTOMERS.FULL_NM synced from fcc_ob_cust (UpdateRiskInRepo
+        //      first statement).
+        //   2. KDD_CASES.PRIORITY_CD mapped from FCC_OB_RA.RISK_CATEGORY_KEY
+        //      (UpdateCasePriority).
+        // Best-effort: a failure here must NOT abort the reconciliation (the risk
+        // has already been written to our side). Oracle is known reachable at this
+        // point (ReadRiskCategoryKeyAsync just succeeded).
+        var fccmReq = row.FccmRequestId;
+        if (!string.IsNullOrWhiteSpace(fccmReq))
+        {
+            try
+            {
+                await oracle.SyncCaseCustomerNameAsync(fccmReq!, ct);
+                await oracle.UpdateCasePriorityAsync(fccmReq!, ct);
+            }
+            catch (Exception ex)
+            {
+                log.LogWarning(ex,
+                    "KycCaseRequest {Id}: FCCM-side write-back (FULL_NM / PRIORITY_CD) failed for req {ReqId}; risk reconciliation already persisted.",
+                    row.Id, fccmReq);
+            }
+        }
     }
 
     /// <summary>BRAINS band label → its servlet numeric code (0 PEP / 1 High / 2 Medium / 3 Low).</summary>
@@ -236,7 +271,7 @@ public class FccmCaseIdPoller : BackgroundService
     /// Final numeric → label: 1 Low / 2 Medium / (3 or 0) High.
     /// If BRAINS is unavailable, fall back to FCCM only (suffix " - TBML").
     /// </summary>
-    internal static (string finalLabel, string display) Reconcile(int fccmScore, int? brainsScore)
+    public static (int finalNum, string finalLabel, string display) Reconcile(int fccmScore, int? brainsScore)
     {
         int finalNum;
         string suffix;
@@ -274,11 +309,11 @@ public class FccmCaseIdPoller : BackgroundService
             _ => "High"   // 3 or 0 (PEP) → High, per legacy
         };
 
-        return (label, label + suffix);
+        return (finalNum, label, label + suffix);
     }
 
     /// <summary>Set (or add) the $.RiskScore property on a UDF_Data JSON blob, preserving other keys.</summary>
-    internal static string SetRiskScoreJson(string? udfData, string riskScore)
+    public static string SetRiskScoreJson(string? udfData, string riskScore)
     {
         JsonObject obj;
         try

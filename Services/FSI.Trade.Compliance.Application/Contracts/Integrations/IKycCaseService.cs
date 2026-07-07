@@ -20,6 +20,14 @@ public interface IKycCaseService
     Task<KycCaseStatusDto?>      GetStatusAsync(long requestId, CancellationToken ct = default);
 
     /// <summary>
+    /// Re-fires the FCCM onboarding submit for a Failed/Timeout case ON THE SAME
+    /// KycCaseRequest row (transient-failure retry). Does NOT create a new row or
+    /// transaction — onboarding fires at most once per transaction. Throws when
+    /// the row isn't Failed/Timeout.
+    /// </summary>
+    Task<KycCaseSubmissionResult> ResubmitAsync(long requestId, CancellationToken ct = default);
+
+    /// <summary>
     /// Handles the inbound webhook from FCCM with a final action code
     /// (approve / reject). Updates local state. The endpoint that calls this
     /// is anonymous (FCCM has no JWT); authenticate the payload via

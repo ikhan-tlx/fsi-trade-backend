@@ -17,6 +17,11 @@ public class AutoFlagRuleDto
     public string? staticValue      { get; set; }
     public string? referenceListCode{ get; set; }
     public string? aggregateSpec    { get; set; }
+    /// <summary>Named metric handler for an Aggregate/Derived left operand (e.g. "AGGREGATE").</summary>
+    public string? handlerKey       { get; set; }
+    /// <summary>Optional scale on the RIGHT operand: value * (unit=="Percent" ? f/100 : f).</summary>
+    public decimal? rightFactor     { get; set; }
+    public string? rightFactorUnit  { get; set; }   // "Multiplier" | "Percent"
     public string  logicalOperator  { get; set; } = "AND";
 }
 
@@ -78,6 +83,27 @@ public class ReferenceListOptionDto
 {
     public string code { get; set; } = "";
     public string name { get; set; } = "";
+}
+
+/// <summary>Aggregate/derived metric catalogue entry — drives the rule-builder's
+/// Aggregate tab param form (config-driven; no hardcoded metrics in the FE).</summary>
+public class MetricDefDto
+{
+    public string key      { get; set; } = "";
+    public string label    { get; set; } = "";
+    public string kind     { get; set; } = "";   // Aggregate | Derived
+    public string dataType { get; set; } = "";   // number | date | boolean | code
+    public List<MetricParamDefDto> @params { get; set; } = new();
+}
+
+public class MetricParamDefDto
+{
+    public string  name        { get; set; } = "";
+    public string  label       { get; set; } = "";
+    public string  type        { get; set; } = "";   // enum | field | number | list
+    public string? fieldFilter { get; set; }
+    public bool    required    { get; set; }
+    public List<string>? options { get; set; }
 }
 
 /// <summary>Products with their sub-product tabs — for the scope editor tree.</summary>

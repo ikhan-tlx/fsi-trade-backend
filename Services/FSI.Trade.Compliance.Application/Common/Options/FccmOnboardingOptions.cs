@@ -30,8 +30,12 @@ public class FccmOnboardingOptions
     /// </summary>
     public string ApplicationIdFormat { get; set; } = "CIF-{0}";
 
-    // ── Static classification defaults applied to every OnboardingCustomer ──
-    // Used until the KYC Section-A capture supplies real per-customer values.
+    // ── Static classification defaults (legacy hardcoded-builder fallback ONLY) ──
+    // These feed the built-in hardcoded payload builder that runs only if no mapping
+    // profile is active. Since MappingProfile defaults to "v1", the mapping engine is
+    // always used and these are NOT consulted — the real constants live in the profile
+    // file (onboarding.v1/v2.mapping.json). They are kept (with code defaults) purely
+    // as an internal safety net and are intentionally NOT exposed in appsettings.
     public string CustomerType       { get; set; } = "ORG";
     public string Jurisdiction       { get; set; } = "PAK";
     public string CountryOfResidence { get; set; } = "PAK";
@@ -72,4 +76,34 @@ public class FccmOnboardingOptions
     /// configured static value as a fallback when the derivation yields null.
     /// </summary>
     public bool IncludeRiskParameterFields { get; set; } = false;
+
+    // ── Configurable payload mapping (externalized field mappings) ──
+    /// <summary>
+    /// Onboarding payload profile to build. The engine loads
+    /// <c>onboarding.{MappingProfile}.mapping.json</c> from <see cref="MappingDirectory"/>.
+    /// Shipped profiles: <c>"v1"</c> (flat legacy KYCRequestModel shape) and
+    /// <c>"v2"</c> (rich nested OB v2 shape); any custom profile name works if the file
+    /// exists. This is the single switch for the payload shape — a config change, not code.
+    /// <para><b>Default is <c>"v1"</c>.</b> If this is omitted or left empty the application
+    /// falls back to <c>"v1"</c> (see <see cref="EffectiveMappingProfile"/>).</para>
+    /// </summary>
+    public string MappingProfile { get; set; } = "v1";
+
+    /// <summary>The profile the engine actually uses: <see cref="MappingProfile"/> when
+    /// set, otherwise the default <c>"v1"</c>. Guarantees a valid profile is always chosen.</summary>
+    public string EffectiveMappingProfile
+        => string.IsNullOrWhiteSpace(MappingProfile) ? "v1" : MappingProfile.Trim();
+
+    /// <summary>
+    /// Directory holding <c>onboarding.*.mapping.json</c> profiles. Relative to the
+    /// app content root, or an absolute path. Default <c>"Mappings/onboarding"</c>.
+    /// </summary>
+    public string MappingDirectory { get; set; } = "Mappings/onboarding";
+
+    /// <summary>
+    /// When true, mapping profiles are re-read from disk on every submission
+    /// (handy for tuning a client's mapping without a redeploy). Leave false in
+    /// production so profiles are cached + immutable per process.
+    /// </summary>
+    public bool MappingHotReload { get; set; } = false;
 }

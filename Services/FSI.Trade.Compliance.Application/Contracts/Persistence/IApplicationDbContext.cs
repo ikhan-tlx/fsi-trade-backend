@@ -83,6 +83,8 @@ public interface IApplicationDbContext
     DbSet<ReferenceListValue>      ReferenceListValues      { get; }
     DbSet<SanctionedCountry>       SanctionedCountries      { get; }
     DbSet<ScreeningGood>           ScreeningGoods           { get; }
+    // 2026_07_002 — aggregate auto-flag engine.
+    DbSet<AutoFlagJob>             AutoFlagJobs             { get; }
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

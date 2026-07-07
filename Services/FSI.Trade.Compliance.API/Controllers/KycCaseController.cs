@@ -1,8 +1,10 @@
 using Asp.Versioning;
+using FSI.Trade.Compliance.API.Filters;
 using FSI.Trade.Compliance.Application.Common.Models;
 using FSI.Trade.Compliance.Application.Contracts.Integrations;
 using FSI.Trade.Compliance.Application.Features.Kyc.GetCaseStatus;
 using FSI.Trade.Compliance.Application.Features.Kyc.HandleCallback;
+using FSI.Trade.Compliance.Application.Features.Kyc.Operations;
 using FSI.Trade.Compliance.Application.Features.Kyc.SubmitCase;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
@@ -49,6 +51,32 @@ public class KycCaseController : ControllerBase
         var dto = await _mediator.Send(new GetKycCaseStatusQuery(requestId), ct);
         return Ok(ResponseViewModel<KycCaseStatusDto>.Ok(dto));
     }
+
+    // -------------------------------------------------------------------
+    // Risk Assessment tab — privileged operational actions (Kyc.Operate).
+    // These complement the background FccmCaseIdPoller; each acts on one case.
+    // -------------------------------------------------------------------
+
+    /// <summary>Retry the FCCM sync for a Failed/Timeout execution (opens a new attempt).</summary>
+    [HttpPost("{requestId:long}/retry")]
+    [Authorize]
+    [RequiresPrivilege("Kyc.Operate")]
+    public async Task<IActionResult> Retry(long requestId, CancellationToken ct)
+        => Ok(ResponseViewModel<KycCaseSubmissionResult>.Ok(await _mediator.Send(new RetryKycCaseCommand(requestId), ct)));
+
+    /// <summary>Force an immediate one-shot poll of an in-flight execution.</summary>
+    [HttpPost("{requestId:long}/repoll")]
+    [Authorize]
+    [RequiresPrivilege("Kyc.Operate")]
+    public async Task<IActionResult> Repoll(long requestId, CancellationToken ct)
+        => Ok(ResponseViewModel<KycCaseStatusDto>.Ok(await _mediator.Send(new RepollKycCaseCommand(requestId), ct)));
+
+    /// <summary>Re-read the FCCM risk category + re-run BRAINS↔FCCM reconciliation.</summary>
+    [HttpPost("{requestId:long}/refresh")]
+    [Authorize]
+    [RequiresPrivilege("Kyc.Operate")]
+    public async Task<IActionResult> Refresh(long requestId, CancellationToken ct)
+        => Ok(ResponseViewModel<KycCaseStatusDto>.Ok(await _mediator.Send(new RefreshKycCaseCommand(requestId), ct)));
 
     /// <summary>
     /// FCCM verdict callback. Anonymous, no signature header — mirrors the

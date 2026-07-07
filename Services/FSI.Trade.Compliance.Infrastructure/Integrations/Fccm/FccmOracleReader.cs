@@ -135,6 +135,75 @@ public class FccmOracleReader
     }
 
     /// <summary>
+    /// Legacy <c>caseInsertionController.UpdateCasePriority</c> — pushes the FCCM
+    /// onboarding risk band back onto the KDD case as a priority code. Mirrors the
+    /// legacy statement (bound parameter instead of string interpolation):
+    /// <code>
+    /// UPDATE KDD_CASES kc SET kc.PRIORITY_CD =
+    ///   (SELECT CASE WHEN a.RISK_CATEGORY_KEY = 1 THEN 'Low'
+    ///                WHEN a.RISK_CATEGORY_KEY = 2 THEN 'Medium'
+    ///                WHEN a.RISK_CATEGORY_KEY = 3 THEN 'High' END
+    ///      FROM FCC_OB_RA a INNER JOIN KDD_CASES b ON a.CASE_ID = b.CASE_INTRL_ID
+    ///     WHERE a.REQUEST_ID = :p_req)
+    ///  WHERE kc.CASE_INTRL_ID = (SELECT CASE_ID FROM FCC_OB_RA WHERE REQUEST_ID = :p_req)
+    /// </code>
+    /// Note (legacy quirk preserved): only 1/2/3 map; any other RISK_CATEGORY_KEY
+    /// (e.g. 4) yields a NULL PRIORITY_CD, exactly as the legacy CASE did.
+    /// No-op in stub mode.
+    /// </summary>
+    public async Task UpdateCasePriorityAsync(string fccmRequestId, CancellationToken ct = default)
+    {
+        if (IsStub) { WarnOnceStub(); return; }
+
+        await using var con = CreateConnection();
+        await using var cmd = con.CreateCommand();
+        cmd.BindByName = true;
+        cmd.CommandText = @"
+            UPDATE KDD_CASES kc
+               SET kc.PRIORITY_CD = (
+                    SELECT CASE WHEN a.RISK_CATEGORY_KEY = 1 THEN 'Low'
+                                WHEN a.RISK_CATEGORY_KEY = 2 THEN 'Medium'
+                                WHEN a.RISK_CATEGORY_KEY = 3 THEN 'High' END
+                      FROM FCC_OB_RA a
+                      INNER JOIN KDD_CASES b ON a.CASE_ID = b.CASE_INTRL_ID
+                     WHERE a.REQUEST_ID = :p_req)
+             WHERE kc.CASE_INTRL_ID = (SELECT CASE_ID FROM FCC_OB_RA WHERE REQUEST_ID = :p_req)";
+        cmd.Parameters.Add(":p_req", OracleDbType.Varchar2).Value = fccmRequestId;
+        await OpenAndPrepareAsync(con, ct);
+        var rows = await cmd.ExecuteNonQueryAsync(ct);
+        _log.LogDebug("KDD_CASES.PRIORITY_CD update: REQUEST_ID={RequestId} -> {Rows} row(s).", fccmRequestId, rows);
+    }
+
+    /// <summary>
+    /// Legacy <c>caseInsertionController.UpdateRiskInRepo</c> first statement —
+    /// syncs the KDD case-customer's name from the FCCM onboarding observation
+    /// row (<c>fcc_ob_cust</c>). Mirrors (bound parameter):
+    /// <code>
+    /// UPDATE KDD_CASE_CUSTOMERS SET FULL_NM =
+    ///   (SELECT FULL_NM FROM FCC_OB_CUST WHERE REQUEST_ID = :p_req)
+    ///  WHERE CUST_INTRL_ID =
+    ///   (SELECT EXISTING_CUST_INTRL_ID FROM FCC_OB_CUST WHERE REQUEST_ID = :p_req)
+    /// </code>
+    /// No-op in stub mode.
+    /// </summary>
+    public async Task SyncCaseCustomerNameAsync(string fccmRequestId, CancellationToken ct = default)
+    {
+        if (IsStub) { WarnOnceStub(); return; }
+
+        await using var con = CreateConnection();
+        await using var cmd = con.CreateCommand();
+        cmd.BindByName = true;
+        cmd.CommandText = @"
+            UPDATE KDD_CASE_CUSTOMERS
+               SET FULL_NM = (SELECT FULL_NM FROM FCC_OB_CUST WHERE REQUEST_ID = :p_req)
+             WHERE CUST_INTRL_ID = (SELECT EXISTING_CUST_INTRL_ID FROM FCC_OB_CUST WHERE REQUEST_ID = :p_req)";
+        cmd.Parameters.Add(":p_req", OracleDbType.Varchar2).Value = fccmRequestId;
+        await OpenAndPrepareAsync(con, ct);
+        var rows = await cmd.ExecuteNonQueryAsync(ct);
+        _log.LogDebug("KDD_CASE_CUSTOMERS.FULL_NM sync: REQUEST_ID={RequestId} -> {Rows} row(s).", fccmRequestId, rows);
+    }
+
+    /// <summary>
     /// Legacy <c>GetMultivalueMaxParam</c> Oracle half: given a set of candidate
     /// CODE_VALUEs (the TmX_Lookup hidden values collected from a KYC grid),
     /// returns the single CODE_VALUE with the highest SCORE in
@@ -159,22 +228,36 @@ public class FccmOracleReader
         var binds = values.Select((_, i) => $":v{i}").ToArray();
         var inList = string.Join(",", binds);
 
-        await using var con = CreateConnection();
-        await using var cmd = con.CreateCommand();
-        cmd.BindByName = true;
-        cmd.CommandText =
-            $"SELECT DISTINCT CODE_VALUE FROM FCC_OB_RISK_PRMS_CODE_SCRE_MAP " +
-            $"WHERE SCORE = (SELECT MAX(SCORE) FROM FCC_OB_RISK_PRMS_CODE_SCRE_MAP WHERE CODE_VALUE IN ({inList})) " +
-            $"AND CODE_VALUE IN ({inList})";
-        for (var i = 0; i < values.Count; i++)
-            cmd.Parameters.Add(binds[i], OracleDbType.Varchar2).Value = values[i];
+        // Best-effort: an Oracle outage or transient failure must NOT sink the whole
+        // onboarding payload build. Legacy re-threw here; we log loudly and return null
+        // so the affected risk field is simply omitted/left null and onboarding proceeds.
+        try
+        {
+            await using var con = CreateConnection();
+            await using var cmd = con.CreateCommand();
+            cmd.BindByName = true;
+            cmd.CommandText =
+                $"SELECT DISTINCT CODE_VALUE FROM FCC_OB_RISK_PRMS_CODE_SCRE_MAP " +
+                $"WHERE SCORE = (SELECT MAX(SCORE) FROM FCC_OB_RISK_PRMS_CODE_SCRE_MAP WHERE CODE_VALUE IN ({inList})) " +
+                $"AND CODE_VALUE IN ({inList})";
+            for (var i = 0; i < values.Count; i++)
+                cmd.Parameters.Add(binds[i], OracleDbType.Varchar2).Value = values[i];
 
-        await OpenAndPrepareAsync(con, ct);
-        var result = await cmd.ExecuteScalarAsync(ct);
-        var maxCode = result is null or DBNull ? null : result.ToString();
-        _log.LogDebug("FCC_OB_RISK_PRMS_CODE_SCRE_MAP max-score: candidates=[{Codes}] -> {Chosen}",
-            string.Join(",", values), maxCode ?? "(none)");
-        return maxCode;
+            await OpenAndPrepareAsync(con, ct);
+            var result = await cmd.ExecuteScalarAsync(ct);
+            var maxCode = result is null or DBNull ? null : result.ToString();
+            _log.LogDebug("FCC_OB_RISK_PRMS_CODE_SCRE_MAP max-score: candidates=[{Codes}] -> {Chosen}",
+                string.Join(",", values), maxCode ?? "(none)");
+            return maxCode;
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex,
+                "FCC_OB_RISK_PRMS_CODE_SCRE_MAP max-score lookup FAILED for candidates=[{Codes}]; " +
+                "returning null so onboarding continues without this risk field.",
+                string.Join(",", values));
+            return null;
+        }
     }
 
     // =====================================================================

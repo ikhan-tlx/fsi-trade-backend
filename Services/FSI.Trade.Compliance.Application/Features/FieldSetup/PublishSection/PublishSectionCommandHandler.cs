@@ -76,6 +76,9 @@ public class PublishSectionCommandHandler
 
         var now = DateTime.UtcNow;
         int updated = 0, reordered = 0, retyped = 0, moved = 0;
+        // (product, tab, chosenFieldName) that were designated the amount field this batch —
+        // used to enforce one-amount-field-per-sub-product across locale rows / prior state.
+        var amountGroups = new List<(int? pid, int? tab, string? field)>();
 
         // ---- per-item edits + guardrails ----------------------------------
         foreach (var item in req.items)
@@ -141,6 +144,20 @@ public class PublishSectionCommandHandler
                 touched = true;
             }
 
+            // Auto-resolved amount field (per-sub-product radio). Numeric-only.
+            if (item.isAmountField.HasValue && e.IsAmountField != item.isAmountField.Value)
+            {
+                if (item.isAmountField.Value && !await IsAmountEligibleAsync(e.FieldTypeLkp, ct))
+                    throw new ConflictException(
+                        "field_not_amount_type",
+                        $"Field '{e.FieldName}' is not a numeric/amount field, so it can't be the " +
+                        "auto-resolved amount field.");
+                e.IsAmountField = item.isAmountField.Value;
+                touched = true;
+                if (item.isAmountField.Value)
+                    amountGroups.Add((e.ProductId, e.TabId, e.FieldName));
+            }
+
             // Parent / section move (explicit opt-in via moveParent).
             if (item.moveParent && e.ParentTenantFieldSetupId != item.parentTenantFieldSetupId)
             {
@@ -171,6 +188,19 @@ public class PublishSectionCommandHandler
             }
         }
 
+        // Enforce one amount field per sub-product: clear the flag on every OTHER field
+        // (incl. its locale rows / prior designations) in each (Product, Tab) just set.
+        foreach (var g in amountGroups.Distinct())
+        {
+            var others = await _db.TenantFieldSetups
+                .Where(f => f.ProductId == g.pid
+                            && (g.tab == null ? f.TabId == null : f.TabId == g.tab)
+                            && f.FieldName != g.field
+                            && f.IsAmountField)
+                .ToListAsync(ct);
+            foreach (var o in others) { o.IsAmountField = false; o.LastUpdatedBy = userId; o.LastUpdatedDate = now; }
+        }
+
         await _db.SaveChangesAsync(ct);
 
         // Bust read-side form-schema caches for this product (all cultures).
@@ -184,5 +214,24 @@ public class PublishSectionCommandHandler
             retyped   = retyped,
             moved     = moved,
         };
+    }
+
+    /// <summary>A field can be the amount field only if its type lookup resolves to a
+    /// numeric/amount type. Indeterminate (no type / lookup missing) → allowed.</summary>
+    private async Task<bool> IsAmountEligibleAsync(int? fieldTypeLkp, CancellationToken ct)
+    {
+        if (fieldTypeLkp is null) return true;
+        // Field_Type_Lkp is the CODE stored in Hidden_Value of a Lookup_Type='field'
+        // row (Visible_Value = "Amount"/"Text"/…), NOT the Lookup primary key. Resolve
+        // it the same way the FormDefinition read side does (LoadFieldTypeNamesAsync).
+        var code = fieldTypeLkp.Value.ToString();
+        var visible = await _db.Lookups.AsNoTracking()
+            .Where(l => l.LookupType == "field" && l.HiddenValue == code)
+            .Select(l => l.VisibleValue)
+            .FirstOrDefaultAsync(ct);
+        if (string.IsNullOrWhiteSpace(visible)) return true;
+        var t = visible.ToLowerInvariant();
+        return t.Contains("amount") || t.Contains("currency") || t.Contains("money")
+            || t.Contains("number") || t.Contains("numeric") || t.Contains("decimal");
     }
 }

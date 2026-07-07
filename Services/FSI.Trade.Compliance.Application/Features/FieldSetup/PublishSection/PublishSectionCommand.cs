@@ -61,6 +61,11 @@ public class PublishSectionItem
     public bool?   isActive    { get; set; }
     public bool?   isMandatory { get; set; }
 
+    /// <summary>"Auto-resolved amount field" radio (Is_Amount_Field). Null = leave
+    /// unchanged. At most one item per sub-product should be true; the handler enforces
+    /// mutual exclusivity per (Product, Tab) and rejects non-numeric fields (409).</summary>
+    public bool?   isAmountField { get; set; }
+
     /// <summary>Requested new Field_Type_Lkp. Null = leave unchanged. Validated
     /// against FieldTypeSafeMatrix.</summary>
     public int?    fieldTypeLkp { get; set; }

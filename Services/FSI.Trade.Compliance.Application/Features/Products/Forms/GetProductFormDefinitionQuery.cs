@@ -115,4 +115,9 @@ public class FormFieldDto
     /// Slice 12 Field Configuration admin page (<c>PUT /FieldSetup/{id}</c>).
     /// </summary>
     public string?   placeholder              { get; set; }
+
+    /// <summary>From <c>TmX_Tenant_Field_Setup.Is_Amount_Field</c> (migration 2026_07_004).
+    /// TRUE on the one field per sub-product designated as the transaction amount (for
+    /// cross-transaction aggregates). Toggled on the Field Configuration page.</summary>
+    public bool      isAmountField            { get; set; }
 }

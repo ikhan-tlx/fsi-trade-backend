@@ -1,33 +1,34 @@
 namespace FSI.Trade.Compliance.Domain.Entities;
 
 /// <summary>
-/// Maps to ICBC_DEMO.dbo.Cstm_Brains — the FCCM (TBML) vs BRAINS risk-score
-/// comparison record, ported from the legacy caseInsertionController pipeline.
+/// Maps to the EXISTING legacy ICBC_DEMO.dbo.Cstm_Brains table — the FCCM (TBML)
+/// vs BRAINS risk-score comparison record, ported from the legacy
+/// caseInsertionController pipeline. Column shape is preserved verbatim from the
+/// legacy schema (all score columns are varchar, no surrogate key):
 ///
-/// Legacy semantics (preserved verbatim):
-///   • <see cref="FccmScore"/>   — numeric FCCM/TBML band (1 Low / 2 Medium / 3 High)
-///                                 derived from FCC_OB_RA.RISK_CATEGORY_KEY.
-///   • <see cref="BrainsScore"/> — numeric BRAINS band (0 PEP / 1 High / 2 Medium /
-///                                 3 Low per the servlet dictionary).
-///   • <see cref="FinalScore"/>  — the "higher-risk wins" outcome label
-///                                 (Low / Medium / High) after reconciling the two.
-///   • <see cref="Display"/>     — the label plus its attribution suffix
-///                                 (" - TBML" / " - BRAINS" / " - BRAINS &amp; TBML
-///                                 SCORES ARE EQUAL"), i.e. exactly what the legacy
-///                                 code wrote back into UDF_Data.$.RiskScore.
+///   Brains_Score varchar(100), Final_Score varchar(100), FCCM_Score varchar(100),
+///   Transaction_ID int, Display varchar(100), Customer_No varchar(1000)
 ///
-/// One row per transaction (unique on <see cref="TransactionId"/>); the poller
-/// upserts it when FCCM risk assessment completes.
+/// Legacy semantics:
+///   • <see cref="FccmScore"/>   — numeric FCCM/TBML band as text (1 Low / 2 Medium
+///                                 / 3 High) from FCC_OB_RA.RISK_CATEGORY_KEY.
+///   • <see cref="BrainsScore"/> — numeric BRAINS band as text (0 PEP / 1 High /
+///                                 2 Medium / 3 Low per the servlet dictionary).
+///   • <see cref="FinalScore"/>  — the reconciled "higher-risk wins" numeric result
+///                                 as text (0/1/2/3).
+///   • <see cref="Display"/>     — the label plus attribution suffix (e.g.
+///                                 "High - TBML"), i.e. exactly what the legacy code
+///                                 wrote into UDF_Data.$.RiskScore.
+///
+/// <see cref="TransactionId"/> is the natural key (one row per transaction); the
+/// poller upserts on it.
 /// </summary>
 public class CstmBrains
 {
-    public long      Id             { get; set; }
-    public long      TransactionId  { get; set; }
-    public string?   CustomerNo     { get; set; }
-    public int?      FccmScore      { get; set; }
-    public int?      BrainsScore    { get; set; }
-    public string?   FinalScore     { get; set; }
-    public string?   Display        { get; set; }
-    public DateTime  CreatedAt      { get; set; }
-    public DateTime  LastUpdatedAt  { get; set; }
+    public int      TransactionId  { get; set; }   // Transaction_ID (key)
+    public string?  CustomerNo     { get; set; }
+    public string?  FccmScore      { get; set; }
+    public string?  BrainsScore    { get; set; }
+    public string?  FinalScore     { get; set; }
+    public string?  Display        { get; set; }
 }

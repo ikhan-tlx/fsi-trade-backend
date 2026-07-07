@@ -1,0 +1,129 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://icbc.example/schemas/onboarding-mapping.schema.json",
+  "title": "Onboarding Payload Mapping Profile",
+  "description": "Declarative mapping from internal KYC data to an environment-specific FCCM onboarding payload. Selected at runtime by Integration:Onboarding:MappingProfile.",
+  "type": "object",
+  "required": ["metadata", "fields"],
+  "additionalProperties": false,
+  "properties": {
+    "metadata": {
+      "type": "object",
+      "required": ["name", "targetContract", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "description": "Logical profile name (matches MappingProfile config)." },
+        "description": { "type": "string" },
+        "targetContract": { "type": "string", "description": "Upstream contract this shape targets, e.g. 'FCCM-Legacy' or 'FCCM-OB-v2'." },
+        "version": { "type": "string" },
+        "extends": { "type": "string", "description": "Name of a base profile to inherit from; child field rules override base rules with the same target." }
+      }
+    },
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "emitNulls": { "type": "boolean", "default": false, "description": "If false, targets that resolve to null are omitted from the payload." },
+        "defaultDateFormat": { "type": "string", "description": "Default output date pattern, e.g. MM-dd-yyyy." },
+        "applicationIdFormat": { "type": "string", "description": "Format string for context.applicationId, {0} = applicant/customer code." }
+      }
+    },
+    "constants": {
+      "type": "object",
+      "description": "Named reusable literals referenceable by { \"kind\": \"const\", \"ref\": \"<name>\" }.",
+      "additionalProperties": { "type": ["string", "number", "boolean", "null"] }
+    },
+    "fields": {
+      "type": "array",
+      "description": "Scalar target bindings.",
+      "items": { "$ref": "#/definitions/fieldRule" }
+    },
+    "arrays": {
+      "type": "array",
+      "description": "Array-valued target builders (single element or one-per-row, recursive).",
+      "items": { "$ref": "#/definitions/arrayRule" }
+    }
+  },
+  "definitions": {
+    "fieldRule": {
+      "type": "object",
+      "required": ["target", "from"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "type": "string", "description": "Dotted target path relative to the current object scope, e.g. 'OnboardingCustomer.CountryOfResidence'." },
+        "from": { "$ref": "#/definitions/source" },
+        "transform": { "type": "array", "items": { "$ref": "#/definitions/transform" } },
+        "omitWhenNull": { "type": "boolean" },
+        "description": { "type": "string" }
+      }
+    },
+    "arrayRule": {
+      "type": "object",
+      "required": ["target", "mode", "element"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "type": "string" },
+        "mode": { "type": "string", "enum": ["single", "perRow"], "description": "'single' = one synthesized element; 'perRow' = one element per source grid row." },
+        "rows": {
+          "type": "object",
+          "description": "Row source for mode=perRow.",
+          "required": ["grid"],
+          "additionalProperties": false,
+          "properties": {
+            "grid": { "type": "string", "description": "TmX_Customer_Master udf grid table name, e.g. TmxKYCSPOR." },
+            "param": { "type": "string", "description": "Row key holding the Lookup_ID (when hydrate=hidden)." },
+            "hydrate": { "type": "string", "enum": ["raw", "hidden"], "default": "hidden", "description": "raw = use the row value as-is; hidden = resolve Lookup_ID via TmX_Lookup.Hidden_Value." }
+          }
+        },
+        "omitWhenEmpty": { "type": "boolean", "default": true },
+        "element": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "fields": { "type": "array", "items": { "$ref": "#/definitions/fieldRule" } },
+            "arrays": { "type": "array", "items": { "$ref": "#/definitions/arrayRule" } }
+          }
+        },
+        "description": { "type": "string" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["const", "context", "snapshot", "udf.direct", "udf.hidden", "udf.auto", "grid.maxScore", "grid.first", "row.value", "row.hidden", "expression"]
+        },
+        "value": { "description": "Literal for kind=const." },
+        "ref": { "type": "string", "description": "Named constant for kind=const." },
+        "name": { "type": "string", "description": "Field name for kind=context (actor|fccmRequestId|applicationId|infodom|locale|transactionId) or snapshot (CustomerCode|CustomerName|...)." },
+        "key": { "type": "string", "description": "KycParam key for kind=udf.direct / udf.hidden / udf.auto. For udf.auto the engine reads the field's TmX_Tenant_Field_Setup.Field_Lookup_Type: if set it resolves the stored Lookup_ID to its Hidden_Value, else returns the literal." },
+        "grid": { "type": "string", "description": "Grid table for kind=grid.maxScore / grid.first." },
+        "param": { "type": "string", "description": "Row key for kind=grid.maxScore / grid.first." },
+        "rowKey": { "type": "string", "description": "Row key for kind=row.value / row.hidden (inside a perRow element)." },
+        "expr": { "type": "string", "description": "Expression for kind=expression (phase 2)." }
+      },
+      "allOf": [
+        { "if": { "properties": { "kind": { "const": "const" } } }, "then": { "anyOf": [ { "required": ["value"] }, { "required": ["ref"] } ] } },
+        { "if": { "properties": { "kind": { "const": "context" } } }, "then": { "required": ["name"] } },
+        { "if": { "properties": { "kind": { "const": "snapshot" } } }, "then": { "required": ["name"] } },
+        { "if": { "properties": { "kind": { "enum": ["udf.direct", "udf.hidden", "udf.auto"] } } }, "then": { "required": ["key"] } },
+        { "if": { "properties": { "kind": { "enum": ["grid.maxScore", "grid.first"] } } }, "then": { "required": ["grid", "param"] } }
+      ]
+    },
+    "transform": {
+      "type": "object",
+      "required": ["op"],
+      "additionalProperties": true,
+      "properties": {
+        "op": { "type": "string", "enum": ["default", "trim", "upper", "lower", "dateFormat", "valueMap", "cast", "const"] },
+        "value": { "description": "Fallback for op=default / override for op=const." },
+        "from": { "type": "string", "description": "Input date pattern for op=dateFormat." },
+        "to": { "type": "string", "description": "Output date pattern for op=dateFormat." },
+        "map": { "type": "object", "description": "Lookup dictionary for op=valueMap.", "additionalProperties": { "type": ["string", "number", "boolean", "null"] } },
+        "to_type": { "type": "string", "enum": ["int", "bool", "string", "decimal"], "description": "Target type for op=cast (alias: 'to')." }
+      }
+    }
+  }
+}

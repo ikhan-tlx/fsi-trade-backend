@@ -17,11 +17,12 @@ public class UpdateFieldSetupCommandValidator : AbstractValidator<UpdateFieldSet
 
         // Reject a no-op PUT — at least one mutable field must be present.
         RuleFor(x => x)
-            .Must(x => x.fieldLabel  != null
-                   ||  x.placeholder != null
-                   ||  x.isActive    != null
-                   ||  x.isMandatory != null)
-            .WithMessage("At least one of fieldLabel / placeholder / isActive / isMandatory must be provided.");
+            .Must(x => x.fieldLabel    != null
+                   ||  x.placeholder   != null
+                   ||  x.isActive      != null
+                   ||  x.isMandatory   != null
+                   ||  x.isAmountField != null)
+            .WithMessage("At least one of fieldLabel / placeholder / isActive / isMandatory / isAmountField must be provided.");
 
         RuleFor(x => x.fieldLabel!)
             .MaximumLength(MaxFieldLabelLength)

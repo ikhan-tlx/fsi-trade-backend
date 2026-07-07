@@ -150,6 +150,7 @@ public class GetTabFieldsQueryHandler
         allowedState             = f.AllowedState,
         defaultValue             = f.DefaultValue,
         udfData                  = f.UdfData,
-        placeholder              = f.Placeholder
+        placeholder              = f.Placeholder,
+        isAmountField            = f.IsAmountField
     };
 }

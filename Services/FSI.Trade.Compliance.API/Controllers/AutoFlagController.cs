@@ -53,6 +53,49 @@ public class AutoFlagController : ControllerBase
     public async Task<IActionResult> SubProducts(CancellationToken ct)
         => Ok(ResponseViewModel<List<SubProductGroupDto>>.Ok(await _mediator.Send(new ListAutoFlagSubProductsQuery(), ct)));
 
+    /// <summary>Numeric/amount operands eligible for aggregation — Trade-product fields only
+    /// (KYC source excluded), each with its tab/section for the aggregate field picker.
+    /// Loaded once on the editor page; reuses the operand catalogue and filters it.</summary>
+    [HttpGet("AggregateFields")]
+    [RequiresPrivilege("AutoFlags.View")]
+    public async Task<IActionResult> AggregateFields(CancellationToken ct)
+    {
+        var all = await _mediator.Send(new ListAutoFlagOperandsQuery(null), ct);
+        static bool IsNumericType(OperandOptionDto o)
+        {
+            if (string.Equals(o.dataType, "number", StringComparison.OrdinalIgnoreCase)) return true;
+            var t = (o.fieldType ?? "").ToLowerInvariant();
+            return t is "amount" or "currency" or "money" or "number" or "numeric" or "decimal";
+        }
+        var fields = all
+            .Where(o => !string.Equals(o.source, "KYC", StringComparison.OrdinalIgnoreCase) && IsNumericType(o))
+            .ToList();
+        return Ok(ResponseViewModel<List<OperandOptionDto>>.Ok(fields));
+    }
+
+    /// <summary>Aggregate/derived metric catalogue for the rule-builder Aggregate tab.
+    /// Reflects the registered metric handlers — adding a metric needs no controller change.</summary>
+    [HttpGet("Metrics")]
+    [RequiresPrivilege("AutoFlags.View")]
+    public IActionResult Metrics(
+        [FromServices] FSI.Trade.Compliance.Infrastructure.Flags.Metrics.MetricHandlerRegistry registry)
+    {
+        var list = registry.All.Select(h => new MetricDefDto
+        {
+            key      = h.Key,
+            label    = h.Key,
+            kind     = h.Kind.ToString(),
+            dataType = h.DataType,
+            @params  = h.Params.Select(p => new MetricParamDefDto
+            {
+                name = p.Name, label = p.Label, type = p.Type,
+                fieldFilter = p.FieldFilter, required = p.Required,
+                options = p.Options?.ToList(),
+            }).ToList(),
+        }).ToList();
+        return Ok(ResponseViewModel<List<MetricDefDto>>.Ok(list));
+    }
+
     [HttpGet("{id:int}")]
     [RequiresPrivilege("AutoFlags.View")]
     public async Task<IActionResult> Get(int id, CancellationToken ct)

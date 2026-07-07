@@ -50,6 +50,12 @@ public class UpdateFieldSetupCommand : IRequest<UpdateFieldSetupResult>
 
     /// <summary>"Required" toggle (Is_Mandatory column). Null = don't change. Conditional formulas reject with 409.</summary>
     public bool?    isMandatory        { get; set; }
+
+    /// <summary>"Auto-resolved amount field" radio (Is_Amount_Field). Null = don't change.
+    /// Setting true designates THIS field as the sub-product's amount field and clears the
+    /// flag from every other field in the same (Product, Tab) — mutual exclusivity. Only
+    /// numeric/amount-typed fields may be set; otherwise rejected 409.</summary>
+    public bool?    isAmountField      { get; set; }
 }
 
 /// <summary>Echoes the field's post-update state so the FE doesn't need a re-fetch.</summary>
@@ -63,4 +69,5 @@ public class UpdateFieldSetupResult
     public string?  placeholder        { get; set; }
     public bool     isActive           { get; set; }
     public string?  isMandatory        { get; set; }
+    public bool     isAmountField      { get; set; }
 }

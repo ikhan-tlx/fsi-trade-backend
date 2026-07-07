@@ -1,0 +1,55 @@
+{
+  "$schema": "./mapping.schema.json",
+  "metadata": {
+    "name": "v1",
+    "description": "Reproduces the legacy ICBC_Integration_Test KYCRequestModel.SetRealtimeValues payload exactly. Flat OnboardingCustomer with 32 fields + top-level applicationId/requestUserId. Backward-compatibility baseline.",
+    "targetContract": "FCCM-Legacy",
+    "version": "1.0.0"
+  },
+  "settings": {
+    "emitNulls": false,
+    "applicationIdFormat": "CIF-{0}"
+  },
+  "fields": [
+    { "target": "applicationId",  "from": { "kind": "context", "name": "applicationId" } },
+    { "target": "requestUserId",  "from": { "kind": "context", "name": "actor" } },
+
+    { "target": "OnboardingCustomer.ApplicantID",  "from": { "kind": "snapshot", "name": "CustomerCode" } },
+    { "target": "OnboardingCustomer.CustomerType", "from": { "kind": "const", "value": "ORG" } },
+    { "target": "OnboardingCustomer.Jurisdiction", "from": { "kind": "const", "value": "PAK" } },
+    { "target": "OnboardingCustomer.DisplayName",  "from": { "kind": "snapshot", "name": "CustomerName" } },
+    { "target": "OnboardingCustomer.BusinessDomain", "from": { "kind": "const", "value": "abcdef" } },
+
+    { "target": "OnboardingCustomer.CountryOfResidence",         "from": { "kind": "grid.maxScore", "grid": "TmxKYCSPOR",  "param": "KycParam29" } },
+    { "target": "OnboardingCustomer.EmploymentType",             "from": { "kind": "grid.maxScore", "grid": "TmxKYCTPFAC", "param": "KycParam5"  } },
+    { "target": "OnboardingCustomer.CountryOfBirth",             "from": { "kind": "grid.maxScore", "grid": "TmxKYCSPSC",  "param": "KycParam2"  } },
+    { "target": "OnboardingCustomer.WealthSource",               "from": { "kind": "grid.maxScore", "grid": "TmxKYCDCITC", "param": "KycParam76" } },
+    { "target": "OnboardingCustomer.EmployerName",               "from": { "kind": "grid.maxScore", "grid": "TmxKYCTOP",   "param": "KycParam31" } },
+    { "target": "OnboardingCustomer.Industry",                   "from": { "kind": "grid.maxScore", "grid": "TmxKYCLCPG",  "param": "KycParam6"  } },
+    { "target": "OnboardingCustomer.CountryOfIncorporation",     "from": { "kind": "grid.maxScore", "grid": "TmxKYCFCPG",  "param": "KycParam7"  } },
+    { "target": "OnboardingCustomer.PrimaryCitizenship",         "from": { "kind": "grid.maxScore", "grid": "TmxKYCCOMG",  "param": "KycParam9"  } },
+    { "target": "OnboardingCustomer.OrganizationLegalStructure", "from": { "kind": "grid.maxScore", "grid": "TmxKYCIPL",   "param": "KycParam38" } },
+    { "target": "OnboardingCustomer.CustomerNAICSCode",          "from": { "kind": "grid.maxScore", "grid": "TmxKYCIPD",   "param": "KycParam39" } },
+    { "target": "OnboardingCustomer.TypeofRequest",              "from": { "kind": "grid.maxScore", "grid": "TmxKYCMOS",   "param": "KycParam12" } },
+
+    { "target": "OnboardingCustomer.CitizenshipStatus",   "from": { "kind": "udf.auto", "key": "KycParam34" } },
+    { "target": "OnboardingCustomer.DEF_SECT",            "from": { "kind": "udf.auto", "key": "KycParam10" } },
+    { "target": "OnboardingCustomer.StructBus",           "from": { "kind": "udf.auto", "key": "KycParam28" } },
+    { "target": "OnboardingCustomer.CUST_PERF",           "from": { "kind": "udf.auto", "key": "KycParam20" } },
+    { "target": "OnboardingCustomer.SecondaryCitizenship","from": { "kind": "udf.auto", "key": "KycParam1"  } },
+
+    { "target": "OnboardingCustomer.RelationshipTeamCode", "from": { "kind": "udf.auto", "key": "KycParam4"  } },
+    { "target": "OnboardingCustomer.Occupation",           "from": { "kind": "udf.auto", "key": "KycParam13" } },
+    { "target": "OnboardingCustomer.OrganizationName",     "from": { "kind": "udf.auto", "key": "KycParam14" } },
+    { "target": "OnboardingCustomer.NumberOfDependents",   "from": { "kind": "udf.auto", "key": "KycParam15" } },
+    { "target": "OnboardingCustomer.RetirementYear",       "from": { "kind": "udf.auto", "key": "KycParam16" } },
+    { "target": "OnboardingCustomer.JobTitle",             "from": { "kind": "udf.auto", "key": "KycParam17" } },
+    { "target": "OnboardingCustomer.Age",                  "from": { "kind": "udf.auto", "key": "KycParam18" } },
+    { "target": "OnboardingCustomer.EmploymentStatus",     "from": { "kind": "udf.auto", "key": "KycParam21" } },
+    { "target": "OnboardingCustomer.OVER_IMP",             "from": { "kind": "udf.auto", "key": "KycParam22" } },
+    { "target": "OnboardingCustomer.Alias",                "from": { "kind": "udf.auto", "key": "KycParam3"  } },
+
+    { "target": "OnboardingCustomer.HS_CD", "from": { "kind": "grid.first", "grid": "TmxHsCodeList", "param": "KycParam8" } }
+  ],
+  "arrays": []
+}

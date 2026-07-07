@@ -1,0 +1,123 @@
+{
+  "$schema": "./mapping.schema.json",
+  "metadata": {
+    "name": "v2",
+    "description": "Representative mapping for the rich nested FCCM OB v2 onboarding payload (envelope + nested OnboardingCustomer + arrays incl nested array-in-array). Fields with no legacy source are annotated 'TODO: bind' and use placeholder KycParam/grid names — set them to this environment's real KYC field map; no code change required.",
+    "targetContract": "FCCM-OB-v2",
+    "version": "0.1.0"
+  },
+  "settings": {
+    "emitNulls": true,
+    "defaultDateFormat": "MM-dd-yyyy",
+    "applicationIdFormat": "CIF-{0}"
+  },
+  "constants": {
+    "INFODOM": "FCCMINFO",
+    "PMF_PROCESS": "KYC_ONBOARDING"
+  },
+  "fields": [
+    { "target": "infodom",       "from": { "kind": "const", "ref": "INFODOM" } },
+    { "target": "RequestID",     "from": { "kind": "context", "name": "requestId" }, "transform": [ { "op": "cast", "to": "int" } ] },
+    { "target": "PMFProcess",    "from": { "kind": "const", "ref": "PMF_PROCESS" } },
+    { "target": "requestUserId", "from": { "kind": "context", "name": "actor" } },
+    { "target": "applicationId", "from": { "kind": "context", "name": "applicationId" } },
+    { "target": "SyncAPIFlag",   "from": { "kind": "const", "value": "Y" } },
+    { "target": "locale",        "from": { "kind": "const", "value": "en_US" } },
+
+    { "target": "OnboardingCustomer.ApplicantID",       "from": { "kind": "context", "name": "applicationId" } },
+    { "target": "OnboardingCustomer.CustomerType",      "from": { "kind": "const", "value": "ORG" } },
+    { "target": "OnboardingCustomer.Jurisdiction",      "from": { "kind": "const", "value": "All" } },
+    { "target": "OnboardingCustomer.DisplayName",       "from": { "kind": "snapshot", "name": "CustomerName" } },
+    { "target": "OnboardingCustomer.OrganizationName",  "from": { "kind": "udf.direct", "key": "KycParam14" } },
+    { "target": "OnboardingCustomer.PrimaryCustomer",   "from": { "kind": "const", "value": "Y" } },
+    { "target": "OnboardingCustomer.BusinessDomain",    "from": { "kind": "const", "value": "a" } },
+
+    { "target": "OnboardingCustomer.Industry",               "from": { "kind": "grid.maxScore", "grid": "TmxKYCLCPG", "param": "KycParam6" } },
+    { "target": "OnboardingCustomer.CountryOfIncorporation", "from": { "kind": "grid.maxScore", "grid": "TmxKYCFCPG", "param": "KycParam7" } },
+    { "target": "OnboardingCustomer.CustomerNAICSCode",      "from": { "kind": "grid.maxScore", "grid": "TmxKYCIPD",  "param": "KycParam39" } },
+
+    { "target": "OnboardingCustomer.DateOfIncorporation",
+      "description": "TODO: bind to the real incorporation-date KycParam; illustrates date reformatting.",
+      "from": { "kind": "udf.direct", "key": "KycParam60" },
+      "transform": [ { "op": "dateFormat", "from": "yyyy-MM-dd", "to": "M-dd-yyyy" } ] },
+
+    { "target": "OnboardingCustomer.DomesticPEP",
+      "description": "Yes/No lookup value -> 1/0 integer.",
+      "from": { "kind": "udf.direct", "key": "KycParam40" },
+      "transform": [ { "op": "valueMap", "map": { "Yes": "1", "No": "0", "Y": "1", "N": "0" } }, { "op": "default", "value": "0" }, { "op": "cast", "to": "int" } ] },
+
+    { "target": "OnboardingCustomer.Risk",
+      "description": "TODO: bind to the resolved FCCM/BRAINS band once available in context.",
+      "from": { "kind": "const", "value": "Low" } }
+  ],
+  "arrays": [
+    {
+      "target": "OnboardingCustomer.OnboardingCustomerAddress",
+      "description": "Single synthesized address element.",
+      "mode": "single",
+      "element": {
+        "fields": [
+          { "target": "AddressPurpose", "from": { "kind": "const", "value": "P" } },
+          { "target": "Country",        "from": { "kind": "grid.maxScore", "grid": "TmxKYCSPOR", "param": "KycParam29" }, "transform": [ { "op": "default", "value": "PAK" } ] },
+          { "target": "City",           "from": { "kind": "udf.direct", "key": "KycParam50" }, "description": "TODO: bind to real city KycParam." },
+          { "target": "PostalCode",     "from": { "kind": "udf.direct", "key": "KycParam51" }, "description": "TODO: bind." },
+          { "target": "StreetLine2",    "from": { "kind": "udf.direct", "key": "KycParam52" }, "description": "TODO: bind." }
+        ]
+      }
+    },
+    {
+      "target": "OnboardingCustomer.OnboardingCustomerIdentification",
+      "description": "Single identification element with a reformatted expiry date.",
+      "mode": "single",
+      "element": {
+        "fields": [
+          { "target": "DocumentType",   "from": { "kind": "const", "value": "BC" } },
+          { "target": "DocumentNumber", "from": { "kind": "udf.direct", "key": "KycParam55" }, "description": "TODO: bind to real document-number KycParam." },
+          { "target": "IssuingCountry", "from": { "kind": "grid.maxScore", "grid": "TmxKYCFCPG", "param": "KycParam7" } },
+          { "target": "ExpiryDate",     "from": { "kind": "udf.direct", "key": "KycParam56" }, "transform": [ { "op": "dateFormat", "from": "yyyy-MM-dd", "to": "MM-dd-yyyy" } ], "description": "TODO: bind." }
+        ]
+      }
+    },
+    {
+      "target": "OnboardingCustomer.OnboardingCustomerCountry",
+      "description": "One element per country-screening grid row (perRow); Country = each row's hidden value.",
+      "mode": "perRow",
+      "rows": { "grid": "TmxKYCSPOR", "param": "KycParam29", "hydrate": "hidden" },
+      "element": {
+        "fields": [
+          { "target": "Country", "from": { "kind": "row.value" } }
+        ]
+      }
+    },
+    {
+      "target": "OnboardingCustomer.OnboardingCustomerRelatedCustomer",
+      "description": "Nested array-in-array: one related customer per related-parties grid row, each with its own OnboardingCustomerPhone[] and scalars/transforms. TODO: bind grid + row keys to this environment's related-parties capture.",
+      "mode": "perRow",
+      "rows": { "grid": "TmxKYCRelatedParties", "param": "KycParam70", "hydrate": "raw" },
+      "element": {
+        "fields": [
+          { "target": "CustomerType",  "from": { "kind": "const", "value": "IND" } },
+          { "target": "FirstName",     "from": { "kind": "row.value", "rowKey": "KycParam71" }, "description": "TODO: bind." },
+          { "target": "LastName",      "from": { "kind": "row.value", "rowKey": "KycParam72" }, "description": "TODO: bind." },
+          { "target": "PEPFlag",       "from": { "kind": "row.value", "rowKey": "KycParam73" }, "transform": [ { "op": "valueMap", "map": { "Yes": "Y", "No": "N" }, "default": "N" } ] },
+          { "target": "DomesticPEP",   "from": { "kind": "row.value", "rowKey": "KycParam73" }, "transform": [ { "op": "valueMap", "map": { "Yes": "1", "No": "0" }, "default": "0" }, { "op": "cast", "to": "int" } ] },
+          { "target": "RiskRating",    "from": { "kind": "const", "value": "Low" } }
+        ],
+        "arrays": [
+          {
+            "target": "OnboardingCustomerPhone",
+            "mode": "single",
+            "element": {
+              "fields": [
+                { "target": "CountryOfPhoneNumber", "from": { "kind": "const", "value": "PAK" } },
+                { "target": "PhonePurpose",         "from": { "kind": "const", "value": "H" } },
+                { "target": "PhoneNumber",          "from": { "kind": "row.value", "rowKey": "KycParam74" }, "description": "TODO: bind." },
+                { "target": "PhoneExtension",       "from": { "kind": "const", "value": "00" } }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

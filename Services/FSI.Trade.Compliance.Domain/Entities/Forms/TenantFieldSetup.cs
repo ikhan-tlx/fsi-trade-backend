@@ -77,6 +77,15 @@ public class TenantFieldSetup
     public bool      IsActive                   { get; set; } = true;
 
     /// <summary>
+    /// Added by migration <c>2026_07_004</c>. Marks THE amount field for this
+    /// sub-product (Product, Tab) — the value cross-transaction Sum/Avg/Min/Max
+    /// aggregates read. Mutually exclusive per sub-product (radio on the Field
+    /// Configuration page); the write handler clears it from any other field in
+    /// the same (Product, Tab) when a new one is designated.
+    /// </summary>
+    public bool      IsAmountField              { get; set; }
+
+    /// <summary>
     /// Added by migration <c>20260522_001_DynamicFormEnhancements</c>.
     /// Per-field JSON blob for arbitrary metadata. Today carries
     /// <c>{"TabId":N}</c> on selector-checkbox fields to link them to

@@ -27,10 +27,40 @@ public class PendingRequestDto
 public class GetPendingRequestsQueryHandler
     : IRequestHandler<GetPendingRequestsQuery, IReadOnlyList<PendingRequestDto>>
 {
-    // Final states are excluded from "pending". Codes vary by deployment, so we
-    // match common approved/rejected markers case-insensitively.
-    private static readonly string[] FinalStatuses =
-        { "A", "R", "APPROVED", "REJECTED", "CLOSED", "COMPLETE", "COMPLETED" };
+    // Bug 2026-06-XX — the original filter excluded a hardcoded "final states"
+    // set ({"A","R","APPROVED","REJECTED","CLOSED","COMPLETE","COMPLETED"}),
+    // but the actual codes stored in TmX_Request.Request_Status_Code in this
+    // deployment are numeric-string tokens:
+    //   "0011" = New (pending)
+    //   "0012" = Approved (final)
+    //   "0013" = Rejected (final)
+    // "0012" / "0013" didn't match the exclusion list, so historical
+    // approved/rejected rows leaked through as "pending", blocking edits on
+    // users that had ANY prior request activity. Inverted the check to be
+    // inclusion-based against the pending code — the only code that means
+    // "still awaiting a checker" — so anything else (approved, rejected,
+    // future terminal codes, garbage) is treated as final.
+    //
+    // Codes verified against tmx-finance-frontend-revamp/src/features/requests/
+    // constants/requests-constants.ts (REQUEST_STATUSES).
+    private const string PendingStatusCode = "0011";
+
+    /// <summary>
+    /// Additional alias tokens that mean "pending" — kept generous so an
+    /// operator populating TmX_Request with a friendlier value (e.g.
+    /// "NEW" / "PENDING") doesn't silently break the guard. The canonical
+    /// value stored in this deployment is <see cref="PendingStatusCode"/>.
+    /// </summary>
+    private static readonly HashSet<string> PendingAliases =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "0011",
+            "NEW",
+            "PENDING",
+            "OPEN",
+            "N",
+            "P"
+        };
 
     private readonly IApplicationDbContext _db;
     public GetPendingRequestsQueryHandler(IApplicationDbContext db) => _db = db;
@@ -56,9 +86,12 @@ public class GetPendingRequestsQueryHandler
             })
             .ToListAsync(ct);
 
+        // Only true pending rows count. An unrecognised status is treated as
+        // final so we err on the side of "let the edit through" rather than
+        // "block spuriously" (which was the original bug).
         return rows
-            .Where(r => string.IsNullOrWhiteSpace(r.requestStatusCode)
-                     || !FinalStatuses.Contains(r.requestStatusCode!.Trim().ToUpperInvariant()))
+            .Where(r => !string.IsNullOrWhiteSpace(r.requestStatusCode)
+                     && PendingAliases.Contains(r.requestStatusCode!.Trim()))
             .ToList();
     }
 }

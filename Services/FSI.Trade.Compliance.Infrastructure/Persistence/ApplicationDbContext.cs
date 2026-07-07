@@ -82,6 +82,7 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public DbSet<ReferenceListValue>      ReferenceListValues      => Set<ReferenceListValue>();
     public DbSet<SanctionedCountry>       SanctionedCountries      => Set<SanctionedCountry>();
     public DbSet<ScreeningGood>           ScreeningGoods           => Set<ScreeningGood>();
+    public DbSet<AutoFlagJob>             AutoFlagJobs             => Set<AutoFlagJob>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

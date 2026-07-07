@@ -38,6 +38,20 @@ public class CreateTransactionCommandHandler
     private readonly IMediator                       _mediator;
     private readonly ILogger<CreateTransactionCommandHandler> _log;
 
+    // KYC product is identified by name (env/id-agnostic) — same signal used by
+    // ExecuteWorkflowCommandHandler for the case-insertion branch.
+    private const string KycProductName = "KYC";
+
+    // Terminal APPLICATION_STATUS labels that let a customer's KYC be re-created:
+    // a "success" bucket (Approved/Completed/…) and a "closed" bucket
+    // (Rejected/Cancelled/…). Mirrors the Completed/Cancelled roster in
+    // ExecuteWorkflowCommandHandler. Workflow-side fallback for the create gate.
+    private static readonly string[] KycTerminalStatusNames =
+    {
+        "Completed", "Approved", "Authorized", "Active",
+        "Application Cancelled", "Cancelled", "Discarded", "Rejected",
+    };
+
     public CreateTransactionCommandHandler(
         IApplicationDbContext         db,
         ICurrentUserService           current,
@@ -99,7 +113,7 @@ public class CreateTransactionCommandHandler
         // 2. Resolve product → workflow scheme code (if any).
         var product = await _db.Products.AsNoTracking()
             .Where(p => p.ProductId == req.productId)
-            .Select(p => new { p.ProductId, p.WorkflowSchemeCode, p.ActiveFlag })
+            .Select(p => new { p.ProductId, p.ProductName, p.WorkflowSchemeCode, p.ActiveFlag })
             .FirstOrDefaultAsync(ct);
         if (product is null)
             throw new NotFoundException("product_not_found",
@@ -118,6 +132,65 @@ public class CreateTransactionCommandHandler
                 new ValidationFailure("subProductTabId",
                     "A sub-product (subProductTabId) must be supplied when creating a transaction for this product.")
             });
+
+        // 2c. One active KYC per customer (legacy-style gate, create-time).
+        //     A customer may only have ONE in-progress KYC at a time. A *new*
+        //     KYC (e.g. a re-assessment) is allowed only once the prior KYC has
+        //     been FINALISED.
+        //
+        //     Finalisation is read straight off Transaction_Status_Lkp: the FCCM
+        //     callback (KycCaseController.Callback → FccmKycCaseService
+        //     .HandleCallbackAsync) stamps the KYC transaction's status on
+        //     Approve/Reject, so the transaction status IS the callback verdict —
+        //     no separate KycCaseRequest read needed. A prior KYC in a terminal
+        //     status (Approved/Completed or Rejected/Cancelled) frees a new one;
+        //     anything else (Draft, Sent To Authorizer, in-flight FCCM, …) is
+        //     still "active" and blocks a second create.
+        //
+        //     The product was already resolved above; the transaction being
+        //     created is itself the KYC product, so we match existing KYC
+        //     transactions by that same req.productId (no extra product query).
+        var isKycProduct = string.Equals(product.ProductName?.Trim(), KycProductName,
+                                          StringComparison.OrdinalIgnoreCase);
+        var customerCode = req.customer.customerCode?.Trim();
+        if (isKycProduct && !string.IsNullOrWhiteSpace(customerCode))
+        {
+            // Terminal APPLICATION_STATUS ids (id-agnostic across envs; match by
+            // Visible_Value across tenants).
+            var terminalNamesLower = KycTerminalStatusNames
+                .Select(n => n.ToLowerInvariant()).ToArray();
+            var terminalStatusIds = await _db.Lookups.AsNoTracking()
+                .Where(l => l.LookupType == "APPLICATION_STATUS"
+                         && l.IsActive
+                         && l.VisibleValue != null
+                         && terminalNamesLower.Contains(l.VisibleValue.ToLower()))
+                .Select(l => l.Id)
+                .ToListAsync(ct);
+
+            // Same KYC product + same customer, still in a non-terminal status.
+            var activeKyc = await (
+                    from t in _db.Transactions.AsNoTracking()
+                    join s in _db.TransactionCustomerSnapshots.AsNoTracking()
+                        on (int?)t.TransactionId equals s.TransactionId
+                    where t.ProductId == req.productId
+                       && s.CustomerCode == customerCode
+                       && !terminalStatusIds.Contains(t.TransactionStatusLkp)
+                    orderby t.TransactionId descending
+                    select new { t.TransactionId, t.TransactionNumber })
+                .FirstOrDefaultAsync(ct);
+
+            if (activeKyc is not null)
+            {
+                _log.LogInformation(
+                    "KYC active-gate: blocked new KYC create for customer {CustomerCode} — " +
+                    "existing not-yet-finalised KYC TxId={TxId} ({TxNo}).",
+                    customerCode, activeKyc.TransactionId, activeKyc.TransactionNumber);
+                throw new ConflictException("kyc_active_exists",
+                    $"An active KYC already exists for this customer " +
+                    $"(transaction {activeKyc.TransactionNumber}). It must be finalised " +
+                    $"(Approved or Rejected) before a new KYC can be created.");
+            }
+        }
 
         // 3. Generate server-side IDs.
         var processInstanceId = Guid.NewGuid();

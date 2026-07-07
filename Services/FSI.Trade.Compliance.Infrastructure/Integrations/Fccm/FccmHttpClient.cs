@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using FSI.Trade.Compliance.Application.Common.Options;
 using Microsoft.Extensions.Logging;
@@ -36,15 +37,30 @@ public class FccmHttpClient
     };
 
     /// <summary>
-    /// Submits a KYC onboarding case to FCCM. Returns the upstream request ID
-    /// (their handle for the in-flight provisioning). Null = submit failed;
-    /// caller logs the case as Failed. Sends HTTP Basic auth
-    /// (FccmOnboardingUsername/Password) — legacy parity.
+    /// Submits a KYC onboarding case to FCCM from the typed (hardcoded-path)
+    /// payload. Returns the upstream request ID. See <see cref="PostJsonAsync"/>.
     /// </summary>
-    public async Task<(string? RequestId, string? Error)> SubmitCaseAsync(
-        FccmOnboardingPayload payload,
-        string customerId,
-        CancellationToken ct = default)
+    public Task<(string? RequestId, string? Error)> SubmitCaseAsync(
+        FccmOnboardingPayload payload, string customerId, CancellationToken ct = default)
+        => PostJsonAsync(JsonSerializer.Serialize(payload, WireJson), customerId, ct);
+
+    /// <summary>
+    /// Submits a KYC onboarding case from a mapper-built <see cref="JsonNode"/>
+    /// (config-driven path). The node already contains exactly what the active
+    /// mapping profile chose to emit (null-omission handled during mapping).
+    /// </summary>
+    public Task<(string? RequestId, string? Error)> SubmitCaseAsync(
+        JsonNode payload, string customerId, CancellationToken ct = default)
+        => PostJsonAsync(payload.ToJsonString(WireJson), customerId, ct);
+
+    /// <summary>
+    /// Core POST: sends the pre-serialized JSON body to the FCCM onboarding
+    /// endpoint with HTTP Basic auth (Integration:Onboarding Username/Password),
+    /// and extracts the upstream request id. Null RequestId = submit failed;
+    /// the caller logs the case as Failed.
+    /// </summary>
+    private async Task<(string? RequestId, string? Error)> PostJsonAsync(
+        string json, string customerId, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(_opt.FccmOnboardingUrl))
         {
@@ -54,22 +70,17 @@ public class FccmHttpClient
 
         try
         {
-            var json = JsonSerializer.Serialize(payload, WireJson);
             using var request = new HttpRequestMessage(HttpMethod.Post, _opt.FccmOnboardingUrl)
             {
                 Content = new StringContent(json, Encoding.UTF8, "application/json"),
             };
-            // Basic auth (legacy: Convert.ToBase64String(user:pass)). Prefer the
-            // configurable Integration:Onboarding block; fall back to the
-            // deprecated top-level FccmOnboardingUsername/Password.
-            var authUser = !string.IsNullOrWhiteSpace(_opt.Onboarding.Username)
-                ? _opt.Onboarding.Username : _opt.FccmOnboardingUsername;
-            var authPass = !string.IsNullOrWhiteSpace(_opt.Onboarding.Username)
-                ? _opt.Onboarding.Password : _opt.FccmOnboardingPassword;
+            // Basic auth (legacy: Convert.ToBase64String(user:pass)) from the
+            // configurable Integration:Onboarding block.
+            var authUser = _opt.Onboarding.Username;
+            var authPass = _opt.Onboarding.Password;
             if (!string.IsNullOrWhiteSpace(authUser))
             {
-                var token = Convert.ToBase64String(
-                    Encoding.ASCII.GetBytes($"{authUser}:{authPass}"));
+                var token = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{authUser}:{authPass}"));
                 request.Headers.Authorization = new AuthenticationHeaderValue("Basic", token);
             }
 

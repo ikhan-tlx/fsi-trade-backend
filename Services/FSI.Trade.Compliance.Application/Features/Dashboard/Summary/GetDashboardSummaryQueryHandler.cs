@@ -35,9 +35,11 @@ public class GetDashboardSummaryQueryHandler
     public async Task<DashboardSummaryDto> Handle(GetDashboardSummaryQuery req, CancellationToken ct)
     {
         var (range, from, to) = DashboardRange.Resolve(req.Range);
-        var tenantId = _current.TenantId ?? PlatformDefaultTenantId;
 
-        var cacheKey = $"Dashboard::Summary::v1::tenant={tenantId}::range={range}";
+        // Tenant scoping intentionally removed (2026-07): the dashboard now aggregates
+        // across ALL tenants. The tenant field is being retired application-wide; until
+        // then no Tenant_Id predicate is applied to any dashboard aggregate below.
+        var cacheKey = $"Dashboard::Summary::v1::range={range}";
         if (_cache.TryGetValue<DashboardSummaryDto>(cacheKey, out var hit) && hit is not null)
             return hit;
 
@@ -45,7 +47,7 @@ public class GetDashboardSummaryQueryHandler
 
         // ---- Customers (distinct by Customer_Code; risk from snapshot UDF) ----
         var snaps = await _db.TransactionCustomerSnapshots.AsNoTracking()
-            .Where(c => c.TenantId == tenantId && c.CustomerCode != null)
+            .Where(c => c.CustomerCode != null)
             .Select(c => new { c.CustomerCode, c.CreatedDate, c.UdfData })
             .ToListAsync(ct);
 
@@ -87,8 +89,7 @@ public class GetDashboardSummaryQueryHandler
             .FirstOrDefaultAsync(ct);
 
         var txRows = await _db.Transactions.AsNoTracking()
-            .Where(t => t.TenantId == tenantId
-                     && (cancelledLkp == null || t.TransactionStatusLkp != cancelledLkp))
+            .Where(t => cancelledLkp == null || t.TransactionStatusLkp != cancelledLkp)
             .Select(t => new { t.ProductId, t.SubProductTabId })
             .ToListAsync(ct);
 
@@ -121,8 +122,7 @@ public class GetDashboardSummaryQueryHandler
         // ---- Trend (Phase 1.5 — COUNT series, not USD) ----
         // New instruments per bucket over the range, from Created_Date.
         var trendDates = await _db.Transactions.AsNoTracking()
-            .Where(t => t.TenantId == tenantId
-                     && t.CreatedDate >= from && t.CreatedDate <= to
+            .Where(t => t.CreatedDate >= from && t.CreatedDate <= to
                      && (cancelledLkp == null || t.TransactionStatusLkp != cancelledLkp))
             .Select(t => t.CreatedDate)
             .ToListAsync(ct);

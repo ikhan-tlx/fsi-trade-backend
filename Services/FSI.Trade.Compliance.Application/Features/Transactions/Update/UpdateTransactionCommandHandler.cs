@@ -105,6 +105,18 @@ public class UpdateTransactionCommandHandler
         if (customerSection.HasValue)
             await MergeCustomerSectionUdfAsync(req.transactionId, customerSection.Value, userId, now, ct);
 
+        // 3c. Promote first-class customer columns from the TmxCustomerMaster
+        // field section into the snapshot's real columns (Customer_Name,
+        // Customer_Code). The dynamic form stores the KYC "Customer Name"
+        // (Section A) inside this section — legacy read it as
+        // TmxCustomerMaster[0].CustomerName for the FCCM DisplayName. Without
+        // this promotion the name only ever lands in the UDF blob, so the
+        // Inbox / Trade Repository / onboarding DisplayName (all of which read
+        // the Customer_Name COLUMN) stay blank for a brand-new KYC onboarding
+        // customer that BRAINS/Customer-Master couldn't name at create time.
+        // Handles both the object and legacy array ([{…}]) section shapes.
+        await PromoteCustomerColumnsAsync(req.transactionId, req.sections, userId, now, ct);
+
         // ---------- 4. Beneficiaries ----------
         // The array-driven diff is full-replace, so an empty `beneficiaries: []`
         // (which the FE always sends — it drives beneficiary data through the
@@ -399,6 +411,91 @@ public class UpdateTransactionCommandHandler
             detail.LastUpdatedBy   = userId;
             detail.LastUpdatedDate = now;
         }
+    }
+
+    /// <summary>
+    /// Field names inside the <c>TmxCustomerMaster</c> section that map onto a
+    /// first-class column on <see cref="TransactionCustomerSnapshot"/> (rather
+    /// than staying in the UDF blob). Matched case-insensitively.
+    /// </summary>
+    private static readonly string[] CustomerNameKeys = { "CustomerName", "Customer_Name" };
+    private static readonly string[] CustomerCodeKeys = { "CustomerCode", "Customer_Code" };
+
+    /// <summary>
+    /// Promotes the customer name (and code) from the <c>TmxCustomerMaster</c>
+    /// field section into the snapshot's real columns so every screen that reads
+    /// <c>Customer_Name</c> (Inbox listing, Trade Repository, transaction header,
+    /// FCCM onboarding <c>DisplayName</c>) shows it. The dynamic form keeps these
+    /// in the section bag; legacy read them off the same section as
+    /// <c>TmxCustomerMaster[0].CustomerName</c>. Non-destructive: only overwrites
+    /// a column when the section carries a non-empty value. Tolerates both the
+    /// object (<c>{…}</c>) and legacy array (<c>[{…}]</c>) section shapes.
+    /// </summary>
+    private async Task PromoteCustomerColumnsAsync(
+        int transactionId, IReadOnlyDictionary<string, JsonElement>? sections,
+        string userId, DateTime now, CancellationToken ct)
+    {
+        if (sections is null) return;
+
+        // Locate the section case-insensitively; normalize array → first element.
+        JsonElement? obj = null;
+        foreach (var kv in sections)
+        {
+            if (!string.Equals(kv.Key, "TmxCustomerMaster", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (kv.Value.ValueKind == JsonValueKind.Object)
+                obj = kv.Value;
+            else if (kv.Value.ValueKind == JsonValueKind.Array
+                     && kv.Value.GetArrayLength() > 0
+                     && kv.Value[0].ValueKind == JsonValueKind.Object)
+                obj = kv.Value[0];
+            break;
+        }
+        if (obj is null) return;
+
+        var name = ReadStringKey(obj.Value, CustomerNameKeys);
+        var code = ReadStringKey(obj.Value, CustomerCodeKeys);
+        if (string.IsNullOrWhiteSpace(name) && string.IsNullOrWhiteSpace(code)) return;
+
+        var snapshot = await _db.TransactionCustomerSnapshots
+            .FirstOrDefaultAsync(c => c.TransactionId == transactionId, ct);
+        if (snapshot is null) return; // create always inserts one; nothing to promote onto otherwise
+
+        var changed = false;
+        if (!string.IsNullOrWhiteSpace(name) && snapshot.CustomerName != name)
+        {
+            snapshot.CustomerName = name;
+            changed = true;
+        }
+        // Only fill the code when it's currently blank — it's the applicant id set
+        // at create and shouldn't be silently rewritten by a form edit.
+        if (!string.IsNullOrWhiteSpace(code) && string.IsNullOrWhiteSpace(snapshot.CustomerCode))
+        {
+            snapshot.CustomerCode = code;
+            changed = true;
+        }
+        if (changed)
+        {
+            snapshot.LastUpdatedBy   = userId;
+            snapshot.LastUpdatedDate = now;
+        }
+    }
+
+    /// <summary>Reads the first present, non-empty string value among the given
+    /// candidate keys from a JSON object (case-insensitive).</summary>
+    private static string? ReadStringKey(JsonElement obj, string[] keys)
+    {
+        if (obj.ValueKind != JsonValueKind.Object) return null;
+        foreach (var prop in obj.EnumerateObject())
+            foreach (var key in keys)
+                if (string.Equals(prop.Name, key, StringComparison.OrdinalIgnoreCase))
+                {
+                    var v = prop.Value.ValueKind == JsonValueKind.String
+                        ? prop.Value.GetString()
+                        : prop.Value.ToString();
+                    if (!string.IsNullOrWhiteSpace(v)) return v.Trim();
+                }
+        return null;
     }
 
     /// <summary>

@@ -83,6 +83,32 @@ public class UpdateFieldSetupCommandHandler
             entity.IsMandatory = req.isMandatory.Value ? "true" : "false";
         }
 
+        // ---- isAmountField (per-sub-product radio; mutual exclusivity) ----
+        if (req.isAmountField.HasValue)
+        {
+            if (req.isAmountField.Value && !await IsAmountEligibleAsync(entity.FieldTypeLkp, ct))
+            {
+                throw new ConflictException(
+                    "field_not_amount_type",
+                    $"Field '{entity.FieldName}' is not a numeric/amount field, so it can't be " +
+                    "designated the auto-resolved amount field.");
+            }
+
+            // All rows in this (Product, Tab) sub-product — includes the field's locale rows.
+            var group = await _db.TenantFieldSetups
+                .Where(f => f.ProductId == entity.ProductId
+                            && (entity.TabId == null ? f.TabId == null : f.TabId == entity.TabId))
+                .ToListAsync(ct);
+
+            foreach (var f in group)
+            {
+                if (string.Equals(f.FieldName, entity.FieldName, StringComparison.OrdinalIgnoreCase))
+                    f.IsAmountField = req.isAmountField.Value;          // set/clear this field (all its locale rows)
+                else if (req.isAmountField.Value)
+                    f.IsAmountField = false;                           // radio: clear every other field
+            }
+        }
+
         // ---- audit stamps ----------------------------------------------
         entity.LastUpdatedBy   = userId;
         entity.LastUpdatedDate = DateTime.UtcNow;
@@ -105,8 +131,29 @@ public class UpdateFieldSetupCommandHandler
             fieldLabel         = entity.FieldLabel,
             placeholder        = entity.Placeholder,
             isActive           = entity.IsActive,
-            isMandatory        = entity.IsMandatory
+            isMandatory        = entity.IsMandatory,
+            isAmountField      = entity.IsAmountField
         };
+    }
+
+    /// <summary>A field can be the amount field only if its type lookup resolves to a
+    /// numeric/amount type. Indeterminate (no type / lookup missing) → allowed (the FE
+    /// already restricts the toggle to numeric fields).</summary>
+    private async Task<bool> IsAmountEligibleAsync(int? fieldTypeLkp, CancellationToken ct)
+    {
+        if (fieldTypeLkp is null) return true;
+        // Field_Type_Lkp is the CODE stored in Hidden_Value of a Lookup_Type='field'
+        // row (Visible_Value = "Amount"/"Text"/…), NOT the Lookup primary key. Resolve
+        // it exactly the way the FormDefinition read side does (LoadFieldTypeNamesAsync).
+        var code = fieldTypeLkp.Value.ToString();
+        var visible = await _db.Lookups.AsNoTracking()
+            .Where(l => l.LookupType == "field" && l.HiddenValue == code)
+            .Select(l => l.VisibleValue)
+            .FirstOrDefaultAsync(ct);
+        if (string.IsNullOrWhiteSpace(visible)) return true;
+        var t = visible.ToLowerInvariant();
+        return t.Contains("amount") || t.Contains("currency") || t.Contains("money")
+            || t.Contains("number") || t.Contains("numeric") || t.Contains("decimal");
     }
 
     /// <summary>

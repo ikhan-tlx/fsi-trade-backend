@@ -1,9 +1,12 @@
+using System.Text.Json.Nodes;
 using FSI.Trade.Compliance.Application.Common.Exceptions;
 using FSI.Trade.Compliance.Application.Common.Options;
 using FSI.Trade.Compliance.Application.Contracts.Identity;
 using FSI.Trade.Compliance.Application.Contracts.Integrations;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
 using FSI.Trade.Compliance.Domain.Entities;
+using FSI.Trade.Compliance.Domain.Entities.Customer;
+using FSI.Trade.Compliance.Infrastructure.Integrations.Fccm.Mapping;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -26,6 +29,8 @@ public class FccmKycCaseService : IKycCaseService
     private readonly IntegrationOptions      _integration;
     private readonly FccmOnboardingOptions   _onboarding;
     private readonly KycOnboardingFieldResolver _resolver;
+    private readonly IOnboardingMappingProvider _mappingProvider;
+    private readonly OnboardingPayloadMapper    _mapper;
     private readonly ILogger<FccmKycCaseService> _log;
 
     public FccmKycCaseService(
@@ -34,6 +39,8 @@ public class FccmKycCaseService : IKycCaseService
         ICurrentUserService           current,
         IOptions<IntegrationOptions>  integration,
         KycOnboardingFieldResolver    resolver,
+        IOnboardingMappingProvider    mappingProvider,
+        OnboardingPayloadMapper       mapper,
         ILogger<FccmKycCaseService>   log)
     {
         _db          = db;
@@ -42,6 +49,8 @@ public class FccmKycCaseService : IKycCaseService
         _integration = integration.Value;
         _onboarding  = integration.Value.Onboarding;
         _resolver    = resolver;
+        _mappingProvider = mappingProvider;
+        _mapper      = mapper;
         _log         = log;
     }
 
@@ -63,6 +72,55 @@ public class FccmKycCaseService : IKycCaseService
         };
         _db.KycCaseRequests.Add(entity);
         await _db.SaveChangesAsync(ct);
+
+        // 2. Fire the onboarding submit on the freshly-inserted row.
+        return await FireOnboardingAsync(entity, ct);
+    }
+
+    /// <summary>
+    /// Re-fires the FCCM onboarding submit for a Failed/Timeout case ON THE SAME
+    /// KycCaseRequest row — a transient-failure retry (e.g. FCCM was unreachable).
+    /// It does NOT create a new row or a new transaction: onboarding still fires
+    /// at most once per transaction. A genuine periodic re-assessment of a
+    /// customer is a NEW KYC transaction (the analyst wizard flow), which yields
+    /// its own execution row and lets the customer's KYC data + risk evolve over
+    /// time — that is what the Risk Assessment history shows one row per.
+    /// </summary>
+    public async Task<KycCaseSubmissionResult> ResubmitAsync(long requestId, CancellationToken ct = default)
+    {
+        var entity = await _db.KycCaseRequests.FirstOrDefaultAsync(x => x.Id == requestId, ct)
+            ?? throw new NotFoundException("kyc_case_not_found", $"KYC case {requestId} not found.");
+
+        if (entity.Status != KycCaseStatus.Failed && entity.Status != KycCaseStatus.Timeout)
+            throw new ConflictException("kyc_retry_not_allowed",
+                $"Retry is only available for Failed or Timeout executions (current: {entity.Status}).");
+
+        // Reset the row to a fresh in-flight state (same row, same transaction).
+        entity.Status          = KycCaseStatus.Submitted;
+        entity.ErrorDetail     = null;
+        entity.FccmRequestId   = null;
+        entity.FccmCaseId      = null;
+        entity.RiskCategoryKey = null;
+        entity.CaseCreatedAt   = null;
+        entity.RiskAssessedAt  = null;
+        entity.LastPolledAt    = null;
+        entity.LastUpdatedAt   = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+
+        _log.LogInformation("KYC onboarding RETRY on same row {RequestId} (customer {Customer}, txn {Txn}).",
+            entity.Id, entity.CustomerId, entity.TransactionId);
+        return await FireOnboardingAsync(entity, ct);
+    }
+
+    /// <summary>
+    /// Builds the onboarding payload from the transaction's customer snapshot,
+    /// POSTs it to FCCM, and drives the supplied row to AwaitingCaseId (success)
+    /// or Failed (error). Shared by the first submit and the same-row retry.
+    /// </summary>
+    private async Task<KycCaseSubmissionResult> FireOnboardingAsync(KycCaseRequest entity, CancellationToken ct)
+    {
+        var actor = _current.UserName ?? _current.UserId ?? "unknown";
+        var req   = new KycCaseSubmissionRequest { CustomerId = entity.CustomerId, TransactionId = entity.TransactionId };
 
         // 2. Build the onboarding payload from the transaction's customer
         //    snapshot (legacy KYCRequestModel parity). Customer-identity +
@@ -112,7 +170,7 @@ public class FccmKycCaseService : IKycCaseService
         //     SetRealtimeValues: hidden-value resolution + the Oracle
         //     FCC_OB_RISK_PRMS_CODE_SCRE_MAP max-score lookup). Best-effort: a
         //     null derivation leaves the configured static fallback in place.
-        if (req.TransactionId is long txnIdRaw)
+        if (req.TransactionId is long txnIdRaw && string.IsNullOrWhiteSpace(_onboarding.MappingProfile))
         {
             var d = await _resolver.ResolveAsync((int)txnIdRaw, ct);
             var oc = payload.OnboardingCustomer;
@@ -179,7 +237,12 @@ public class FccmKycCaseService : IKycCaseService
         string? submitError;
         try
         {
-            (upstreamRequestId, submitError) = await _http.SubmitCaseAsync(payload, req.CustomerId, ct);
+            // Config-driven path: the payload shape is ALWAYS built from the active
+            // mapping profile (Integration:Onboarding:MappingProfile; defaults to "v1").
+            // Switching shapes (v1 / v2 / any client profile) is a config change, not a
+            // code edit. The hardcoded builder above remains only as an internal fallback.
+            var mapped = await BuildMappedPayloadAsync(req, snap, applicantId, actor, entity.Id, ct);
+            (upstreamRequestId, submitError) = await _http.SubmitCaseAsync(mapped, req.CustomerId, ct);
         }
         catch (Exception ex)
         {
@@ -206,6 +269,50 @@ public class FccmKycCaseService : IKycCaseService
         await _db.SaveChangesAsync(ct);
 
         return new KycCaseSubmissionResult { RequestId = entity.Id, Status = entity.Status };
+    }
+
+    /// <summary>
+    /// Builds the onboarding payload declaratively from the active mapping profile
+    /// (<c>Integration:Onboarding:MappingProfile</c>). Reads the transaction-detail
+    /// UDF + customer snapshot/grids, assembles the runtime context, and runs the
+    /// generic <see cref="OnboardingPayloadMapper"/>.
+    /// </summary>
+    private async Task<JsonNode> BuildMappedPayloadAsync(
+        KycCaseSubmissionRequest req,
+        TransactionCustomerSnapshot? snap,
+        string applicantId, string actor, long requestId, CancellationToken ct)
+    {
+        var profile = _mappingProvider.Get(_onboarding.EffectiveMappingProfile);
+
+        string? detailUdf = null;
+        if (req.TransactionId is long txnId)
+        {
+            var tid = (int)txnId;
+            detailUdf = await _db.TransactionDetails.AsNoTracking()
+                .Where(d => d.TransactionId == tid)
+                .Select(d => d.UdfData)
+                .FirstOrDefaultAsync(ct);
+        }
+
+        var appIdFmt = string.IsNullOrWhiteSpace(_onboarding.ApplicationIdFormat) ? "{0}" : _onboarding.ApplicationIdFormat;
+        var mctx = new OnboardingMappingContext
+        {
+            Snapshot    = snap,
+            DetailUdf   = detailUdf,
+            CustomerUdf = snap?.UdfData,
+            Context = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["actor"]         = actor,
+                ["applicationId"] = string.Format(appIdFmt, applicantId),
+                ["requestId"]     = requestId.ToString(),
+                ["transactionId"] = req.TransactionId?.ToString(),
+                ["customerId"]    = req.CustomerId,
+            }
+        };
+
+        _log.LogInformation("KYC onboarding: building payload via mapping profile '{Profile}' (contract {Contract}) for txn {Txn}.",
+            _onboarding.EffectiveMappingProfile, profile.Metadata.TargetContract, req.TransactionId);
+        return await _mapper.MapAsync(profile, mctx, ct);
     }
 
     public async Task<KycCaseStatusDto?> GetStatusAsync(long requestId, CancellationToken ct = default)
