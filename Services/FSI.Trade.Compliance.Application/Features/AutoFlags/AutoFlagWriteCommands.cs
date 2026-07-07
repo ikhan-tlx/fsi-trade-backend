@@ -46,6 +46,61 @@ internal static class AutoFlagScopeWriter
     }
 }
 
+/// <summary>Shared writer for a flag's rule rows — used by BOTH Create and Update so the two
+/// paths can never drift. (A prior drift persisted rules on update WITHOUT Handler_Key /
+/// Right_Factor / Right_Factor_Unit, silently blanking the metric on every aggregate/variance
+/// or ×/% flag that was edited.) Also guards completeness: an Aggregate/Derived left operand is
+/// meaningless without its Handler_Key + Aggregate_Spec, so a half-built rule is rejected rather
+/// than saved in a state the evaluator can't run.</summary>
+internal static class AutoFlagRuleWriter
+{
+    /// <summary>Completeness guard, run BEFORE any DB mutation so a rejected save can never leave
+    /// a flag rule-less: an Aggregate/Derived left operand is meaningless without its metric
+    /// (Handler_Key + Aggregate_Spec), so a half-built rule is refused rather than persisted in a
+    /// state the evaluator can't run.</summary>
+    public static void Validate(List<AutoFlagRuleDto>? rules)
+    {
+        if (rules is null) return;
+        foreach (var r in rules)
+        {
+            var src = string.IsNullOrWhiteSpace(r.leftSource) ? "Trade" : r.leftSource;
+            if ((src == "Aggregate" || src == "Derived")
+                && (string.IsNullOrWhiteSpace(r.handlerKey) || string.IsNullOrWhiteSpace(r.aggregateSpec)))
+                throw new ConflictException("auto_flag_incomplete_metric",
+                    $"A condition (group {(r.ruleGroup <= 0 ? 1 : r.ruleGroup)}) uses a metric/aggregate left operand but no metric is selected. Choose an aggregate/metric — or pick a field — before saving.");
+        }
+    }
+
+    public static void Write(IApplicationDbContext db, int flagId,
+        List<AutoFlagRuleDto>? rules, string user, DateTime now)
+    {
+        if (rules is null) return;
+        foreach (var r in rules)
+            db.FlagRules.Add(new FlagRule
+            {
+                FlagId           = flagId,
+                RuleGroup        = r.ruleGroup <= 0 ? 1 : r.ruleGroup,
+                EvaluationOrder  = r.evaluationOrder <= 0 ? 1 : r.evaluationOrder,
+                LogicalOperator  = string.IsNullOrWhiteSpace(r.logicalOperator) ? "AND" : r.logicalOperator,
+                LeftSource       = string.IsNullOrWhiteSpace(r.leftSource) ? "Trade" : r.leftSource,
+                LeftFieldCode    = r.leftFieldCode,
+                Operator         = r.@operator,
+                RightOperandType = r.rightOperandType,
+                RightSource      = r.rightSource,
+                RightFieldCode   = r.rightFieldCode,
+                StaticValue      = r.staticValue,
+                ReferenceListCode= r.referenceListCode,
+                AggregateSpec    = r.aggregateSpec,
+                HandlerKey       = r.handlerKey,
+                RightFactor      = r.rightFactor,
+                RightFactorUnit  = r.rightFactorUnit,
+                ActiveFlag       = true,
+                CreatedBy        = user,
+                CreatedDate      = now,
+            });
+    }
+}
+
 // ===================== Create ==========================================
 /// <summary>POST /api/v1/AutoFlag — create an auto flag (Draft) + its rules + scope.</summary>
 public class CreateAutoFlagCommand : AutoFlagWriteModel, IRequest<int> { }
@@ -61,6 +116,7 @@ public class CreateAutoFlagCommandHandler : IRequestHandler<CreateAutoFlagComman
     {
         if (string.IsNullOrWhiteSpace(req.name))
             throw new ConflictException("auto_flag_name_required", "An auto flag name is required.");
+        AutoFlagRuleWriter.Validate(req.rules);
 
         var user = _current.UserName ?? _current.UserId ?? "system";
         var now  = DateTime.UtcNow;
@@ -90,37 +146,9 @@ public class CreateAutoFlagCommandHandler : IRequestHandler<CreateAutoFlagComman
         await _db.SaveChangesAsync(ct);   // get FlagId
 
         AutoFlagScopeWriter.Write(_db, flag.FlagId, req.scopes, req.scopeProductIds, user, now);
-        WriteRules(flag.FlagId, req.rules, user, now);
+        AutoFlagRuleWriter.Write(_db, flag.FlagId, req.rules, user, now);
         await _db.SaveChangesAsync(ct);
         return flag.FlagId;
-    }
-
-    private void WriteRules(int flagId, List<AutoFlagRuleDto>? rules, string user, DateTime now)
-    {
-        if (rules is null) return;
-        foreach (var r in rules)
-            _db.FlagRules.Add(new FlagRule
-            {
-                FlagId           = flagId,
-                RuleGroup        = r.ruleGroup <= 0 ? 1 : r.ruleGroup,
-                EvaluationOrder  = r.evaluationOrder <= 0 ? 1 : r.evaluationOrder,
-                LogicalOperator  = string.IsNullOrWhiteSpace(r.logicalOperator) ? "AND" : r.logicalOperator,
-                LeftSource       = string.IsNullOrWhiteSpace(r.leftSource) ? "Trade" : r.leftSource,
-                LeftFieldCode    = r.leftFieldCode,
-                Operator         = r.@operator,
-                RightOperandType = r.rightOperandType,
-                RightSource      = r.rightSource,
-                RightFieldCode   = r.rightFieldCode,
-                StaticValue      = r.staticValue,
-                ReferenceListCode= r.referenceListCode,
-                AggregateSpec    = r.aggregateSpec,
-                HandlerKey       = r.handlerKey,
-                RightFactor      = r.rightFactor,
-                RightFactorUnit  = r.rightFactorUnit,
-                ActiveFlag       = true,
-                CreatedBy        = user,
-                CreatedDate      = now,
-            });
     }
 }
 
@@ -143,6 +171,10 @@ public class UpdateAutoFlagCommandHandler : IRequestHandler<UpdateAutoFlagComman
         var flag = await _db.FlagCatalogues.FirstOrDefaultAsync(f => f.FlagId == req.FlagId && !f.IsDeleted, ct)
                    ?? throw new NotFoundException("auto_flag_not_found", $"Auto flag '{req.FlagId}' not found.");
 
+        // Reject a half-built aggregate/derived rule up front — BEFORE we replace scopes/rules —
+        // so a rejected update can never leave the flag rule-less.
+        AutoFlagRuleWriter.Validate(req.rules);
+
         var user = _current.UserName ?? _current.UserId ?? "system";
         var now  = DateTime.UtcNow;
 
@@ -162,27 +194,7 @@ public class UpdateAutoFlagCommandHandler : IRequestHandler<UpdateAutoFlagComman
 
         AutoFlagScopeWriter.Write(_db, flag.FlagId, req.scopes, req.scopeProductIds, user, now);
 
-        if (req.rules != null)
-            foreach (var r in req.rules)
-                _db.FlagRules.Add(new FlagRule
-                {
-                    FlagId           = flag.FlagId,
-                    RuleGroup        = r.ruleGroup <= 0 ? 1 : r.ruleGroup,
-                    EvaluationOrder  = r.evaluationOrder <= 0 ? 1 : r.evaluationOrder,
-                    LogicalOperator  = string.IsNullOrWhiteSpace(r.logicalOperator) ? "AND" : r.logicalOperator,
-                    LeftSource       = string.IsNullOrWhiteSpace(r.leftSource) ? "Trade" : r.leftSource,
-                    LeftFieldCode    = r.leftFieldCode,
-                    Operator         = r.@operator,
-                    RightOperandType = r.rightOperandType,
-                    RightSource      = r.rightSource,
-                    RightFieldCode   = r.rightFieldCode,
-                    StaticValue      = r.staticValue,
-                    ReferenceListCode= r.referenceListCode,
-                    AggregateSpec    = r.aggregateSpec,
-                    ActiveFlag       = true,
-                    CreatedBy        = user,
-                    CreatedDate      = now,
-                });
+        AutoFlagRuleWriter.Write(_db, flag.FlagId, req.rules, user, now);
 
         await _db.SaveChangesAsync(ct);
         return true;
