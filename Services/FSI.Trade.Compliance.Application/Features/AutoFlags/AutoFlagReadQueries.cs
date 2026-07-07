@@ -159,7 +159,7 @@ public class ListAutoFlagOperandsQueryHandler : IRequestHandler<ListAutoFlagOper
         var rows = await _db.TenantFieldSetups.AsNoTracking()
             .Where(f => f.IsActive && f.ProductId != null && f.TabId != null
                         && (req.ProductId == null || f.ProductId == req.ProductId))
-            .Select(f => new { f.TenantFieldSetupId, f.ParentTenantFieldSetupId, f.ProductId, f.TabId, f.FieldSequence, f.FieldTypeLkp, f.FieldName, f.FieldLabel, f.LocaleFieldLabel, f.FieldTableName })
+            .Select(f => new { f.TenantFieldSetupId, f.ParentTenantFieldSetupId, f.ProductId, f.TabId, f.FieldSequence, f.FieldTypeLkp, f.FieldName, f.FieldLabel, f.LocaleFieldLabel, f.FieldTableName, f.FieldLookupType })
             .ToListAsync(ct);
 
         // Multi-value detection: a field is multi-value when it is a COLUMN inside a
@@ -233,6 +233,10 @@ public class ListAutoFlagOperandsQueryHandler : IRequestHandler<ListAutoFlagOper
                 source      = isKyc ? "KYC" : "Trade",
                 dataType    = dt,
                 fieldType   = ftype,
+                // The value-lookup group backing a dropdown field (Field_Lookup_Type). Lets the
+                // builder bind the right operand to this field's own lookup values instead of
+                // free text. Null/empty for non-lookup fields (amount/number/free-text).
+                fieldLookupType = r.FieldLookupType,
                 productId   = r.ProductId,
                 productName = pname,
                 tabId       = r.TabId,

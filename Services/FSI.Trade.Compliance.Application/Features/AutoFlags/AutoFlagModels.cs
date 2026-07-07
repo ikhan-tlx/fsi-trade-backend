@@ -67,6 +67,10 @@ public class OperandOptionDto
     public string  source      { get; set; } = "Trade";   // Trade | KYC
     public string  dataType    { get; set; } = "text";     // code | number
     public string? fieldType   { get; set; }               // Dropdown | SearchableDropdown | Amount | Number
+    /// <summary>Value-lookup group (Field_Lookup_Type) backing a dropdown field, e.g. the lookup
+    /// type whose rows are this field's options. Lets the builder bind the right operand to this
+    /// field's own lookup values (via GET /Lookup/GetByType). Null/empty for non-lookup fields.</summary>
+    public string? fieldLookupType { get; set; }
     /// <summary>TRUE when the field is a column inside a repeating grid/table (its
     /// parent is a grid root). Such a field can hold many values (one per row), so a
     /// rule on it matches if ANY row hits — the FE surfaces this so authors know it fans out.</summary>
