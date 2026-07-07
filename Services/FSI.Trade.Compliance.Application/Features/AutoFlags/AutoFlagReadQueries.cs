@@ -104,6 +104,9 @@ public class GetAutoFlagByIdQueryHandler : IRequestHandler<GetAutoFlagByIdQuery,
             staticValue       = r.StaticValue,
             referenceListCode = r.ReferenceListCode,
             aggregateSpec     = r.AggregateSpec,
+            handlerKey        = r.HandlerKey,
+            rightFactor       = r.RightFactor,
+            rightFactorUnit   = r.RightFactorUnit,
             logicalOperator   = r.LogicalOperator,
         }).ToList();
 
@@ -213,15 +216,25 @@ public class ListAutoFlagOperandsQueryHandler : IRequestHandler<ListAutoFlagOper
                       : r.FieldTypeLkp == searchable ? "SearchableDropdown"
                       : r.FieldTypeLkp == amount ? "Amount"
                       : r.FieldTypeLkp == number ? "Number" : null;
+            // KYC vs Trade is a property of the owning *product*, not the storage table.
+            // KYC amount fields (e.g. "Total Annual Expected ... Turnover", KycParam3/4)
+            // persist in the generic TmxTransactionDetail table, so the old
+            // FieldTableName.Contains("KYC") test misfiled every KYC numeric field as Trade
+            // and they never appeared under the KYC tab (only the 13 fields that happened to
+            // sit in a KYC-named table did). Classify by the KYC product; keep the table-name
+            // test as a fallback so nothing previously classified KYC regresses.
+            var pname = r.ProductId is int pid && prodById.TryGetValue(pid, out var pn) ? pn : null;
+            var isKyc = (pname != null && pname.IndexOf("KYC", StringComparison.OrdinalIgnoreCase) >= 0)
+                        || table.IndexOf("KYC", StringComparison.OrdinalIgnoreCase) >= 0;
             list.Add(new OperandOptionDto
             {
                 fieldCode   = r.FieldName!,
                 label       = configured ?? Humanize(r.FieldName!),
-                source      = table.IndexOf("KYC", StringComparison.OrdinalIgnoreCase) >= 0 ? "KYC" : "Trade",
+                source      = isKyc ? "KYC" : "Trade",
                 dataType    = dt,
                 fieldType   = ftype,
                 productId   = r.ProductId,
-                productName = r.ProductId is int pid && prodById.TryGetValue(pid, out var pn) ? pn : null,
+                productName = pname,
                 tabId       = r.TabId,
                 tabName     = r.TabId is int tid && tabById.TryGetValue(tid, out var tn) && !string.IsNullOrWhiteSpace(tn)
                                 ? tn : $"Tab {r.TabId}",
