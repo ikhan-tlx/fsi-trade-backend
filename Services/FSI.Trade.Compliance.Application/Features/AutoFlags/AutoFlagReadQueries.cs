@@ -154,7 +154,10 @@ public class ListAutoFlagOperandsQueryHandler : IRequestHandler<ListAutoFlagOper
         int? T(string n) => typeByName.TryGetValue(n, out var v) ? v : (int?)null;
         var dropdown = T("Dropdown"); var searchable = T("SearchableDropdown");
         var amount = T("Amount"); var number = T("Number"); var headerType = T("Header");
-        var allowed = new HashSet<int>(new[] { dropdown, searchable, amount, number }.Where(x => x != null).Select(x => x!.Value));
+        // Date/time fields (Datetime, TimeStamp) are exposed as date-typed operands so the
+        // builder offers the date operators (WithinDays / DateBefore / DateAfter).
+        var datetime = T("Datetime"); var timestamp = T("TimeStamp");
+        var allowed = new HashSet<int>(new[] { dropdown, searchable, amount, number, datetime, timestamp }.Where(x => x != null).Select(x => x!.Value));
 
         var rows = await _db.TenantFieldSetups.AsNoTracking()
             .Where(f => f.IsActive && f.ProductId != null && f.TabId != null
@@ -211,11 +214,13 @@ public class ListAutoFlagOperandsQueryHandler : IRequestHandler<ListAutoFlagOper
             var configured = IsHuman(r.LocaleFieldLabel) ? r.LocaleFieldLabel
                            : IsHuman(r.FieldLabel) ? r.FieldLabel : null;
             var table = r.FieldTableName ?? "";
-            var dt = (r.FieldTypeLkp == number || r.FieldTypeLkp == amount) ? "number" : "code";
+            var dt = (r.FieldTypeLkp == number || r.FieldTypeLkp == amount) ? "number"
+                   : (r.FieldTypeLkp == datetime || r.FieldTypeLkp == timestamp) ? "date" : "code";
             var ftype = r.FieldTypeLkp == dropdown ? "Dropdown"
                       : r.FieldTypeLkp == searchable ? "SearchableDropdown"
                       : r.FieldTypeLkp == amount ? "Amount"
-                      : r.FieldTypeLkp == number ? "Number" : null;
+                      : r.FieldTypeLkp == number ? "Number"
+                      : (r.FieldTypeLkp == datetime || r.FieldTypeLkp == timestamp) ? "Date" : null;
             // KYC vs Trade is a property of the owning *product*, not the storage table.
             // KYC amount fields (e.g. "Total Annual Expected ... Turnover", KycParam3/4)
             // persist in the generic TmxTransactionDetail table, so the old

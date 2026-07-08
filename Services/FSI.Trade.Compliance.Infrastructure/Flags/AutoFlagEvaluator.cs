@@ -150,7 +150,7 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
             if (!rulesByFlag.TryGetValue(f.FlagId, out var flagRules) || flagRules.Count == 0)
                 continue;
 
-            var eval = EvaluateFlag(flagRules, udf, tx.ProductId, f.RaisePerMatch, metrics);
+            var eval = EvaluateFlag(flagRules, udf, tx.ProductId, f.RaisePerMatch, metrics, now);
 
             // The desired Auto rows for this flag: PER-MATCH → one per matched value;
             // AGGREGATE → a single summary row. Empty when the flag didn't raise.
@@ -253,8 +253,9 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
         if (rules.Count == 0) return new AutoFlagDryRun { WouldRaise = false, Detail = "No active rules configured for this flag." };
 
         var metrics = await ComputeMetricsAsync(rules, tx, udf, ct);
-        var eval = EvaluateFlag(rules, udf, tx.ProductId, perMatch, metrics);
-        var matchedRuleIds = rules.Where(r => EvaluateRule(r, udf, tx.ProductId, metrics).ok).Select(r => r.RuleId).ToList();
+        var now = DateTime.UtcNow;   // reference "today" for date operators (dry-run)
+        var eval = EvaluateFlag(rules, udf, tx.ProductId, perMatch, metrics, now);
+        var matchedRuleIds = rules.Where(r => EvaluateRule(r, udf, tx.ProductId, metrics, now).ok).Select(r => r.RuleId).ToList();
         var detail = eval.Hits.Count > 0
             ? string.Join(perMatch ? "; " : " · ", eval.Hits.Select(h => h.MatchedValue))
             : "No rule group satisfied.";
@@ -278,7 +279,7 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
 
     private FlagEval EvaluateFlag(
         List<FlagRule> rules, IReadOnlyDictionary<string, List<string>> udf, int productId, bool perMatch,
-        IReadOnlyDictionary<int, MetricResult> metrics)
+        IReadOnlyDictionary<int, MetricResult> metrics, DateTime now)
     {
         var hits        = new List<MatchHit>();
         var seenValues  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -289,7 +290,7 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
         foreach (var group in rules.GroupBy(r => r.RuleGroup).OrderBy(g => g.Key))
         {
             var ordered  = group.OrderBy(r => r.EvaluationOrder).ToList();
-            var results  = ordered.Select(r => (rule: r, res: EvaluateRule(r, udf, productId, metrics))).ToList();
+            var results  = ordered.Select(r => (rule: r, res: EvaluateRule(r, udf, productId, metrics, now))).ToList();
             var satisfied = results.All(x => x.res.ok);
 
             proofGroups.Add(new
@@ -346,7 +347,7 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
 
     private (bool ok, string detail, List<string> candidates, List<string> matchedValues) EvaluateRule(
         FlagRule r, IReadOnlyDictionary<string, List<string>> udf, int productId,
-        IReadOnlyDictionary<int, MetricResult> metrics)
+        IReadOnlyDictionary<int, MetricResult> metrics, DateTime now)
     {
         var op = (r.Operator ?? "").Trim();
         var none = new List<string>();
@@ -410,6 +411,11 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
                     "Contains"    => leftCandidates.Any(c => c.Contains(rv, StringComparison.OrdinalIgnoreCase)),
                     "GreaterThan" => NumCompare(leftShown, rvScaled, (a, b) => a > b),
                     "LessThan"    => NumCompare(leftShown, rvScaled, (a, b) => a < b),
+                    // Date operators: left field is a date; RHS is a literal date or a
+                    // "today[±N]" token (e.g. "today-180"). WithinDays takes an integer N.
+                    "DateBefore"  => DateCompare(leftShown, rv, now, (l, refd) => l <  refd),
+                    "DateAfter"   => DateCompare(leftShown, rv, now, (l, refd) => l >  refd),
+                    "WithinDays"  => WithinDays(leftShown, rv, now),
                     _             => false,
                 };
                 var matchedValues = ok ? new List<string> { $"{field}={leftShown}" } : none;
@@ -431,9 +437,12 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
                     "NotIn"       => leftCandidates.Count > 0 && !leftCandidates.Intersect(rightCandidates, StringComparer.OrdinalIgnoreCase).Any(),
                     "GreaterThan" => NumCompare(leftShown, rightScaled, (a, b) => a > b),
                     "LessThan"    => NumCompare(leftShown, rightScaled, (a, b) => a < b),
+                    // Date field vs date field (e.g. BL date is before the LC expiry date).
+                    "DateBefore"  => DateFieldCompare(leftShown, rightShown, (l, rr) => l <  rr),
+                    "DateAfter"   => DateFieldCompare(leftShown, rightShown, (l, rr) => l >  rr),
                     _             => false,
                 };
-                var matchedValues = ok && op is "Equals" or "In" or "GreaterThan" or "LessThan"
+                var matchedValues = ok && op is "Equals" or "In" or "GreaterThan" or "LessThan" or "DateBefore" or "DateAfter"
                     ? new List<string> { $"{field}={leftShown}" } : none;
                 var rhsShown = op is "GreaterThan" or "LessThan" ? rightScaled : rightShown;
                 return (ok, $"{field}({leftShown}) {op} {r.RightFieldCode}({rhsShown})", leftCandidates, matchedValues);
@@ -648,6 +657,57 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
         if (!decimal.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var v)) return value;
         var mult = string.Equals(unit, "Percent", StringComparison.OrdinalIgnoreCase) ? factor.Value / 100m : factor.Value;
         return (v * mult).ToString(CultureInfo.InvariantCulture);
+    }
+
+    // ---- date operators (WithinDays / DateBefore / DateAfter) ----
+    /// <summary>Compare a left date value to a reference date resolved from the RHS
+    /// (a literal date, or a "today[±N]" token). Date-only granularity.</summary>
+    private static bool DateCompare(string leftVal, string rhs, DateTime now, Func<DateTime, DateTime, bool> cmp)
+        => TryParseDate(leftVal, out var l) && TryResolveRefDate(rhs, now, out var refd) && cmp(l.Date, refd.Date);
+
+    /// <summary>Compare two date field values (left vs right). Date-only granularity.</summary>
+    private static bool DateFieldCompare(string leftVal, string rightVal, Func<DateTime, DateTime, bool> cmp)
+        => TryParseDate(leftVal, out var l) && TryParseDate(rightVal, out var r) && cmp(l.Date, r.Date);
+
+    /// <summary>TRUE when the left date is within N days of "now" (either direction),
+    /// where N is an integer RHS (e.g. WithinDays 7 ⇒ the date is at most a week from today).</summary>
+    private static bool WithinDays(string leftVal, string rhs, DateTime now)
+    {
+        if (!TryParseDate(leftVal, out var l)) return false;
+        if (!int.TryParse((rhs ?? "").Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var n)) return false;
+        return Math.Abs((now.Date - l.Date).TotalDays) <= n;
+    }
+
+    /// <summary>Tolerant date parse (ISO + common formats; invariant then current culture).</summary>
+    private static bool TryParseDate(string s, out DateTime d)
+    {
+        s = (s ?? "").Trim();
+        return DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, out d)
+            || DateTime.TryParse(s, CultureInfo.CurrentCulture, DateTimeStyles.AllowWhiteSpaces, out d);
+    }
+
+    /// <summary>Resolve a date-operator RHS to a concrete reference date. Accepts a literal
+    /// date, or a relative token — "today"/"now"/"system"/"sysdate"/"systemdate" — optionally
+    /// offset by days ("today-180", "today+30"). Empty ⇒ today.</summary>
+    private static bool TryResolveRefDate(string rhs, DateTime now, out DateTime refDate)
+    {
+        refDate = default;
+        var s = (rhs ?? "").Trim();
+        if (s.Length == 0) { refDate = now.Date; return true; }
+        var lower = s.ToLowerInvariant().Replace(" ", "");
+        foreach (var tok in new[] { "systemdate", "sysdate", "system", "today", "now" })
+        {
+            if (lower == tok) { refDate = now.Date; return true; }
+            if (lower.StartsWith(tok))
+            {
+                var rest = lower[tok.Length..];
+                if ((rest.StartsWith("+") || rest.StartsWith("-"))
+                    && int.TryParse(rest, NumberStyles.Integer, CultureInfo.InvariantCulture, out var off))
+                { refDate = now.Date.AddDays(off); return true; }
+            }
+        }
+        if (TryParseDate(s, out var d)) { refDate = d.Date; return true; }
+        return false;
     }
 
     private static string Trunc(string s, int max) => s.Length > max ? s[..max] : s;
