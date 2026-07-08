@@ -94,6 +94,7 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
         var tx = await _db.Transactions.AsNoTracking()
             .FirstOrDefaultAsync(t => t.TransactionId == transactionId, ct);
         if (tx is null) return hits;
+        var txnDate = tx.TransactionDate ?? tx.CreatedDate;   // base for "txn" relative dates
 
         var udf = await LoadUdfAsync(transactionId, ct);
         var autoTypeId = await ResolveAutoFlagTypeIdAsync(ct);
@@ -150,7 +151,7 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
             if (!rulesByFlag.TryGetValue(f.FlagId, out var flagRules) || flagRules.Count == 0)
                 continue;
 
-            var eval = EvaluateFlag(flagRules, udf, tx.ProductId, f.RaisePerMatch, metrics, now);
+            var eval = EvaluateFlag(flagRules, udf, tx.ProductId, f.RaisePerMatch, metrics, now, txnDate);
 
             // The desired Auto rows for this flag: PER-MATCH → one per matched value;
             // AGGREGATE → a single summary row. Empty when the flag didn't raise.
@@ -254,8 +255,9 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
 
         var metrics = await ComputeMetricsAsync(rules, tx, udf, ct);
         var now = DateTime.UtcNow;   // reference "today" for date operators (dry-run)
-        var eval = EvaluateFlag(rules, udf, tx.ProductId, perMatch, metrics, now);
-        var matchedRuleIds = rules.Where(r => EvaluateRule(r, udf, tx.ProductId, metrics, now).ok).Select(r => r.RuleId).ToList();
+        var txnDate = tx.TransactionDate ?? tx.CreatedDate;   // base for "txn" relative dates
+        var eval = EvaluateFlag(rules, udf, tx.ProductId, perMatch, metrics, now, txnDate);
+        var matchedRuleIds = rules.Where(r => EvaluateRule(r, udf, tx.ProductId, metrics, now, txnDate).ok).Select(r => r.RuleId).ToList();
         var detail = eval.Hits.Count > 0
             ? string.Join(perMatch ? "; " : " · ", eval.Hits.Select(h => h.MatchedValue))
             : "No rule group satisfied.";
@@ -279,7 +281,7 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
 
     private FlagEval EvaluateFlag(
         List<FlagRule> rules, IReadOnlyDictionary<string, List<string>> udf, int productId, bool perMatch,
-        IReadOnlyDictionary<int, MetricResult> metrics, DateTime now)
+        IReadOnlyDictionary<int, MetricResult> metrics, DateTime now, DateTime txnDate)
     {
         var hits        = new List<MatchHit>();
         var seenValues  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -290,7 +292,7 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
         foreach (var group in rules.GroupBy(r => r.RuleGroup).OrderBy(g => g.Key))
         {
             var ordered  = group.OrderBy(r => r.EvaluationOrder).ToList();
-            var results  = ordered.Select(r => (rule: r, res: EvaluateRule(r, udf, productId, metrics, now))).ToList();
+            var results  = ordered.Select(r => (rule: r, res: EvaluateRule(r, udf, productId, metrics, now, txnDate))).ToList();
             var satisfied = results.All(x => x.res.ok);
 
             proofGroups.Add(new
@@ -347,7 +349,7 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
 
     private (bool ok, string detail, List<string> candidates, List<string> matchedValues) EvaluateRule(
         FlagRule r, IReadOnlyDictionary<string, List<string>> udf, int productId,
-        IReadOnlyDictionary<int, MetricResult> metrics, DateTime now)
+        IReadOnlyDictionary<int, MetricResult> metrics, DateTime now, DateTime txnDate)
     {
         var op = (r.Operator ?? "").Trim();
         var none = new List<string>();
@@ -411,10 +413,10 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
                     "Contains"    => leftCandidates.Any(c => c.Contains(rv, StringComparison.OrdinalIgnoreCase)),
                     "GreaterThan" => NumCompare(leftShown, rvScaled, (a, b) => a > b),
                     "LessThan"    => NumCompare(leftShown, rvScaled, (a, b) => a < b),
-                    // Date operators: left field is a date; RHS is a literal date or a
-                    // "today[±N]" token (e.g. "today-180"). WithinDays takes an integer N.
-                    "DateBefore"  => DateCompare(leftShown, rv, now, (l, refd) => l <  refd),
-                    "DateAfter"   => DateCompare(leftShown, rv, now, (l, refd) => l >  refd),
+                    // Date operators: left field is a date; RHS is a relative expression
+                    // (today|txn|field(Code) ± n D|M|Y) or a literal date. WithinDays: n D|M|Y.
+                    "DateBefore"  => DateCompare(leftShown, rv, now, txnDate, udf, (l, refd) => l <  refd),
+                    "DateAfter"   => DateCompare(leftShown, rv, now, txnDate, udf, (l, refd) => l >  refd),
                     "WithinDays"  => WithinDays(leftShown, rv, now),
                     _             => false,
                 };
@@ -661,21 +663,28 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
 
     // ---- date operators (WithinDays / DateBefore / DateAfter) ----
     /// <summary>Compare a left date value to a reference date resolved from the RHS
-    /// (a literal date, or a "today[±N]" token). Date-only granularity.</summary>
-    private static bool DateCompare(string leftVal, string rhs, DateTime now, Func<DateTime, DateTime, bool> cmp)
-        => TryParseDate(leftVal, out var l) && TryResolveRefDate(rhs, now, out var refd) && cmp(l.Date, refd.Date);
+    /// expression (see <see cref="TryResolveRefDate"/>). Date-only granularity.</summary>
+    private static bool DateCompare(string leftVal, string rhs, DateTime now, DateTime txnDate,
+        IReadOnlyDictionary<string, List<string>> udf, Func<DateTime, DateTime, bool> cmp)
+        => TryParseDate(leftVal, out var l)
+           && TryResolveRefDate(rhs, now, txnDate, udf, out var refd)
+           && cmp(l.Date, refd.Date);
 
     /// <summary>Compare two date field values (left vs right). Date-only granularity.</summary>
     private static bool DateFieldCompare(string leftVal, string rightVal, Func<DateTime, DateTime, bool> cmp)
         => TryParseDate(leftVal, out var l) && TryParseDate(rightVal, out var r) && cmp(l.Date, r.Date);
 
-    /// <summary>TRUE when the left date is within N days of "now" (either direction),
-    /// where N is an integer RHS (e.g. WithinDays 7 ⇒ the date is at most a week from today).</summary>
+    /// <summary>TRUE when the left date is within N units of Today (either direction). RHS is
+    /// "&lt;n&gt;&lt;unit&gt;" (unit D|M|Y, default D) — e.g. "7D", "6M"; a bare integer is days
+    /// (back-compat, e.g. "7").</summary>
     private static bool WithinDays(string leftVal, string rhs, DateTime now)
     {
         if (!TryParseDate(leftVal, out var l)) return false;
-        if (!int.TryParse((rhs ?? "").Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var n)) return false;
-        return Math.Abs((now.Date - l.Date).TotalDays) <= n;
+        if (!TryParseOffset((rhs ?? "").Trim(), out var signed, out var unit)) return false;
+        var n = Math.Abs(signed);
+        var lo = ApplyDateOffset(now.Date, -n, unit);
+        var hi = ApplyDateOffset(now.Date,  n, unit);
+        return l.Date >= lo && l.Date <= hi;
     }
 
     /// <summary>Tolerant date parse (ISO + common formats; invariant then current culture).</summary>
@@ -686,29 +695,93 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
             || DateTime.TryParse(s, CultureInfo.CurrentCulture, DateTimeStyles.AllowWhiteSpaces, out d);
     }
 
-    /// <summary>Resolve a date-operator RHS to a concrete reference date. Accepts a literal
-    /// date, or a relative token — "today"/"now"/"system"/"sysdate"/"systemdate" — optionally
-    /// offset by days ("today-180", "today+30"). Empty ⇒ today.</summary>
-    private static bool TryResolveRefDate(string rhs, DateTime now, out DateTime refDate)
+    /// <summary>Resolve a date-operator RHS to a concrete reference date. Grammar:
+    /// <c>&lt;base&gt;[(+|-)&lt;n&gt;&lt;unit&gt;]</c> — base = today|now|system|sysdate|systemdate
+    /// (evaluation date), txn|transaction (transaction value date), field(&lt;Code&gt;) (a date field
+    /// on this transaction), or a literal date; unit = D|M|Y (default D). Empty ⇒ today. The bare
+    /// legacy form "today-180" (no unit ⇒ days) still parses.</summary>
+    private static bool TryResolveRefDate(string rhs, DateTime now, DateTime txnDate,
+        IReadOnlyDictionary<string, List<string>> udf, out DateTime refDate)
     {
         refDate = default;
         var s = (rhs ?? "").Trim();
         if (s.Length == 0) { refDate = now.Date; return true; }
-        var lower = s.ToLowerInvariant().Replace(" ", "");
-        foreach (var tok in new[] { "systemdate", "sysdate", "system", "today", "now" })
+        var norm = s.Replace(" ", "");
+
+        // Peel base from optional offset. field(CODE) is peeled up to its ')'; a keyword base is
+        // the leading run of letters; anything else is treated as a literal date.
+        string basePart, offPart;
+        if (norm.ToLowerInvariant().StartsWith("field(") && norm.Contains(')'))
         {
-            if (lower == tok) { refDate = now.Date; return true; }
-            if (lower.StartsWith(tok))
-            {
-                var rest = lower[tok.Length..];
-                if ((rest.StartsWith("+") || rest.StartsWith("-"))
-                    && int.TryParse(rest, NumberStyles.Integer, CultureInfo.InvariantCulture, out var off))
-                { refDate = now.Date.AddDays(off); return true; }
-            }
+            var close = norm.IndexOf(')');
+            basePart = norm[..(close + 1)];
+            offPart  = norm[(close + 1)..];
         }
-        if (TryParseDate(s, out var d)) { refDate = d.Date; return true; }
+        else
+        {
+            int i = 0; while (i < norm.Length && char.IsLetter(norm[i])) i++;
+            basePart = norm[..i];
+            offPart  = norm[i..];
+        }
+
+        DateTime baseDate;
+        var b = basePart.ToLowerInvariant();
+        if (b is "today" or "now" or "system" or "sysdate" or "systemdate")
+            baseDate = now.Date;
+        else if (b is "txn" or "transaction")
+            baseDate = txnDate.Date;
+        else if (b.StartsWith("field(") && b.EndsWith(")"))
+        {
+            var code = basePart[6..^1];                     // preserve original case for the udf key
+            if (!TryResolveFieldDate(code, udf, out baseDate)) return false;
+        }
+        else if (TryParseDate(s, out var lit)) { refDate = lit.Date; return true; }   // whole string is a literal date
+        else return false;
+
+        if (offPart.Length == 0) { refDate = baseDate; return true; }
+        if (!TryParseOffset(offPart, out var signed, out var unit)) return false;
+        refDate = ApplyDateOffset(baseDate, signed, unit);
+        return true;
+    }
+
+    /// <summary>First parseable date value of a UDF field (case-insensitive key).</summary>
+    private static bool TryResolveFieldDate(string code, IReadOnlyDictionary<string, List<string>> udf, out DateTime d)
+    {
+        d = default;
+        if (!string.IsNullOrWhiteSpace(code) && udf.TryGetValue(code, out var vals) && vals != null)
+            foreach (var v in vals)
+                if (TryParseDate(v, out d)) return true;
         return false;
     }
+
+    /// <summary>Parse an offset "+30" / "-180" / "+6M" / "-1Y" / bare "30" (days). Sign optional
+    /// (default +). Returns the SIGNED count and the unit char (D|M|Y, default D).</summary>
+    private static bool TryParseOffset(string s, out int signed, out char unit)
+    {
+        signed = 0; unit = 'D';
+        s = (s ?? "").Trim();
+        if (s.Length == 0) return false;
+        int sign = 1, i = 0;
+        if (s[0] is '+' or '-') { sign = s[0] == '-' ? -1 : 1; i = 1; }
+        int start = i; while (i < s.Length && char.IsDigit(s[i])) i++;
+        if (i == start || !int.TryParse(s[start..i], NumberStyles.Integer, CultureInfo.InvariantCulture, out var n))
+            return false;
+        if (i < s.Length)
+        {
+            var u = char.ToUpperInvariant(s[i]);
+            if (u is not ('D' or 'M' or 'Y') || i + 1 != s.Length) return false;
+            unit = u;
+        }
+        signed = sign * n;
+        return true;
+    }
+
+    private static DateTime ApplyDateOffset(DateTime d, int signed, char unit) => unit switch
+    {
+        'M' => d.AddMonths(signed),
+        'Y' => d.AddYears(signed),
+        _   => d.AddDays(signed),
+    };
 
     private static string Trunc(string s, int max) => s.Length > max ? s[..max] : s;
 }
