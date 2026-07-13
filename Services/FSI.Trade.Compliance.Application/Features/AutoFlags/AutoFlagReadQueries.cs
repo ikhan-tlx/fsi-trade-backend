@@ -1,27 +1,61 @@
+using FSI.Trade.Compliance.Application.Common.Models;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
+using FSI.Trade.Compliance.Domain.Entities.Flags;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 
 namespace FSI.Trade.Compliance.Application.Features.AutoFlags;
 
 // ===================== List ============================================
-/// <summary>GET /api/v1/AutoFlag — all auto flags (Flag_Type=Automated) as summaries.</summary>
-public class ListAutoFlagsQuery : IRequest<List<AutoFlagSummaryDto>> { }
+/// <summary>GET /api/v1/AutoFlag — paged/filtered/sorted auto flags (Flag_Type=Automated).
+/// Filters (all optional): filter (code/name LIKE), severityLkpId, status, productId.</summary>
+public class ListAutoFlagsQuery : PagedQuery, IRequest<PagedResult<AutoFlagSummaryDto>>
+{
+    /// <summary>Filter by severity lookup id.</summary>
+    public int? SeverityLkpId { get; set; }
+    /// <summary>Filter by derived status (Active / Draft / Inactive / …).</summary>
+    public string? Status { get; set; }
+    /// <summary>Filter to flags scoped to this product.</summary>
+    public int? ProductId { get; set; }
+}
 
-public class ListAutoFlagsQueryHandler : IRequestHandler<ListAutoFlagsQuery, List<AutoFlagSummaryDto>>
+public class ListAutoFlagsQueryHandler : IRequestHandler<ListAutoFlagsQuery, PagedResult<AutoFlagSummaryDto>>
 {
     private readonly IApplicationDbContext _db;
     public ListAutoFlagsQueryHandler(IApplicationDbContext db) => _db = db;
 
-    public async Task<List<AutoFlagSummaryDto>> Handle(ListAutoFlagsQuery req, CancellationToken ct)
+    public async Task<PagedResult<AutoFlagSummaryDto>> Handle(ListAutoFlagsQuery req, CancellationToken ct)
     {
         var autoTypeId = await AutoFlagLookup.AutoTypeIdAsync(_db, ct);
         var sev = await AutoFlagLookup.SeverityNamesAsync(_db, ct);
 
-        var flags = await _db.FlagCatalogues.AsNoTracking()
-            .Where(f => f.FlagTypeLkpId == autoTypeId && !f.IsDeleted)
-            .OrderByDescending(f => f.LastUpdatedDate ?? f.CreatedDate)
-            .ToListAsync(ct);
+        IQueryable<FlagCatalogue> baseQ = _db.FlagCatalogues.AsNoTracking()
+            .Where(f => f.FlagTypeLkpId == autoTypeId && !f.IsDeleted);
+
+        if (req.SeverityLkpId.HasValue)
+            baseQ = baseQ.Where(f => f.SeverityLkpId == req.SeverityLkpId.Value);
+        if (req.ProductId.HasValue)
+        {
+            var pid = req.ProductId.Value;
+            baseQ = baseQ.Where(f => _db.FlagScopes.Any(s => s.FlagId == f.FlagId && s.ProductId == pid));
+        }
+        if (!string.IsNullOrWhiteSpace(req.Status))
+        {
+            var st = req.Status.Trim();
+            baseQ = baseQ.Where(f =>
+                (f.Status == null ? (f.ActiveFlag ? "Active" : "Draft") : f.Status) == st);
+        }
+        if (!string.IsNullOrWhiteSpace(req.Filter))
+        {
+            var ff = req.Filter.Trim();
+            baseQ = baseQ.Where(f =>
+                EF.Functions.Like(f.FlagCode, $"%{ff}%") || EF.Functions.Like(f.FlagName, $"%{ff}%"));
+        }
+
+        baseQ = ApplySort(baseQ, req.Sort);
+
+        var total = await baseQ.CountAsync(ct);
+        var flags = await baseQ.Skip(req.Skip).Take(req.Take).ToListAsync(ct);
 
         var ids = flags.Select(f => f.FlagId).ToList();
 
@@ -44,7 +78,7 @@ public class ListAutoFlagsQueryHandler : IRequestHandler<ListAutoFlagsQuery, Lis
                 .Select(r => r.FlagId).ToListAsync(ct))
             .GroupBy(x => x).ToDictionary(g => g.Key, g => g.Count());
 
-        return flags.Select(f => new AutoFlagSummaryDto
+        var items = flags.Select(f => new AutoFlagSummaryDto
         {
             flagId    = f.FlagId,
             flagCode  = f.FlagCode,
@@ -56,6 +90,33 @@ public class ListAutoFlagsQueryHandler : IRequestHandler<ListAutoFlagsQuery, Lis
             updatedBy = f.LastUpdatedBy ?? f.CreatedBy,
             updatedAt = (f.LastUpdatedDate ?? f.CreatedDate).ToString("o"),
         }).ToList();
+
+        return new PagedResult<AutoFlagSummaryDto>
+        {
+            items    = items,
+            total    = total,
+            page     = req.Page,
+            pageSize = req.PageSize,
+        };
+    }
+
+    private static IQueryable<FlagCatalogue> ApplySort(IQueryable<FlagCatalogue> q, string? sort)
+    {
+        if (string.IsNullOrWhiteSpace(sort))
+            return q.OrderByDescending(f => f.LastUpdatedDate ?? f.CreatedDate);
+        var first = sort.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+        if (first is null) return q.OrderByDescending(f => f.LastUpdatedDate ?? f.CreatedDate);
+        var parts = first.Split('-', 2, StringSplitOptions.TrimEntries);
+        var field = parts.ElementAtOrDefault(0)?.ToLowerInvariant();
+        var desc  = string.Equals(parts.ElementAtOrDefault(1), "desc", StringComparison.OrdinalIgnoreCase);
+        return field switch
+        {
+            "flagcode"    => desc ? q.OrderByDescending(f => f.FlagCode)      : q.OrderBy(f => f.FlagCode),
+            "name"        => desc ? q.OrderByDescending(f => f.FlagName)      : q.OrderBy(f => f.FlagName),
+            "severity"    => desc ? q.OrderByDescending(f => f.SeverityLkpId) : q.OrderBy(f => f.SeverityLkpId),
+            "lastupdated" => desc ? q.OrderByDescending(f => f.LastUpdatedDate ?? f.CreatedDate) : q.OrderBy(f => f.LastUpdatedDate ?? f.CreatedDate),
+            _             => q.OrderByDescending(f => f.LastUpdatedDate ?? f.CreatedDate),
+        };
     }
 }
 
@@ -157,7 +218,10 @@ public class ListAutoFlagOperandsQueryHandler : IRequestHandler<ListAutoFlagOper
         // Date/time fields (Datetime, TimeStamp) are exposed as date-typed operands so the
         // builder offers the date operators (WithinDays / DateBefore / DateAfter).
         var datetime = T("Datetime"); var timestamp = T("TimeStamp");
-        var allowed = new HashSet<int>(new[] { dropdown, searchable, amount, number, datetime, timestamp }.Where(x => x != null).Select(x => x!.Value));
+        // ESI checkpoints use the DropdownQuestion type — expose them as Dropdown operands
+        // (code dataType + value-bound RHS) so rules can be authored against them.
+        var dropdownQuestion = T("DropdownQuestion");
+        var allowed = new HashSet<int>(new[] { dropdown, searchable, amount, number, datetime, timestamp, dropdownQuestion }.Where(x => x != null).Select(x => x!.Value));
 
         var rows = await _db.TenantFieldSetups.AsNoTracking()
             .Where(f => f.IsActive && f.ProductId != null && f.TabId != null
@@ -217,6 +281,7 @@ public class ListAutoFlagOperandsQueryHandler : IRequestHandler<ListAutoFlagOper
             var dt = (r.FieldTypeLkp == number || r.FieldTypeLkp == amount) ? "number"
                    : (r.FieldTypeLkp == datetime || r.FieldTypeLkp == timestamp) ? "date" : "code";
             var ftype = r.FieldTypeLkp == dropdown ? "Dropdown"
+                      : r.FieldTypeLkp == dropdownQuestion ? "Dropdown"
                       : r.FieldTypeLkp == searchable ? "SearchableDropdown"
                       : r.FieldTypeLkp == amount ? "Amount"
                       : r.FieldTypeLkp == number ? "Number"

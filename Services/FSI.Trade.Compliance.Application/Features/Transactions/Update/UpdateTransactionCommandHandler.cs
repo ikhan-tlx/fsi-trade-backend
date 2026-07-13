@@ -1,9 +1,11 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using FSI.Trade.Compliance.Application.Common.Exceptions;
 using FSI.Trade.Compliance.Application.Contracts.Flags;
 using FSI.Trade.Compliance.Application.Contracts.Identity;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
 using FSI.Trade.Compliance.Application.Features.Flags.Write;
+using FSI.Trade.Compliance.Application.Features.Transactions.Common;
 using FSI.Trade.Compliance.Application.Features.Transactions.Detail;
 using FSI.Trade.Compliance.Domain.Entities.Customer;
 using FSI.Trade.Compliance.Domain.Entities.Transaction;
@@ -68,7 +70,8 @@ public class UpdateTransactionCommandHandler
                         $"Transaction {req.transactionId} does not exist.");
 
         if (req.transactionDate.HasValue)      tx.TransactionDate     = req.transactionDate.Value;
-        if (req.currencyId.HasValue)           tx.CurrencyId          = req.currencyId.Value;
+        // Currency is now sourced from the UDF Currency field (a TmX_Lookup id) by
+        // TransactionAmountResolver below, into Currency_Lkp — not from the header.
         if (req.transactionTypeLkp.HasValue)   tx.TransactionTypeLkp  = req.transactionTypeLkp.Value;
         if (req.transactionStatusLkp.HasValue) tx.TransactionStatusLkp = req.transactionStatusLkp.Value;
         if (req.clientReferenceNumber is not null) tx.ClientReferenceNumber = req.clientReferenceNumber;
@@ -199,6 +202,11 @@ public class UpdateTransactionCommandHandler
         {
             _log.LogWarning(ex, "Auto-flag evaluation failed for transaction {Txn}; continuing save.", req.transactionId);
         }
+
+        // Additively project the submitted UDF onto the typed Transaction_Amount /
+        // Currency_Id columns (Is_Amount_Field field + Currency dropdown). The tx
+        // entity is tracked, so these commit in the SaveChanges below. Never throws.
+        await TransactionAmountResolver.ApplyAsync(_db, tx, req.udfData, ct);
 
         await _db.SaveChangesAsync(ct);
 
@@ -392,6 +400,10 @@ public class UpdateTransactionCommandHandler
         // is preserved (NOT nulled).
         var json = UdfSectionMerge.MergeDetail(detail?.UdfData, section, legacyUdf, nestedSections);
 
+        // ESI (Economic Substance Indicator) — derive + persist the authoritative outcome
+        // when this payload carries ESI checkpoint answers (KYC form). Best-effort.
+        json = await ApplyEsiOutcomeAsync(json, ct);
+
         if (detail is null)
         {
             // Brand-new detail row — INSERT.
@@ -410,6 +422,74 @@ public class UpdateTransactionCommandHandler
             detail.UdfData         = json;
             detail.LastUpdatedBy   = userId;
             detail.LastUpdatedDate = now;
+        }
+    }
+
+    // ---- ESI (Economic Substance Indicator) compute-at-submit -------------
+    private sealed class EsiWrap { public EsiMeta? esi { get; set; } }
+    private sealed class EsiMeta
+    {
+        public string?   code     { get; set; }
+        public bool?     inCalc   { get; set; }
+        public string[]? highRisk { get; set; }
+    }
+
+    /// <summary>
+    /// When the detail UDF carries ESI checkpoint answers (KYC form), derive the composite
+    /// outcome from each checkpoint's own metadata (<c>udfData.esi.highRisk</c> matched against
+    /// the selected option's <c>Hidden_Value</c>) and write the authoritative result back into
+    /// the UDF: <c>ESI_Outcome</c> ("High"/"Adequate"), <c>ESI_Failed_Codes</c> (comma list),
+    /// <c>ESI_Assessed_At</c>, <c>ESI_Ruleset_Version</c>. Fully metadata-driven — no hard-coded
+    /// checkpoint list. Best-effort: any failure leaves the UDF untouched (never blocks the save).
+    /// </summary>
+    private async Task<string> ApplyEsiOutcomeAsync(string json, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(json) || !json.Contains("\"ESI_", StringComparison.Ordinal))
+            return json;   // no ESI answers in this payload.
+        try
+        {
+            if (JsonNode.Parse(json) is not JsonObject root) return json;
+
+            var esiFields = await _db.TenantFieldSetups.AsNoTracking()
+                .Where(f => f.FieldLookupType == "ESI_YES_NO_NA" && f.FieldName != null && f.UdfData != null)
+                .Select(f => new { f.FieldName, f.UdfData })
+                .ToListAsync(ct);
+            if (esiFields.Count == 0) return json;
+
+            var hiddenById = await _db.Lookups.AsNoTracking()
+                .Where(l => l.LookupType == "ESI_YES_NO_NA")
+                .Select(l => new { l.Id, l.HiddenValue })
+                .ToDictionaryAsync(x => x.Id.ToString(), x => x.HiddenValue ?? "", ct);
+
+            var failed = new List<string>();
+            foreach (var f in esiFields)
+            {
+                EsiMeta? meta = null;
+                try { meta = JsonSerializer.Deserialize<EsiWrap>(f.UdfData!)?.esi; } catch { /* skip malformed */ }
+                if (meta is null || meta.inCalc != true || string.IsNullOrEmpty(meta.code)) continue;
+
+                var answerId = root[f.FieldName!]?.ToString();
+                if (string.IsNullOrEmpty(answerId)) continue;
+
+                var hidden = hiddenById.TryGetValue(answerId!, out var hv) ? hv : answerId!;
+                if (meta.highRisk is { Length: > 0 } hr &&
+                    hr.Contains(hidden, StringComparer.OrdinalIgnoreCase))
+                    failed.Add(meta.code!);
+            }
+
+            root["ESI_Failed_Codes"]    = string.Join(",", failed);
+            root["ESI_Outcome"]         = failed.Count > 0 ? "High" : "Adequate";
+            root["ESI_Assessed_At"]     = DateTime.UtcNow.ToString("o");
+            root["ESI_Ruleset_Version"] = "esi-v1";
+
+            _log.LogInformation("ESI outcome computed: {Outcome} (failed: {Failed}).",
+                failed.Count > 0 ? "High" : "Adequate", string.Join(",", failed));
+            return root.ToJsonString();
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "ESI outcome compute skipped (non-fatal).");
+            return json;
         }
     }
 
