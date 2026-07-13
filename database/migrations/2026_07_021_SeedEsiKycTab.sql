@@ -60,16 +60,26 @@ BEGIN
 END
 
 -- ---- 2. Product<->Tab mapping (after existing KYC tabs) ------------------
-DECLARE @entityId int = (SELECT TOP 1 Entity_Id FROM dbo.TmX_Entity_Tab_Product_Mapping
-                         WHERE Product_Id = @kycProductId ORDER BY Sort_Order);
+-- NOTE: TmX_Entity_Tab_Product_Mapping.Entity_Tab_Product_Mapping_Id is a
+-- NON-IDENTITY primary key, so the INSERT MUST supply it (MAX+1). Clone the
+-- Tenant_Id / Entity_Id from an existing KYC mapping row so the ESI tab is
+-- scoped exactly like the other KYC section tabs.
+DECLARE @srcTenantId int, @srcEntityId int;
+SELECT TOP 1 @srcTenantId = Tenant_Id, @srcEntityId = Entity_Id
+FROM dbo.TmX_Entity_Tab_Product_Mapping
+WHERE Product_Id = @kycProductId ORDER BY Sort_Order;
+IF @srcTenantId IS NULL SET @srcTenantId = @tenantId;
+
 DECLARE @nextSort int = (SELECT ISNULL(MAX(Sort_Order),0)+10
                          FROM dbo.TmX_Entity_Tab_Product_Mapping WHERE Product_Id = @kycProductId);
+DECLARE @mapId int = (SELECT ISNULL(MAX(Entity_Tab_Product_Mapping_Id),0)+1
+                      FROM dbo.TmX_Entity_Tab_Product_Mapping);
 
 IF NOT EXISTS (SELECT 1 FROM dbo.TmX_Entity_Tab_Product_Mapping
                WHERE Product_Id = @kycProductId AND Tab_Id = @esiTabId)
     INSERT INTO dbo.TmX_Entity_Tab_Product_Mapping
-        (Tenant_Id, Entity_Id, Product_Id, Tab_Id, Parent_Tab_Id, Is_Active, Is_Visible, Sort_Order, Created_By, Created_Date)
-    VALUES (@tenantId, @entityId, @kycProductId, @esiTabId, NULL, 1, 1, @nextSort, @who, @now);
+        (Entity_Tab_Product_Mapping_Id, Tenant_Id, Entity_Id, Product_Id, Tab_Id, Parent_Tab_Id, Is_Active, Is_Visible, Sort_Order, Created_By, Created_Date)
+    VALUES (@mapId, @srcTenantId, @srcEntityId, @kycProductId, @esiTabId, NULL, 1, 1, @nextSort, @who, @now);
 
 -- ---- 3. Sections + checkpoints (data-driven) ----------------------------
 IF OBJECT_ID('tempdb..#esi') IS NOT NULL DROP TABLE #esi;
