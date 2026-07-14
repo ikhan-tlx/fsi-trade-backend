@@ -86,21 +86,23 @@ IF OBJECT_ID('tempdb..#esi') IS NOT NULL DROP TABLE #esi;
 CREATE TABLE #esi (Kind char(1), SecCode nvarchar(10), Code nvarchar(10),
                    Label nvarchar(400), Seq int, HighRisk nvarchar(20));
 -- Kind: S=section, Q=question. HighRisk = JSON array of Hidden_Value tokens.
+-- Q labels carry NO code prefix: the code lives in udfData.esi.code (used for
+-- risk calc + banner "flagged: B1"), not in the visible question title.
 INSERT INTO #esi VALUES
  ('S','A',NULL,N'A. Physical & Operational Presence',10,NULL),
- ('Q','A','A1',N'A1 - Trade premises suitable for declared goods/services',11,N'["N","NA"]'),
- ('Q','A','A2',N'A2 - Warehouse / storage capacity aligns with trade volume',12,N'["N"]'),
- ('Q','A','A3',N'A3 - Manufacturing / processing capability (if applicable)',13,N'["N","NA"]'),
+ ('Q','A','A1',N'Trade premises suitable for declared goods/services',11,N'["N","NA"]'),
+ ('Q','A','A2',N'Warehouse / storage capacity aligns with trade volume',12,N'["N"]'),
+ ('Q','A','A3',N'Manufacturing / processing capability (if applicable)',13,N'["N","NA"]'),
  ('S','B',NULL,N'B. Human Resource Capacity',20,NULL),
- ('Q','B','B1',N'B1 - Number of employees adequate for trade volume',21,N'["N"]'),
- ('Q','B','B2',N'B2 - Presence of skilled staff relevant to goods/services',22,N'["N"]'),
- ('Q','B','B3',N'B3 - Use of outsourced staff / agents disclosed',23,N'["N"]'),
+ ('Q','B','B1',N'Number of employees adequate for trade volume',21,N'["N"]'),
+ ('Q','B','B2',N'Presence of skilled staff relevant to goods/services',22,N'["N"]'),
+ ('Q','B','B3',N'Use of outsourced staff / agents disclosed',23,N'["N"]'),
  ('S','C',NULL,N'C. Financial Capacity vs Trade Activity',30,NULL),
- ('Q','C','C2',N'C2 - Working capital adequacy for trade cycles',31,N'["N"]'),
- ('Q','C','C4',N'C4 - Reliance on third-party funding disclosed',32,N'["N"]'),
+ ('Q','C','C2',N'Working capital adequacy for trade cycles',31,N'["N"]'),
+ ('Q','C','C4',N'Reliance on third-party funding disclosed',32,N'["N"]'),
  ('S','F',NULL,N'F. Third-Party & Outsourcing Dependency',40,NULL),
- ('Q','F','F1',N'F1 - Use of third-party logistics disclosed',41,N'["N"]'),
- ('Q','F','F3',N'F3 - Agents / intermediaries with unclear role',42,N'["N"]'),
+ ('Q','F','F1',N'Use of third-party logistics disclosed',41,N'["N"]'),
+ ('Q','F','F3',N'Agents / intermediaries with unclear role',42,N'["N"]'),
  ('S','G',NULL,N'G. Assessment',50,NULL);
 
 -- 3a. Summary control (role=summary) — position configurable via Field_Sequence.
@@ -127,14 +129,19 @@ WHERE e.Kind = 'S'
                   WHERE f.Tab_Id = @esiTabId AND f.Field_Name = CONCAT(N'ESI_SEC_', e.SecCode));
 
 -- 3c. Checkpoints (DropdownQuestion; bound to ESI_YES_NO_NA; per-field highRisk in UDF_Data).
+-- Placeholder carries the muted helper note under the question label (rendered
+-- by FieldRenderer). For checkpoints whose highRisk includes NA, seed the
+-- "N/A counts as high risk" note so the FE stays 100% config-driven (no
+-- hard-coded copy).
 INSERT INTO dbo.TmX_Tenant_Field_Setup
     (Field_Name, Field_Label, Field_Type_Lkp, Field_Sequence, Parent_Tenant_Field_Setup_Id,
      Product_Id, Tab_Id, Tenant_Id, Field_Lookup_Type, Field_Table_Name, Is_Active, Is_Mandatory, Visibility,
-     UDF_Data, Locale_ID, Locale_Label, Created_By, Created_Date)
+     Placeholder, UDF_Data, Locale_ID, Locale_Label, Created_By, Created_Date)
 SELECT CONCAT(N'ESI_', q.Code), q.Label, @dqType, q.Seq,
        (SELECT TOP 1 s.Tenant_Field_Setup_Id FROM dbo.TmX_Tenant_Field_Setup s
         WHERE s.Tab_Id = @esiTabId AND s.Field_Name = CONCAT(N'ESI_SEC_', q.SecCode)),
        @kycProductId, @esiTabId, @tenantId, N'ESI_YES_NO_NA', @tblName, 1, N'true', N'true',
+       CASE WHEN q.HighRisk LIKE N'%NA%' THEN N'N/A counts as high risk for this checkpoint' ELSE NULL END,
        CONCAT(N'{"esi":{"code":"', q.Code, N'","inCalc":true,"highRisk":', q.HighRisk, N'}}'),
        @localeId, q.Label, @who, @now
 FROM #esi q
