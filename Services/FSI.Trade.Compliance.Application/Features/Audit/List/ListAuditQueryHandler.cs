@@ -28,6 +28,41 @@ public class ListAuditQueryHandler : IRequestHandler<ListAuditQuery, PagedResult
                 || (a.IpAddress != null && EF.Functions.Like(a.IpAddress, $"%{f}%")));
         }
 
+        // Structured advanced-filter params (from the FE filter drawer).
+        // All optional and AND-combined with the free-text filter above.
+        if (req.DateFrom.HasValue)
+            q = q.Where(a => a.CreatedDate >= req.DateFrom.Value);
+        if (req.DateTo.HasValue)
+        {
+            var end = req.DateTo.Value.Date.AddDays(1); // inclusive end-of-day
+            q = q.Where(a => a.CreatedDate < end);
+        }
+        if (!string.IsNullOrWhiteSpace(req.UserName))
+        {
+            var v = req.UserName.Trim();
+            q = q.Where(a => a.UserName != null && EF.Functions.Like(a.UserName, $"%{v}%"));
+        }
+        if (!string.IsNullOrWhiteSpace(req.EntityType))
+        {
+            var v = req.EntityType.Trim();
+            q = q.Where(a => EF.Functions.Like(a.EntityType, $"%{v}%"));
+        }
+        if (!string.IsNullOrWhiteSpace(req.Action))
+        {
+            var v = req.Action.Trim();
+            q = q.Where(a => EF.Functions.Like(a.Action, $"%{v}%"));
+        }
+        if (!string.IsNullOrWhiteSpace(req.Outcome))
+        {
+            var v = req.Outcome.Trim();
+            q = q.Where(a => a.Outcome != null && a.Outcome == v);
+        }
+        if (!string.IsNullOrWhiteSpace(req.Screen))
+        {
+            var v = req.Screen.Trim();
+            q = q.Where(a => a.Screen != null && EF.Functions.Like(a.Screen, $"%{v}%"));
+        }
+
         q = ApplySort(q, req.Sort);
 
         var total = await q.CountAsync(ct);
@@ -75,10 +110,14 @@ public class ListAuditQueryHandler : IRequestHandler<ListAuditQuery, PagedResult
         var desc  = string.Equals(parts.ElementAtOrDefault(1), "desc", StringComparison.OrdinalIgnoreCase);
         return field switch
         {
-            "username"   => desc ? q.OrderByDescending(a => a.UserName)   : q.OrderBy(a => a.UserName),
-            "action"     => desc ? q.OrderByDescending(a => a.Action)     : q.OrderBy(a => a.Action),
-            "entitytype" => desc ? q.OrderByDescending(a => a.EntityType) : q.OrderBy(a => a.EntityType),
-            _            => desc ? q.OrderByDescending(a => a.CreatedDate) : q.OrderBy(a => a.CreatedDate),
+            "username"    => desc ? q.OrderByDescending(a => a.UserName)   : q.OrderBy(a => a.UserName),
+            "action"      => desc ? q.OrderByDescending(a => a.Action)     : q.OrderBy(a => a.Action),
+            "entitytype"  => desc ? q.OrderByDescending(a => a.EntityType) : q.OrderBy(a => a.EntityType),
+            "ipaddress"   => desc ? q.OrderByDescending(a => a.IpAddress)  : q.OrderBy(a => a.IpAddress),
+            "outcome"     => desc ? q.OrderByDescending(a => a.Outcome)    : q.OrderBy(a => a.Outcome),
+            "screen"      => desc ? q.OrderByDescending(a => a.Screen)     : q.OrderBy(a => a.Screen),
+            "createddate" => desc ? q.OrderByDescending(a => a.CreatedDate): q.OrderBy(a => a.CreatedDate),
+            _             => desc ? q.OrderByDescending(a => a.CreatedDate) : q.OrderBy(a => a.CreatedDate),
         };
     }
 }

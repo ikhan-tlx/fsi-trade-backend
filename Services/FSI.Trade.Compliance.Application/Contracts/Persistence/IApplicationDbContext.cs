@@ -25,6 +25,9 @@ public interface IApplicationDbContext
     DbSet<AppConfiguration>     AppConfigurations      { get; }
     DbSet<KycCaseRequest>       KycCaseRequests        { get; }
     DbSet<CstmBrains>           CstmBrains             { get; }
+    DbSet<CustomerReviewSchedule> CustomerReviewSchedules { get; }
+    DbSet<CustomerReviewHistory>  CustomerReviewHistories { get; }
+    DbSet<CustomerInsightDaily>   CustomerInsightDailies  { get; }
     DbSet<UserDevice>           UserDevices          { get; }
     DbSet<LoginAuditEntry>      LoginAudit           { get; }
 
@@ -83,6 +86,9 @@ public interface IApplicationDbContext
     DbSet<ReferenceListValue>      ReferenceListValues      { get; }
     DbSet<SanctionedCountry>       SanctionedCountries      { get; }
     DbSet<ScreeningGood>           ScreeningGoods           { get; }
+    DbSet<ReferenceType>           ReferenceTypes           { get; }
+    DbSet<ReferenceValue>          ReferenceValues          { get; }
+    DbSet<ReferenceValueTypeMap>   ReferenceValueTypeMaps   { get; }
     // 2026_07_002 — aggregate auto-flag engine.
     DbSet<AutoFlagJob>             AutoFlagJobs             { get; }
 

@@ -36,6 +36,13 @@ var logDir = diag.GetValue<string>("LogDirectory") ?? "Logs";
 if (!Path.IsPathRooted(logDir))
     logDir = Path.Combine(builder.Environment.ContentRootPath, logDir);
 
+// Verbose master switch for the WorkflowLog step trail. OFF by default:
+// production logs business milestones/warnings/errors; ON adds Debug detail
+// (payloads, variable values, decision paths). Requires the target file's
+// Level to allow Debug for the detail to actually be written.
+FSI.Trade.Compliance.Application.Common.Logging.WorkflowLog.EnableDetailedLogs =
+    diag.GetValue("EnableDetailedLogs", false);
+
 static LogEventLevel ParseLevel(string? s, LogEventLevel fallback)
     => Enum.TryParse<LogEventLevel>(s, ignoreCase: true, out var lvl) ? lvl : fallback;
 
@@ -90,7 +97,7 @@ builder.Host.UseSerilog((ctx, lc) =>
                     retainedFileCountLimit:   null,    // LogArchiverService owns retention/zip
                     shared:                   true,
                     outputTemplate:
-                        "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {SourceContext}{NewLine}{Message:lj}{NewLine}{Exception}{NewLine}"));
+                        "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {SourceContext} {Properties:j}{NewLine}{Message:lj}{NewLine}{Exception}{NewLine}"));
         }
     }
 });
@@ -222,6 +229,7 @@ app.UseSerilogRequestLogging();
 app.UseMiddleware<FSI.Trade.Compliance.API.Logging.ApiRequestLoggingMiddleware>();   // module-wise API request/response logs
 app.UseCors();
 app.UseAuthentication();
+app.UseMiddleware<FSI.Trade.Compliance.API.Logging.RequestContextLoggingMiddleware>();   // RequestId/CorrelationId/UserId scope on every downstream log line
 app.UseMiddleware<CustomAuthorizationMiddleware>();   // whitelist + post-JWT gate
 app.UseMiddleware<DeviceTrackingMiddleware>();        // X-Device-Id required on authenticated requests
 app.UseAuthorization();

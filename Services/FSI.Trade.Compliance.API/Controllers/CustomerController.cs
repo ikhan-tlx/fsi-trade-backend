@@ -3,6 +3,8 @@ using FSI.Trade.Compliance.Application.Common.Models;
 using FSI.Trade.Compliance.Application.Features.Customer.Get;
 using FSI.Trade.Compliance.Application.Features.Customer.GetKyc;
 using FSI.Trade.Compliance.Application.Features.Customer.Insight;
+using FSI.Trade.Compliance.Application.Features.Customer.InsightDetail;
+using FSI.Trade.Compliance.Application.Features.Customer.InsightSummary;
 using FSI.Trade.Compliance.Application.Features.Customer.List;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
@@ -47,6 +49,19 @@ public class CustomerController : ControllerBase
         return Ok(ResponseViewModel<PagedResult<CustomerListItemDto>>.Ok(paged));
     }
 
+    /// <summary>
+    /// Book-wide portfolio KPI strip for the Customer Intelligence listing
+    /// (<c>GET /api/v1/Customer/InsightSummary</c>): total customers, high-risk,
+    /// reviews overdue, open cases, flags raised (7d). Cached ~2 min.
+    /// Literal route segment ⇒ matched ahead of <c>{customerId}</c>.
+    /// </summary>
+    [HttpGet("InsightSummary")]
+    public async Task<IActionResult> InsightSummary(CancellationToken ct)
+    {
+        var dto = await _mediator.Send(new GetCustomerInsightSummaryQuery(), ct);
+        return Ok(ResponseViewModel<CustomerInsightSummaryDto>.Ok(dto));
+    }
+
     [HttpGet("{customerId}")]
     [FSI.Trade.Compliance.API.Filters.Audited("READ", "Customer", "customerId")]
     public async Task<IActionResult> Get(string customerId, CancellationToken ct)
@@ -65,6 +80,19 @@ public class CustomerController : ControllerBase
     {
         var dto = await _mediator.Send(new GetCustomerInsightQuery(customerId), ct);
         return Ok(ResponseViewModel<CustomerInsightDto>.Ok(dto));
+    }
+
+    /// <summary>
+    /// Full 360° detail aggregate for the redesigned detail page
+    /// (<c>GET /api/v1/Customer/{customerId}/InsightDetail</c>): header/gauge,
+    /// KPIs, KYC timeline, flags, FCCM cases, trade + behaviour.
+    /// </summary>
+    [HttpGet("{customerId}/InsightDetail")]
+    [FSI.Trade.Compliance.API.Filters.Audited("READ", "Customer Insight Detail", "customerId")]
+    public async Task<IActionResult> InsightDetail(string customerId, CancellationToken ct)
+    {
+        var dto = await _mediator.Send(new GetCustomerInsightDetailQuery(customerId), ct);
+        return Ok(ResponseViewModel<CustomerInsightDetailDto>.Ok(dto));
     }
 
     [HttpGet("{customerId}/Kyc")]

@@ -86,6 +86,10 @@ INSERT @scoped(Code, Description) VALUES
     (N'Flags.View',        N'View flag catalogue, per-transaction flag state, scopes and stats'),
     (N'Flags.Manage',      N'Create / edit / activate / deactivate catalogue flags and manage their (product, tab) scopes'),
 
+    -- Reference Lists module (normalized Types / Values / M:N — migration 2026_07_023)
+    (N'ReferenceLists.View',   N'View reference types, values and their memberships'),
+    (N'ReferenceLists.Manage', N'Create / edit / delete reference types, values and memberships'),
+
     -- Transactions module (Slice 9)
     (N'Transactions.Resubmit',       N'Manually re-fire the FCCM trade submission for a transaction'),
 
@@ -174,6 +178,8 @@ INSERT @grants(PrivCode) VALUES
     (N'Workflow.Manage'),
     (N'Flags.View'),
     (N'Flags.Manage'),
+    (N'ReferenceLists.View'),
+    (N'ReferenceLists.Manage'),
     (N'Transactions.Resubmit'),
     (N'Transactions.AddNote'),
     (N'Transactions.UploadDocument'),

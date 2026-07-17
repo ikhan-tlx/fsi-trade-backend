@@ -73,4 +73,9 @@ public interface IRuleDataProvider
     /// <summary>The UDF field code(s) marked as the amount field (Is_Amount_Field) for a
     /// product / sub-product tab, from the field configuration. Usually one per sub-product.</summary>
     Task<IReadOnlyList<string>> GetAmountFieldCodesAsync(int productId, int? tabId, CancellationToken ct);
+
+    /// <summary>The customer's LATEST KYC-product transaction's UDF JSON — used to resolve
+    /// cross-source KYC operands (e.g. declared Line of Business) at rule-evaluation time.
+    /// "Latest" = most recent by value/created date. Null when the customer has no KYC record.</summary>
+    Task<string?> GetLatestKycUdfAsync(string customerCode, CancellationToken ct);
 }

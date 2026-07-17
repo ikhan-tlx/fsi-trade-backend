@@ -90,6 +90,12 @@ public class WorkflowRuntimeFactory
             // BEFORE Start() so the very first transition is covered.
             runtime.ProcessStatusChanged += (_, e) => inboxSync.OnProcessStatusChanged(runtime, e);
 
+            // Persist OptimaJet timestamps (WorkflowProcessTransitionHistory.TransitionTime, timers,
+            // process times, etc.) in UTC so the workflow engine matches the rest of the app — every
+            // TmX_* table + the audit log already store UTC. The runtime defaults to DateTime.Now
+            // (server-local), which left transition history ~5h ahead of the UTC application rows.
+            runtime.UseUtcDateTimeAsRuntimeTime = true;
+
             runtime.Start();
 
             log.LogInformation("OptimaJet WorkflowRuntime started (v3.5.0). RuntimeId={RuntimeId}.", workflowOpt.RuntimeId);

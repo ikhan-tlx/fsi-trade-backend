@@ -1,4 +1,5 @@
 using FSI.Trade.Compliance.Application.Common.Exceptions;
+using FSI.Trade.Compliance.Application.Common.Logging;
 using FSI.Trade.Compliance.Application.Contracts.Integrations;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
 using FSI.Trade.Compliance.Domain.Entities.FccmStaging;
@@ -132,7 +133,11 @@ internal class FccmTradeCaseService : IFccmTradeCaseService
     {
         var now = DateTime.UtcNow;
 
+        using var wf = WorkflowLog.Begin(_logger, "FCCM Trade Case", ("TransactionId", transactionId));
+        wf.Step("Trade received — building FCCM case from staging.");
+
         // 1. Load main DB data ------------------------------------------------
+        wf.Step("Loading transaction, customer snapshot, detail and ticked flags.");
         var tx = await _db.Transactions
             .FirstOrDefaultAsync(t => t.TransactionId == transactionId, ct)
             ?? throw new NotFoundException("transaction_not_found",
@@ -155,19 +160,28 @@ internal class FccmTradeCaseService : IFccmTradeCaseService
             .ToListAsync(ct);
 
         var redflagsCount = tickedFlags.Count;
+        wf.Step($"Loaded: customer='{customer?.CustomerName ?? "(none)"}', flags ticked={redflagsCount}.");
 
         // 2. Pre-staging Oracle setup -----------------------------------------
-        await _oracle.TruncateRtCaseTrackingAsync(ct);
-        await _oracle.TruncateEventStagingAsync(ct);
-        var messageId = await _oracle.GetNextMessageIdAsync(ct);
-        await _oracle.InsertRtCaseTrackingAsync(messageId, ct);
+        wf.Step("Pre-staging Oracle setup (truncate RT_CASE_TRACKING + EVENT_STAGING, reserve MessageId).");
+        var messageId = await wf.ExternalAsync(
+            "Oracle pre-staging (truncate + MESSAGE_ID_SEQ + RT_CASE_TRACKING)", async () =>
+        {
+            await _oracle.TruncateRtCaseTrackingAsync(ct);
+            await _oracle.TruncateEventStagingAsync(ct);
+            var mid = await _oracle.GetNextMessageIdAsync(ct);
+            await _oracle.InsertRtCaseTrackingAsync(mid, ct);
+            return mid;
+        });
+        wf.Detail($"Reserved MessageId={messageId}.");
 
         // 3. Staging row builds + INSERTs -------------------------------------
+        wf.Step("Building + inserting staging rows (LC_TRN_DET, CUST_MASTER, BENEFICIARY_DETAIL, EVENT_STAGING).");
         var productCode  = ExtractProductCodeFromUdf(detail?.UdfData) ?? $"PID-{tx.ProductId}";
         var customerName = customer?.CustomerName ?? "";
         var clientRef    = tx.ClientReferenceNumber ?? "";
 
-        var lcTrnDet    = BuildLcTrnDetStaging(messageId, productCode, detail);
+        var lcTrnDet    = BuildLcTrnDetStaging(messageId, productCode, tx.TransactionNumber ?? tx.ClientReferenceNumber, detail);
         var custMaster  = BuildCustMasterStaging(messageId, productCode, customer, now);
         var benefDetail = BuildBeneficiaryDetailStaging(messageId, productCode, tx);
 
@@ -206,9 +220,8 @@ internal class FccmTradeCaseService : IFccmTradeCaseService
             }, ct);
         }
 
-        _logger.LogInformation(
-            "FccmTradeCaseService: staging rows written for TxId={TxId} MsgId={MsgId} — 1 LcTrnDet + 1 CustMaster + 1 Benef + {EventCount} events (1 customer + {FlagCount} flags).",
-            transactionId, messageId, 1 + redflagsCount, redflagsCount);
+        wf.Success($"Staging records saved — MsgId={messageId}: 1 LcTrnDet + 1 CustMaster + 1 Benef + " +
+                   $"{1 + redflagsCount} events (1 customer + {redflagsCount} flags).");
 
         // 4. Branch on redflagsCount ------------------------------------------
         if (redflagsCount == 0)
@@ -220,9 +233,8 @@ internal class FccmTradeCaseService : IFccmTradeCaseService
             tx.LastUpdatedDate      = now;
             await _db.SaveChangesAsync(ct);
 
-            _logger.LogInformation(
-                "FccmTradeCaseService: TxId={TxId} submitted with ZERO flags — FCCM not contacted, status flipped to {StatusLkp}.",
-                transactionId, NoFccmHitStatusLkp);
+            wf.Step($"Zero flags — FCCM not contacted; local status flipped to {NoFccmHitStatusLkp} (No FCCM Hit).");
+            wf.EndSuccess($"TxId={transactionId} Case={NoFccmHitSentinel} (no-hit) Flags=0.");
 
             return new FccmTradeSubmissionResult
             {
@@ -235,44 +247,70 @@ internal class FccmTradeCaseService : IFccmTradeCaseService
         }
 
         // 4a. Correlation insert (Oracle TMX_TRANS_FROM_REPO)
-        await _oracle.InsertTransFromRepoAsync(
-            customerName:           customerName,
-            clientReferenceNumber:  clientRef,
-            transactionId:          transactionId,
-            transactionNumber:      tx.TransactionNumber,
-            ct:                     ct);
+        wf.Step("Executing InsertTransFromRepoAsync (TMX_TRANS_FROM_REPO correlation insert).");
+        await wf.ExternalAsync(
+            $"TMX_TRANS_FROM_REPO insert (Customer='{customerName}', ClientRef='{clientRef}', TxId={transactionId}, TxNo={tx.TransactionNumber})",
+            () => _oracle.InsertTransFromRepoAsync(
+                customerName:          customerName,
+                clientReferenceNumber: clientRef,
+                transactionId:         transactionId,
+                transactionNumber:     tx.TransactionNumber,
+                ct:                    ct));
 
         // 4b. Stored procedure — builds the FCCM case from staging
-        var caseId = await _oracle.ExecuteCreateEventDemoProcAsync(messageId, FccmSpProductLiteral, ct)
-                     ?? throw new InvalidOperationException(
-                         $"PR_CREATE_EVENT_DEMO returned null case id for TxId={transactionId} (MessageId={messageId}).");
+        wf.Step("Executing stored procedure PR_CREATE_EVENT_DEMO.");
+        string? caseId;
+        try
+        {
+            caseId = await wf.ExternalAsync(
+                $"PR_CREATE_EVENT_DEMO(MessageId={messageId}, Product='{FccmSpProductLiteral}')", () =>
+                _oracle.ExecuteCreateEventDemoProcAsync(messageId, FccmSpProductLiteral, ct));
+        }
+        catch (Exception ex)
+        {
+            // The [CALL] … FAILED line above already carries the SQL error + stack.
+            wf.EndFailure("PR_CREATE_EVENT_DEMO", ex.Message);
+            throw;
+        }
+
+        if (string.IsNullOrWhiteSpace(caseId))
+        {
+            wf.Failed("Stored procedure execution", $"PR_CREATE_EVENT_DEMO returned no case id (MessageId={messageId}).");
+            wf.EndFailure("PR_CREATE_EVENT_DEMO", "Stored procedure returned a null/empty case id.");
+            throw new InvalidOperationException(
+                $"PR_CREATE_EVENT_DEMO returned null case id for TxId={transactionId} (MessageId={messageId}).");
+        }
+        var createdCaseId = caseId!;
+        wf.Success($"Case created — CaseId={createdCaseId}.");
 
         // 4c. Post-SP enrichment
-        await _oracle.InsertKddCaseCustomersAsync(
-            customerName:       customerName,
-            clientReferenceId:  clientRef,
-            transactionId:      transactionId,
-            caseId:             caseId,
-            ct:                 ct);
-
-        await _oracle.UpdateKddCasesTitleAsync(
-            caseId:             caseId,
-            transactionNumber:  tx.TransactionNumber ?? "",
-            ct:                 ct);
+        wf.Step("Post-SP enrichment (KDD_CASE_CUSTOMERS insert + KDD_CASES title update).");
+        await wf.ExternalAsync("InsertKddCaseCustomersAsync + UpdateKddCasesTitleAsync", async () =>
+        {
+            await _oracle.InsertKddCaseCustomersAsync(
+                customerName:      customerName,
+                clientReferenceId: clientRef,
+                transactionId:     transactionId,
+                caseId:            createdCaseId,
+                ct:                ct);
+            await _oracle.UpdateKddCasesTitleAsync(
+                caseId:            createdCaseId,
+                transactionNumber: tx.TransactionNumber ?? "",
+                ct:                ct);
+        });
 
         // 4d. Persist case id back on the transaction
-        tx.FccmCaseId      = caseId;
+        tx.FccmCaseId      = createdCaseId;
         tx.LastUpdatedDate = now;
         await _db.SaveChangesAsync(ct);
+        wf.Step("Persisted Fccm_Case_Id on the transaction.");
 
-        _logger.LogInformation(
-            "FccmTradeCaseService: TxId={TxId} submitted to FCCM. CaseId={CaseId} MessageId={MsgId} FlagEvents={FlagCount}.",
-            transactionId, caseId, messageId, redflagsCount);
+        wf.EndSuccess($"TxId={transactionId} Case={createdCaseId} MsgId={messageId} FlagEvents={redflagsCount}.");
 
         return new FccmTradeSubmissionResult
         {
             TransactionId  = transactionId,
-            FccmCaseId     = caseId,
+            FccmCaseId     = createdCaseId,
             WasSkipped     = false,
             FlagEventCount = redflagsCount,
             SubmittedAt    = now
@@ -284,6 +322,7 @@ internal class FccmTradeCaseService : IFccmTradeCaseService
     private static LcTrnDetStaging BuildLcTrnDetStaging(
         string messageId,
         string productCode,
+        string? contractId,
         Domain.Entities.Transaction.TransactionDetail? detail)
     {
         var udf = ParseUdf(detail?.UdfData);
@@ -292,9 +331,17 @@ internal class FccmTradeCaseService : IFccmTradeCaseService
         {
             MessageId        = messageId,
             Prouct           = productCode,                        // legacy typo preserved
+            // Contract internal id. PR_CREATE_EVENT_DEMO's 'FT' branch inserts
+            // this (FTID) into KDD_CASE_TRD_FIN_CNTRCT_EVT.TRD_FIN_CNTRCT_INTRL_ID,
+            // which is NOT NULL — leaving it null caused ORA-01400. Use the
+            // transaction number (business contract ref) with messageId fallback.
+            Ftid             = string.IsNullOrWhiteSpace(contractId) ? messageId : contractId,
             Lcid             = UdfString(udf, "LCId"),
             Lcamount         = UdfDecimal(udf, "LCAmount"),
-            Hscode           = UdfString(udf, "HSCode"),
+            // GOOD_SRVC_CD (NOT NULL in KDD_CASE_TRD_FIN_GOOD_SRVC) is sourced
+            // from HSCODE by PR_CREATE_EVENT_DEMO — fall back to 'NA' when the
+            // UDF has no HS code so the proc's goods insert doesn't hit ORA-01400.
+            Hscode           = UdfString(udf, "HSCode") ?? "NA",
             Hscodeofgoods    = UdfString(udf, "HSCodeOfGoods"),
             Country          = UdfString(udf, "COCode") ?? UdfString(udf, "Country"),
             Portofloading    = UdfString(udf, "PortOfLoading"),
@@ -318,7 +365,9 @@ internal class FccmTradeCaseService : IFccmTradeCaseService
             Eifamnt          = UdfDecimal(udf, "EifAmnt"),
             Hsquant          = UdfDecimal(udf, "HSQuant"),
             Hsunit           = UdfString(udf, "HSUnit"),
-            Version          = UdfDecimal(udf, "Version"),
+            // CNTRCT_EVENT_NB (NOT NULL) is sourced from VERSION by
+            // PR_CREATE_EVENT_DEMO — default to 1 when absent from the UDF.
+            Version          = UdfDecimal(udf, "Version") ?? 1m,
             Lremarks         = UdfString(udf, "Remarks"),
             // Identifiers left null — per-product UDF mapping firms up later.
         };

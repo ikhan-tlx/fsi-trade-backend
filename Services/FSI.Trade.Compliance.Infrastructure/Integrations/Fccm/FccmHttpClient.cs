@@ -40,7 +40,7 @@ public class FccmHttpClient
     /// Submits a KYC onboarding case to FCCM from the typed (hardcoded-path)
     /// payload. Returns the upstream request ID. See <see cref="PostJsonAsync"/>.
     /// </summary>
-    public Task<(string? RequestId, string? Error)> SubmitCaseAsync(
+    public Task<FccmSubmitResult> SubmitCaseAsync(
         FccmOnboardingPayload payload, string customerId, CancellationToken ct = default)
         => PostJsonAsync(JsonSerializer.Serialize(payload, WireJson), customerId, ct);
 
@@ -49,7 +49,7 @@ public class FccmHttpClient
     /// (config-driven path). The node already contains exactly what the active
     /// mapping profile chose to emit (null-omission handled during mapping).
     /// </summary>
-    public Task<(string? RequestId, string? Error)> SubmitCaseAsync(
+    public Task<FccmSubmitResult> SubmitCaseAsync(
         JsonNode payload, string customerId, CancellationToken ct = default)
         => PostJsonAsync(payload.ToJsonString(WireJson), customerId, ct);
 
@@ -59,13 +59,13 @@ public class FccmHttpClient
     /// and extracts the upstream request id. Null RequestId = submit failed;
     /// the caller logs the case as Failed.
     /// </summary>
-    private async Task<(string? RequestId, string? Error)> PostJsonAsync(
+    private async Task<FccmSubmitResult> PostJsonAsync(
         string json, string customerId, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(_opt.FccmOnboardingUrl))
         {
             _log.LogWarning("FccmOnboardingUrl not configured. SubmitCaseAsync returning null (no-op).");
-            return (null, "FccmOnboardingUrl not configured.");
+            return new FccmSubmitResult(null, "FccmOnboardingUrl not configured.", json, null, null);
         }
 
         try
@@ -93,6 +93,11 @@ public class FccmHttpClient
             using var resp = await _http.SendAsync(request, ct);
             var bodyText = await resp.Content.ReadAsStringAsync(ct);
 
+            // Milestone (always on): the exact URL called + HTTP status, so the
+            // outbound FCCM call is always traceable. Auth is a Basic header (never
+            // logged). Full request payload + response body are the Debug lines below.
+            _log.LogInformation("FCCM onboarding POST {Url} -> HTTP {Status} for customer {CustomerId}.",
+                _opt.FccmOnboardingUrl, (int)resp.StatusCode, customerId);
             _log.LogDebug("FCCM onboarding RESPONSE for {CustomerId}: HTTP {Status}\n{Body}",
                 customerId, (int)resp.StatusCode, bodyText);
 
@@ -100,7 +105,7 @@ public class FccmHttpClient
             {
                 _log.LogWarning("FCCM submit returned HTTP {Status} for {CustomerId}: {Body}",
                     resp.StatusCode, customerId, bodyText);
-                return (null, $"HTTP {(int)resp.StatusCode}: {Trunc(bodyText)}");
+                return new FccmSubmitResult(null, $"HTTP {(int)resp.StatusCode}: {Trunc(bodyText)}", json, bodyText, (int)resp.StatusCode);
             }
 
             // Tolerate either { "requestId": "..." } or { "RequestID": ... }.
@@ -115,26 +120,44 @@ public class FccmHttpClient
                         var rid = prop.Value.ValueKind == JsonValueKind.String
                             ? prop.Value.GetString()
                             : prop.Value.ToString();
-                        if (!string.IsNullOrWhiteSpace(rid)) return (rid, null);
+                        if (!string.IsNullOrWhiteSpace(rid)) return new FccmSubmitResult(rid, null, json, bodyText, (int)resp.StatusCode);
                     }
                 }
             }
 
             _log.LogWarning("FCCM submit response for {CustomerId} contained no requestId: {Body}", customerId, bodyText);
-            return (null, $"2xx but no RequestID. Body: {Trunc(bodyText)}");
+            return new FccmSubmitResult(null, $"2xx but no RequestID. Body: {Trunc(bodyText)}", json, bodyText, (int)resp.StatusCode);
         }
         catch (HttpRequestException ex)
         {
             _log.LogError(ex, "FCCM submit HTTP failure for {CustomerId}.", customerId);
-            return (null, $"HTTP failure: {ex.Message}");
+            return new FccmSubmitResult(null, $"HTTP failure: {ex.Message}", json, null, null);
         }
         catch (TaskCanceledException) when (!ct.IsCancellationRequested)
         {
             _log.LogError("FCCM submit HTTP timeout for {CustomerId} after {Timeout}.", customerId, _opt.HttpTimeout);
-            return (null, $"Timeout after {_opt.HttpTimeout}.");
+            return new FccmSubmitResult(null, $"Timeout after {_opt.HttpTimeout}.", json, null, null);
         }
     }
 
     private static string Trunc(string? s) =>
         string.IsNullOrEmpty(s) ? "(empty)" : (s.Length <= 480 ? s : s[..480]);
+}
+
+/// <summary>Result of an FCCM onboarding submit — carries the raw request body + response
+/// (status + body) so the caller can persist them on the KycCaseRequest for diagnostics.</summary>
+public sealed record FccmSubmitResult(
+    string? RequestId, string? Error, string RequestBody, string? ResponseBody, int? StatusCode);
+
+/// <summary>Append-only, timestamped, size-capped diagnostics trail for the FCCM exchange,
+/// stored on <c>KycCaseRequest.Fccm_Response_Payload</c> and shared by the submit + the poller.</summary>
+public static class FccmExchangeLog
+{
+    private const int Cap = 16000;   // keep the column bounded — retain the most recent tail
+    public static string Append(string? existing, string line)
+    {
+        var stamped  = $"[{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss}Z] {line}";
+        var combined = string.IsNullOrEmpty(existing) ? stamped : existing + "\n" + stamped;
+        return combined.Length <= Cap ? combined : combined[^Cap..];
+    }
 }

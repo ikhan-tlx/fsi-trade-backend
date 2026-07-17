@@ -74,6 +74,16 @@ public class GetTransactionByIdQueryHandler
         var customers     = await _db.TransactionCustomerSnapshots.AsNoTracking()
                                 .Where(c => c.TransactionId == id).ToListAsync(ct);
         var customerIds   = customers.Select(c => c.CustomerMasterId).ToList();
+        // Periodic Customer Review — schedule-backed next-review-date + risk band per customer.
+        var custCodes     = customers.Where(c => c.CustomerCode != null).Select(c => c.CustomerCode!).Distinct().ToList();
+        var reviewByCode  = custCodes.Count == 0
+            ? new Dictionary<string, (DateTime?, string?)>()
+            : (await _db.CustomerReviewSchedules.AsNoTracking()
+                    .Where(s => custCodes.Contains(s.CustomerCode))
+                    .Select(s => new { s.CustomerCode, s.NextReviewDate, s.CurrentRiskCategory })
+                    .ToListAsync(ct))
+                .GroupBy(s => s.CustomerCode)
+                .ToDictionary(g => g.Key, g => (g.First().NextReviewDate, g.First().CurrentRiskCategory));
         var bankingRows   = customerIds.Count == 0
                                 ? new List<Domain.Entities.Customer.CustomerBankingDetail>()
                                 : await _db.CustomerBankingDetails.AsNoTracking()
@@ -221,7 +231,7 @@ public class GetTransactionByIdQueryHandler
             transactionNumber      = tx.TransactionNumber,
             clientReferenceNumber  = tx.ClientReferenceNumber,
             userId                 = tx.UserId,
-            currencyId             = tx.CurrencyId,
+            currencyId             = tx.CurrencyLkp,
             transactionStatusLkp   = tx.TransactionStatusLkp,
             transactionTypeLkp     = tx.TransactionTypeLkp,
             transactionDate        = tx.TransactionDate,
@@ -246,6 +256,8 @@ public class GetTransactionByIdQueryHandler
                 customerSegmentLkp      = c.CustomerSegmentLkp,
                 customerSubSegmentLkp   = c.CustomerSubSegmentLkp,
                 locationId              = c.LocationId,
+                nextReviewDate          = c.CustomerCode != null && reviewByCode.TryGetValue(c.CustomerCode, out var rv)  ? rv.Item1 : null,
+                riskCategory            = c.CustomerCode != null && reviewByCode.TryGetValue(c.CustomerCode, out var rvr) ? rvr.Item2 : null,
                 udfData                 = ParseJson(c.UdfData),
                 bankingDetails          = bankingByCust.TryGetValue(c.CustomerMasterId, out var rows)
                     ? rows.Select(b => new BankingAccountDto

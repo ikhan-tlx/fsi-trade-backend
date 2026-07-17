@@ -39,11 +39,13 @@ public static class InfrastructureServiceRegistration
         services.Configure<PasswordPolicyOptions>(config.GetSection(PasswordPolicyOptions.SectionName));
         services.Configure<TwoFactorOptions>     (config.GetSection(TwoFactorOptions.SectionName));
         services.Configure<IntegrationOptions>   (config.GetSection(IntegrationOptions.SectionName));
+        services.Configure<PeriodicReviewOptions>(config.GetSection(PeriodicReviewOptions.SectionName));
         services.Configure<BrainsOptions>        (config.GetSection(BrainsOptions.SectionName));
         services.Configure<WorkflowOptions>      (config.GetSection(WorkflowOptions.SectionName));
         services.Configure<ReportOptions>        (config.GetSection(ReportOptions.SectionName));
         services.Configure<DocumentOptions>      (config.GetSection(DocumentOptions.SectionName));
         services.Configure<TradeRepositoryOptions>(config.GetSection(TradeRepositoryOptions.SectionName));
+        services.Configure<CustomerInsightSnapshotOptions>(config.GetSection(CustomerInsightSnapshotOptions.SectionName));
 
         // EF Core (+ generic audit interceptor — writes TmX_Audit_Log on every save)
         services.AddScoped<AuditSaveChangesInterceptor>();
@@ -196,6 +198,20 @@ public static class InfrastructureServiceRegistration
         services.AddSingleton<Integrations.Fccm.Mapping.IOnboardingMappingProvider,
                               Integrations.Fccm.Mapping.OnboardingMappingProvider>();
         services.AddScoped<Integrations.Fccm.Mapping.OnboardingPayloadMapper>();
+
+        // Periodic Customer Review — cadence policy + next-review-date calculator.
+        services.AddSingleton<Application.Contracts.Kyc.IReviewPolicyProvider,     Kyc.Review.ReviewPolicyProvider>();
+        services.AddSingleton<Application.Contracts.Kyc.INextReviewDateCalculator, Kyc.Review.NextReviewDateCalculator>();
+        services.AddSingleton<Application.Contracts.Identity.IAmbientUserContext,   Services.AmbientUserContext>();
+        services.AddScoped<Application.Contracts.Kyc.IKycTransactionCloner,        Kyc.Review.KycTransactionCloner>();
+        services.AddScoped<Application.Contracts.Kyc.IKycReviewOrchestrator,       Kyc.Review.KycReviewOrchestrator>();
+        services.AddScoped<Application.Contracts.Kyc.IPeriodicReviewRunner,        Kyc.Review.PeriodicReviewRunner>();
+        services.AddHostedService<Kyc.Review.PeriodicReviewService>();
+
+        // Customer Intelligence daily KPI snapshot — writes TmX_Customer_Insight_Daily
+        // (one book-wide row/day) so the portfolio strip shows real "vs last week" deltas.
+        services.AddScoped<Application.Contracts.Customer.ICustomerInsightSnapshotWriter, CustomerInsight.CustomerInsightSnapshotWriter>();
+        services.AddHostedService<CustomerInsight.CustomerInsightSnapshotService>();
 
         // Diagnostic log archiver — zips rolled log files older than the
         // retention window into backlogs_<from>-<to>.zip (config-driven).

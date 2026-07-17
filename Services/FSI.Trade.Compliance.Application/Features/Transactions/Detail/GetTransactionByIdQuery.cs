@@ -135,6 +135,8 @@ public class CustomerDto
     public int?    customerSegmentLkp        { get; set; }
     public int?    customerSubSegmentLkp     { get; set; }
     public int?    locationId                { get; set; }
+    public DateTime? nextReviewDate          { get; set; }   // Periodic Customer Review (schedule-backed)
+    public string? riskCategory              { get; set; }   // current risk band (schedule-backed)
     public object? udfData                   { get; set; }
     public List<BankingAccountDto> bankingDetails { get; set; } = new();
 }

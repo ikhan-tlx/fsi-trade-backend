@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using FSI.Trade.Compliance.Application.Common.Logging;
 
 namespace FSI.Trade.Compliance.API.Logging;
 
@@ -78,7 +79,17 @@ public class ApiRequestLoggingMiddleware
             return;
         }
 
-        var requestBody = await CaptureRequestBodyAsync(ctx, path);
+        // Full request/response BODIES are Debug-level. With the module at the
+        // default Information level we emit a single concise summary line —
+        // method, path, status, elapsed — and NO bodies, except on an error
+        // (>=400) where the response body is kept because it's small and needed
+        // to diagnose the failure. Set Integration:Diagnostics:Files:*:Level to
+        // "Debug" (per module) to capture full bodies when deep tracing. This
+        // keeps the log lean and avoids dumping large payloads / sensitive data
+        // unless Debug is switched on.
+        var verbose = log.IsEnabled(LogLevel.Debug);
+
+        var requestBody = verbose ? await CaptureRequestBodyAsync(ctx, path) : null;
 
         // Buffer the response so we can read it, then copy back to the real stream.
         var originalResponseBody = ctx.Response.Body;
@@ -92,20 +103,35 @@ public class ApiRequestLoggingMiddleware
         finally
         {
             sw.Stop();
-            var responseBody = await ReadResponseBodyAsync(ctx, buffer);
+            var status  = ctx.Response.StatusCode;
+            var isError = status >= 400;
+
+            // Only materialise the response body when we're going to log it.
+            var responseBody = (verbose || isError) ? await ReadResponseBodyAsync(ctx, buffer) : null;
             buffer.Position = 0;
             await buffer.CopyToAsync(originalResponseBody);
             ctx.Response.Body = originalResponseBody;
 
-            var status = ctx.Response.StatusCode;
-            var level  = status >= 500 ? LogLevel.Error
-                       : status >= 400 ? LogLevel.Warning
-                       : LogLevel.Information;
+            var level = status >= 500 ? LogLevel.Error
+                      : status >= 400 ? LogLevel.Warning
+                      : LogLevel.Information;
 
-            log.Log(level,
-                "{Method} {Path}{Query} -> HTTP {Status} in {Elapsed} ms{NL}REQUEST : {Request}{NL}RESPONSE: {Response}",
-                ctx.Request.Method, path, ctx.Request.QueryString.Value ?? "",
-                status, sw.ElapsedMilliseconds, Environment.NewLine, requestBody, Environment.NewLine, responseBody);
+            var method = ctx.Request.Method;
+            var query  = ctx.Request.QueryString.Value ?? "";
+
+            if (verbose)
+                log.Log(level,
+                    "{Method} {Path}{Query} -> HTTP {Status} in {Elapsed} ms{NL}REQUEST : {Request}{NL}RESPONSE: {Response}",
+                    method, path, query, status, sw.ElapsedMilliseconds,
+                    Environment.NewLine, requestBody, Environment.NewLine, responseBody);
+            else if (isError)
+                log.Log(level,
+                    "{Method} {Path}{Query} -> HTTP {Status} in {Elapsed} ms{NL}RESPONSE: {Response}",
+                    method, path, query, status, sw.ElapsedMilliseconds, Environment.NewLine, responseBody);
+            else
+                log.Log(level,
+                    "{Method} {Path}{Query} -> HTTP {Status} in {Elapsed} ms",
+                    method, path, query, status, sw.ElapsedMilliseconds);
         }
     }
 

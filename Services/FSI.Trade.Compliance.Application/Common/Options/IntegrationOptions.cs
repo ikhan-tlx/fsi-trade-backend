@@ -58,6 +58,18 @@ public class IntegrationOptions
     public string FccmOracleSchema       { get; set; } = "MANTAS";
 
     /// <summary>
+    /// Environment-configurable defaults for the trade FCCM case/event build.
+    /// These were previously HARDCODED inside the Oracle proc PR_CREATE_EVENT_DEMO
+    /// (jurisdiction 'PAK', owner org 'ICBC', owner id 10004, business domain 'GEN',
+    /// event type 'TBAML', scenario class 'TBML', case type 'TBML_SURV', data origin
+    /// 'DLY', event status 'CLS', priorities, contract event type 'ISSU'). The app
+    /// now passes them as parameters to the parameterised replica
+    /// <c>PR_CREATE_EVENT_DEMO_CFG</c>, so a non-ICBC / non-PAK deployment is a
+    /// config change, not a proc edit. Bound from <c>Integration:TradeCaseDefaults</c>.
+    /// </summary>
+    public FccmTradeCaseDefaults TradeCaseDefaults { get; set; } = new();
+
+    /// <summary>
     /// HMAC shared secret used to validate inbound FCCM callbacks. Required —
     /// the callback endpoint is anonymous (FCCM has no JWT) so we authenticate
     /// via signed payload header. Treat as a secret; rotate on incident.

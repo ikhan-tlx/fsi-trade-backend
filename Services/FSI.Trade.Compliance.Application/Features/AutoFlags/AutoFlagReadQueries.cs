@@ -80,12 +80,12 @@ public class ListAutoFlagsQueryHandler : IRequestHandler<ListAutoFlagsQuery, Pag
 
         var items = flags.Select(f => new AutoFlagSummaryDto
         {
-            flagId    = f.FlagId,
-            flagCode  = f.FlagCode,
-            name      = f.FlagName,
-            severity  = f.SeverityLkpId is int sid && sev.TryGetValue(sid, out var sn) ? sn : "",
-            status    = f.Status ?? (f.ActiveFlag ? "Active" : "Draft"),
-            products  = scopeByFlag.TryGetValue(f.FlagId, out var p) ? p : new List<string>(),
+            flagId = f.FlagId,
+            flagCode = f.FlagCode,
+            name = f.FlagName,
+            severity = f.SeverityLkpId is int sid && sev.TryGetValue(sid, out var sn) ? sn : "",
+            status = f.Status ?? (f.ActiveFlag ? "Active" : "Draft"),
+            products = scopeByFlag.TryGetValue(f.FlagId, out var p) ? p : new List<string>(),
             ruleCount = ruleCounts.TryGetValue(f.FlagId, out var rc) ? rc : 0,
             updatedBy = f.LastUpdatedBy ?? f.CreatedBy,
             updatedAt = (f.LastUpdatedDate ?? f.CreatedDate).ToString("o"),
@@ -93,9 +93,9 @@ public class ListAutoFlagsQueryHandler : IRequestHandler<ListAutoFlagsQuery, Pag
 
         return new PagedResult<AutoFlagSummaryDto>
         {
-            items    = items,
-            total    = total,
-            page     = req.Page,
+            items = items,
+            total = total,
+            page = req.Page,
             pageSize = req.PageSize,
         };
     }
@@ -108,14 +108,14 @@ public class ListAutoFlagsQueryHandler : IRequestHandler<ListAutoFlagsQuery, Pag
         if (first is null) return q.OrderByDescending(f => f.LastUpdatedDate ?? f.CreatedDate);
         var parts = first.Split('-', 2, StringSplitOptions.TrimEntries);
         var field = parts.ElementAtOrDefault(0)?.ToLowerInvariant();
-        var desc  = string.Equals(parts.ElementAtOrDefault(1), "desc", StringComparison.OrdinalIgnoreCase);
+        var desc = string.Equals(parts.ElementAtOrDefault(1), "desc", StringComparison.OrdinalIgnoreCase);
         return field switch
         {
-            "flagcode"    => desc ? q.OrderByDescending(f => f.FlagCode)      : q.OrderBy(f => f.FlagCode),
-            "name"        => desc ? q.OrderByDescending(f => f.FlagName)      : q.OrderBy(f => f.FlagName),
-            "severity"    => desc ? q.OrderByDescending(f => f.SeverityLkpId) : q.OrderBy(f => f.SeverityLkpId),
+            "flagcode" => desc ? q.OrderByDescending(f => f.FlagCode) : q.OrderBy(f => f.FlagCode),
+            "name" => desc ? q.OrderByDescending(f => f.FlagName) : q.OrderBy(f => f.FlagName),
+            "severity" => desc ? q.OrderByDescending(f => f.SeverityLkpId) : q.OrderBy(f => f.SeverityLkpId),
             "lastupdated" => desc ? q.OrderByDescending(f => f.LastUpdatedDate ?? f.CreatedDate) : q.OrderBy(f => f.LastUpdatedDate ?? f.CreatedDate),
-            _             => q.OrderByDescending(f => f.LastUpdatedDate ?? f.CreatedDate),
+            _ => q.OrderByDescending(f => f.LastUpdatedDate ?? f.CreatedDate),
         };
     }
 }
@@ -153,38 +153,38 @@ public class GetAutoFlagByIdQueryHandler : IRequestHandler<GetAutoFlagByIdQuery,
             .ToListAsync(ct);
         var rules = ruleRows.Select(r => new AutoFlagRuleDto
         {
-            ruleId            = r.RuleId,
-            ruleGroup         = r.RuleGroup,
-            evaluationOrder   = r.EvaluationOrder,
-            leftSource        = r.LeftSource,
-            leftFieldCode     = r.LeftFieldCode,
-            @operator         = r.Operator,
-            rightOperandType  = r.RightOperandType,
-            rightSource       = r.RightSource,
-            rightFieldCode    = r.RightFieldCode,
-            staticValue       = r.StaticValue,
+            ruleId = r.RuleId,
+            ruleGroup = r.RuleGroup,
+            evaluationOrder = r.EvaluationOrder,
+            leftSource = r.LeftSource,
+            leftFieldCode = r.LeftFieldCode,
+            @operator = r.Operator,
+            rightOperandType = r.RightOperandType,
+            rightSource = r.RightSource,
+            rightFieldCode = r.RightFieldCode,
+            staticValue = r.StaticValue,
             referenceListCode = r.ReferenceListCode,
-            aggregateSpec     = r.AggregateSpec,
-            handlerKey        = r.HandlerKey,
-            rightFactor       = r.RightFactor,
-            rightFactorUnit   = r.RightFactorUnit,
-            logicalOperator   = r.LogicalOperator,
+            aggregateSpec = r.AggregateSpec,
+            handlerKey = r.HandlerKey,
+            rightFactor = r.RightFactor,
+            rightFactorUnit = r.RightFactorUnit,
+            logicalOperator = r.LogicalOperator,
         }).ToList();
 
         return new AutoFlagDetailDto
         {
-            flagId          = f.FlagId,
-            flagCode        = f.FlagCode,
-            name            = f.FlagName,
-            description     = f.FlagDescription,
-            severity        = f.SeverityLkpId is int sid && sev.TryGetValue(sid, out var sn) ? sn : "",
-            status          = f.Status ?? (f.ActiveFlag ? "Active" : "Draft"),
-            products        = scopeIds.Select(i => i.ToString()).ToList(),
+            flagId = f.FlagId,
+            flagCode = f.FlagCode,
+            name = f.FlagName,
+            description = f.FlagDescription,
+            severity = f.SeverityLkpId is int sid && sev.TryGetValue(sid, out var sn) ? sn : "",
+            status = f.Status ?? (f.ActiveFlag ? "Active" : "Draft"),
+            products = scopeIds.Select(i => i.ToString()).ToList(),
             scopeProductIds = scopeIds,
-            scopes          = scopes,
-            raisePerMatch   = f.RaisePerMatch,
-            updatedAt       = (f.LastUpdatedDate ?? f.CreatedDate).ToString("o"),
-            rules           = rules,
+            scopes = scopes,
+            raisePerMatch = f.RaisePerMatch,
+            updatedAt = (f.LastUpdatedDate ?? f.CreatedDate).ToString("o"),
+            rules = rules,
         };
     }
 }
@@ -298,21 +298,21 @@ public class ListAutoFlagOperandsQueryHandler : IRequestHandler<ListAutoFlagOper
                         || table.IndexOf("KYC", StringComparison.OrdinalIgnoreCase) >= 0;
             list.Add(new OperandOptionDto
             {
-                fieldCode   = r.FieldName!,
-                label       = configured ?? Humanize(r.FieldName!),
-                source      = isKyc ? "KYC" : "Trade",
-                dataType    = dt,
-                fieldType   = ftype,
+                fieldCode = r.FieldName!,
+                label = configured ?? Humanize(r.FieldName!),
+                source = isKyc ? "KYC" : "Trade",
+                dataType = dt,
+                fieldType = ftype,
                 // The value-lookup group backing a dropdown field (Field_Lookup_Type). Lets the
                 // builder bind the right operand to this field's own lookup values instead of
                 // free text. Null/empty for non-lookup fields (amount/number/free-text).
                 fieldLookupType = r.FieldLookupType,
-                productId   = r.ProductId,
+                productId = r.ProductId,
                 productName = pname,
-                tabId       = r.TabId,
-                tabName     = r.TabId is int tid && tabById.TryGetValue(tid, out var tn) && !string.IsNullOrWhiteSpace(tn)
+                tabId = r.TabId,
+                tabName = r.TabId is int tid && tabById.TryGetValue(tid, out var tn) && !string.IsNullOrWhiteSpace(tn)
                                 ? tn : $"Tab {r.TabId}",
-                section     = curHeader,
+                section = curHeader,
                 isMultiValue = r.ParentTenantFieldSetupId is int pid2 && gridRootIds.Contains(pid2),
             });
         }
@@ -360,16 +360,14 @@ public class ListAutoFlagReferenceListsQueryHandler : IRequestHandler<ListAutoFl
 
     public async Task<List<ReferenceListOptionDto>> Handle(ListAutoFlagReferenceListsQuery req, CancellationToken ct)
     {
-        var built = new List<ReferenceListOptionDto>
-        {
-            new() { code = "SANCTIONED_COUNTRIES", name = "Sanctioned / High-risk countries (REPO)" },
-            new() { code = "SCREENING_GOODS",      name = "High-risk / screening goods — HS (REPO)" },
-        };
-        var custom = await _db.ReferenceLists.AsNoTracking()
-            .Where(l => l.ActiveFlag)
-            .Select(l => new ReferenceListOptionDto { code = l.ListCode, name = l.ListName })
+        // Prefer the normalized reference model (TmX_Reference_Type). A rule's
+        // Reference_List_Code stores a Type_Code, so active types ARE the options.
+        var types = await _db.ReferenceTypes.AsNoTracking()
+            .Where(t => t.ActiveFlag)
+            .OrderBy(t => t.TypeName)
+            .Select(t => new ReferenceListOptionDto { code = t.TypeCode, name = t.TypeName })
             .ToListAsync(ct);
-        return built.Concat(custom).ToList();
+        return types;
     }
 }
 
@@ -402,7 +400,7 @@ public class ListAutoFlagSubProductsQueryHandler : IRequestHandler<ListAutoFlagS
             .Where(g => prods.ContainsKey(g.Key))
             .Select(g => new SubProductGroupDto
             {
-                productId   = g.Key,
+                productId = g.Key,
                 productName = prods.TryGetValue(g.Key, out var pn) && !string.IsNullOrWhiteSpace(pn) ? pn : $"Product {g.Key}",
                 tabs = g.Select(m => m.TabId).Distinct()
                         .Select(tid => new SubProductTabDto

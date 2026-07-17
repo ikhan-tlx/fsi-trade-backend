@@ -17,7 +17,22 @@ public class Transaction
     public int       ProductId               { get; set; }
     public string?   ClientReferenceNumber   { get; set; }
     public string?   UserId                  { get; set; }   // creator's TmX_User.User_ID (nvarchar)
-    public int?      CurrencyId              { get; set; }
+    /// <summary>
+    /// Currency as a TmX_Lookup id (migration 2026_07_016; column Currency_Lkp,
+    /// FK → TmX_Lookup). Replaces the former Currency_Id (TmX_Currency FK). Sourced
+    /// from the transaction UDF Currency field, which stores the lookup id. The UDF
+    /// still carries currency + amount exactly as before.
+    /// </summary>
+    public int?      CurrencyLkp             { get; set; }
+
+    /// <summary>
+    /// Typed transaction amount (migration 2026_07_015). Additively populated at
+    /// save from the sub-product's Is_Amount_Field field value (the UDF still
+    /// carries it too). Backing column for the Customer Intelligence trade-amount
+    /// rollups so they read a column instead of parsing UDF JSON.
+    /// </summary>
+    public decimal?  TransactionAmount       { get; set; }
+
     public int       TransactionStatusLkp    { get; set; }
     public string?   TransactionNumber       { get; set; }
     public Guid?     ProcessInstanceId       { get; set; }

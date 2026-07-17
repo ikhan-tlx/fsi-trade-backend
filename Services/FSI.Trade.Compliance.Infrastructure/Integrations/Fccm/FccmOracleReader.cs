@@ -341,7 +341,8 @@ public class FccmOracleReader
     // =====================================================================
 
     /// <summary>
-    /// Inserts one row into <c>MANTAS.BENEFICIARY_DETAIL_STAGING</c>.
+    /// Inserts one row into <c>BENEFICIARY_DETAIL_STAGING</c> (unqualified —
+    /// resolves against the login user's schema / CURRENT_SCHEMA).
     /// All columns parameterised; null fields stored as DBNull (the
     /// legacy schema allows nulls everywhere — see ModelContext.cs).
     /// </summary>
@@ -353,7 +354,7 @@ public class FccmOracleReader
         await using var cmd = con.CreateCommand();
         cmd.BindByName = true;
         cmd.CommandText = @"
-            INSERT INTO MANTAS.BENEFICIARY_DETAIL_STAGING
+            INSERT INTO BENEFICIARY_DETAIL_STAGING
                 (MESSAGE_ID, PRODUCT, RECEIVERSBANK, INTERMEDBANK, BENEFICIARYCUSTNO,
                  BENIFICIARY, ADVISETHRUCUSTNO, ADVISETHRU, THIRDPARTYCUSTNO, THIRDPARTY,
                  ISSUINGBANK, BENEFICIARY, IMPORTERNAMEADDRESS, ADVISINGBKCUSTNO, ADVISINGBK,
@@ -394,7 +395,8 @@ public class FccmOracleReader
     }
 
     /// <summary>
-    /// Inserts one row into <c>MANTAS.CUST_MASTER_STAGING</c>.
+    /// Inserts one row into <c>CUST_MASTER_STAGING</c> (unqualified —
+    /// resolves against the login user's schema / CURRENT_SCHEMA).
     /// </summary>
     public async Task InsertCustMasterStagingAsync(CustMasterStaging r, CancellationToken ct = default)
     {
@@ -404,7 +406,7 @@ public class FccmOracleReader
         await using var cmd = con.CreateCommand();
         cmd.BindByName = true;
         cmd.CommandText = @"
-            INSERT INTO MANTAS.CUST_MASTER_STAGING
+            INSERT INTO CUST_MASTER_STAGING
                 (MESSAGE_ID, PRODUCT, ORDERINGCUST, PRESENTOR, APPLICANTCUSTNO,
                  APPLICANT, DRAWEECUSTNO, DRAWEE, CUSTOMERID, PRESENTORCUST,
                  ORDERINGBANK, CUSTOMER, DUMP_DT)
@@ -432,7 +434,8 @@ public class FccmOracleReader
     }
 
     /// <summary>
-    /// Inserts one row into <c>MANTAS.LC_TRN_DET_STAGING</c>. Slim
+    /// Inserts one row into <c>LC_TRN_DET_STAGING</c> (unqualified —
+    /// resolves against the login user's schema / CURRENT_SCHEMA). Slim
     /// trade-fields subset only — flag columns are intentionally NOT
     /// populated (Slice 8 catalogue model handles them via
     /// <see cref="InsertEventStagingAsync"/>).
@@ -448,7 +451,7 @@ public class FccmOracleReader
         await using var cmd = con.CreateCommand();
         cmd.BindByName = true;
         cmd.CommandText = @"
-            INSERT INTO MANTAS.LC_TRN_DET_STAGING
+            INSERT INTO LC_TRN_DET_STAGING
                 (MESSAGE_ID, PROUCT, FTID, DRID, WBID, MDID, LCID,
                  FTHSCODE, HSCODE, HSCODEOFGOODS, HSUNIT, HSQUANT, COMMODITY, QUANTITY, UNITCURRENCY,
                  LCAMOUNT, DEBITAMOUNT, CREDITAMNT, TOTEFORMAMT, DOCAMNT, EIFAMNT,
@@ -511,9 +514,8 @@ public class FccmOracleReader
     }
 
     /// <summary>
-    /// Inserts one row into <c>MANTAS.EVENT_STAGING</c> (or
-    /// schema-defaulted <c>EVENT_STAGING</c> if MANTAS is the login
-    /// schema — legacy is inconsistent on this prefix; the SP reads
+    /// Inserts one row into <c>EVENT_STAGING</c> (unqualified — resolves
+    /// against the login user's schema / CURRENT_SCHEMA; the SP reads
     /// whichever the connection's default schema points at). Called
     /// N+1 times per submit (1 customer event + N flag events).
     /// </summary>
@@ -568,7 +570,10 @@ public class FccmOracleReader
         await using var con = CreateConnection();
         await using var cmd = con.CreateCommand();
         cmd.BindByName  = true;
-        cmd.CommandText = "PR_CREATE_EVENT_DEMO";
+        // Parameterised replica of PR_CREATE_EVENT_DEMO. The original proc is left
+        // untouched; PR_CREATE_EVENT_DEMO_CFG takes the previously-hardcoded
+        // tenant/environment constants as IN params, supplied here from config.
+        cmd.CommandText = "PR_CREATE_EVENT_DEMO_CFG";
         cmd.CommandType = CommandType.StoredProcedure;
 
         cmd.Parameters.Add("MESSAGE_ID", OracleDbType.Varchar2).Value = messageId;
@@ -577,6 +582,23 @@ public class FccmOracleReader
         var resid = cmd.Parameters.Add("RESID", OracleDbType.Varchar2, 50);
         resid.Direction = ParameterDirection.Output;
 
+        // Configurable FCCM case/event constants (appsettings Integration:TradeCaseDefaults).
+        var d = _opt.TradeCaseDefaults ?? new();
+        cmd.Parameters.Add("P_JRSDCN_CD",         OracleDbType.Varchar2).Value = d.Jurisdiction;
+        cmd.Parameters.Add("P_OWNER_ORG",         OracleDbType.Varchar2).Value = d.OwnerOrg;
+        cmd.Parameters.Add("P_OWNER_ID",          OracleDbType.Int32).Value    = d.OwnerId;
+        cmd.Parameters.Add("P_BUS_DMN",           OracleDbType.Varchar2).Value = d.BusinessDomain;
+        cmd.Parameters.Add("P_EVENT_TYPE",        OracleDbType.Varchar2).Value = d.EventType;
+        cmd.Parameters.Add("P_SCENARIO_CLASS",    OracleDbType.Varchar2).Value = d.ScenarioClass;
+        cmd.Parameters.Add("P_CASE_TYPE",         OracleDbType.Varchar2).Value = d.CaseType;
+        cmd.Parameters.Add("P_DATA_ORIGIN",       OracleDbType.Varchar2).Value = d.DataOrigin;
+        cmd.Parameters.Add("P_EVENT_STATUS",      OracleDbType.Varchar2).Value = d.EventStatus;
+        cmd.Parameters.Add("P_EVENT_PRIORITY",    OracleDbType.Varchar2).Value = d.EventPriority;
+        cmd.Parameters.Add("P_CASE_PRIORITY",     OracleDbType.Varchar2).Value = d.CasePriority;
+        cmd.Parameters.Add("P_CASE_SRC",          OracleDbType.Varchar2).Value = d.CaseSource;
+        cmd.Parameters.Add("P_CASE_STATUS",       OracleDbType.Varchar2).Value = d.CaseStatus;
+        cmd.Parameters.Add("P_CNTRCT_EVENT_TYPE", OracleDbType.Varchar2).Value = d.ContractEventType;
+
         await OpenAndPrepareAsync(con, ct);
         await cmd.ExecuteNonQueryAsync(ct);
 
@@ -584,15 +606,18 @@ public class FccmOracleReader
     }
 
     /// <summary>
-    /// Post-SP enrichment — attach the customer to the case. Hardcoded
-    /// constants <c>JRSDCN_CD='PAK'</c>, <c>CUST_TYPE_CD='ORG'</c>,
-    /// <c>BUS_DMN_LIST_TX='abc'</c> preserved from legacy.
+    /// Post-SP enrichment — attach the customer to the case. The
+    /// <c>JRSDCN_CD</c>, <c>CUST_TYPE_CD</c>, <c>BUS_DMN_LIST_TX</c> values
+    /// (legacy hardcoded 'PAK'/'ORG'/'abc') are now bound from config
+    /// (Integration:TradeCaseDefaults) so they're configurable per deployment.
     /// </summary>
     public async Task InsertKddCaseCustomersAsync(
         string customerName, string clientReferenceId, int transactionId, string caseId,
         CancellationToken ct = default)
     {
         if (IsStub) { WarnOnceStub(); return; }
+
+        var d = _opt.TradeCaseDefaults ?? new();
 
         await using var con = CreateConnection();
         await using var cmd = con.CreateCommand();
@@ -601,12 +626,15 @@ public class FccmOracleReader
             INSERT INTO KDD_CASE_CUSTOMERS
                 (FULL_NM, CUST_INTRL_ID, JRSDCN_CD, CASE_CUST_SEQ_ID, CASE_INTRL_ID, CUST_TYPE_CD, BUS_DMN_LIST_TX)
             VALUES
-                (:p_fullNm, :p_clientRef, 'PAK', :p_txnId, :p_caseId, 'ORG', 'abc')";
+                (:p_fullNm, :p_clientRef, :p_jrsdcn, :p_txnId, :p_caseId, :p_custType, :p_busDmnList)";
 
-        AddV(cmd, ":p_fullNm",    customerName);
-        AddV(cmd, ":p_clientRef", clientReferenceId);
+        AddV(cmd, ":p_fullNm",     customerName);
+        AddV(cmd, ":p_clientRef",  clientReferenceId);
+        AddV(cmd, ":p_jrsdcn",     d.Jurisdiction);
         cmd.Parameters.Add(":p_txnId",  OracleDbType.Int32).Value    = transactionId;
-        AddV(cmd, ":p_caseId",    caseId);
+        AddV(cmd, ":p_caseId",     caseId);
+        AddV(cmd, ":p_custType",   d.CustomerType);
+        AddV(cmd, ":p_busDmnList", d.CustomerBusinessDomainList);
 
         await OpenAndPrepareAsync(con, ct);
         await cmd.ExecuteNonQueryAsync(ct);

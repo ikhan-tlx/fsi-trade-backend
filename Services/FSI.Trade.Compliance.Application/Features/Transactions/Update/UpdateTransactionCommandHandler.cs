@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using FSI.Trade.Compliance.Application.Common.Exceptions;
+using FSI.Trade.Compliance.Application.Common.Logging;
 using FSI.Trade.Compliance.Application.Contracts.Flags;
 using FSI.Trade.Compliance.Application.Contracts.Identity;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
@@ -63,6 +64,10 @@ public class UpdateTransactionCommandHandler
                      ?? throw new AuthenticationException("unauthenticated", "Transaction update requires an authenticated caller.");
 
         var now = DateTime.UtcNow;
+
+        using var wf = WorkflowLog.Begin(_log, "Update Transaction",
+            ("UserId", userId), ("TransactionId", req.transactionId));
+        wf.Step("Update requested — applying header, UDF, flags, beneficiaries/stakeholders.");
 
         // ---------- 1. Header ----------
         var tx = await _db.Transactions.FirstOrDefaultAsync(t => t.TransactionId == req.transactionId, ct)
@@ -207,8 +212,11 @@ public class UpdateTransactionCommandHandler
         // Currency_Id columns (Is_Amount_Field field + Currency dropdown). The tx
         // entity is tracked, so these commit in the SaveChanges below. Never throws.
         await TransactionAmountResolver.ApplyAsync(_db, tx, req.udfData, ct);
+        wf.Step($"Amount resolved from UDF — Transaction_Amount={tx.TransactionAmount?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "(none)"}, " +
+                $"Currency_Lkp={tx.CurrencyLkp?.ToString() ?? "(none)"}.");
 
         await _db.SaveChangesAsync(ct);
+        wf.Step("Transaction header + UDF + flags persisted.");
 
         // ---------- 6. checkbox_file → TransactionDocument bridge ----------
         // Surface attestation documents (checkbox_file fields) in the Documents
@@ -233,6 +241,9 @@ public class UpdateTransactionCommandHandler
             req.beneficiaries?.Count ?? 0,
             req.stakeholders?.Count  ?? 0,
             req.flags?.Count         ?? 0);
+
+        wf.EndSuccess($"TxId={req.transactionId} updated — amount={tx.TransactionAmount?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "(none)"}, " +
+                      $"beneficiaries={req.beneficiaries?.Count ?? 0}, stakeholders={req.stakeholders?.Count ?? 0}, flagChanges={req.flags?.Count ?? 0}.");
 
         // 6. Return the canonical detail shape via the existing read handler.
         return await _mediator.Send(new GetTransactionByIdQuery(req.transactionId), ct);
@@ -404,6 +415,12 @@ public class UpdateTransactionCommandHandler
         // when this payload carries ESI checkpoint answers (KYC form). Best-effort.
         json = await ApplyEsiOutcomeAsync(json, ct);
 
+        // Derived LOB — server-authoritative fill + validate. For every HS-code grid cell,
+        // set its hidden "<field>Lob" sibling to the HS lookup's Parent_Lookup_ID (the LOB).
+        // Overwrites whatever the client sent, so a tampered/absent value can't spoof the
+        // rule engine. Best-effort (never breaks the save).
+        json = await ApplyDerivedLobAsync(json, ct);
+
         if (detail is null)
         {
             // Brand-new detail row — INSERT.
@@ -422,6 +439,68 @@ public class UpdateTransactionCommandHandler
             detail.UdfData         = json;
             detail.LastUpdatedBy   = userId;
             detail.LastUpdatedDate = now;
+        }
+    }
+
+    // ---- Derived LOB fill + validate (server-authoritative, anti-tamper) --
+    /// <summary>For each HS-code grid cell (a key whose sibling "&lt;key&gt;Lob" exists), overwrite
+    /// that sibling with the HS lookup row's <c>Parent_Lookup_ID</c> (its LOB). Empty/unknown HS
+    /// → blank. Runs regardless of what the client sent, so the hidden Derived-LOB can't be
+    /// spoofed or omitted. Best-effort — never breaks the save.</summary>
+    private async Task<string?> ApplyDerivedLobAsync(string? json, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return json;
+        try
+        {
+            var root = JsonNode.Parse(json!);
+            if (root is null) return json;
+
+            var hsVals = new HashSet<int>();
+            CollectHs(root, hsVals);
+            if (hsVals.Count == 0) return json;
+
+            var ids = hsVals.ToList();
+            var map = (await _db.Lookups.AsNoTracking()
+                    .Where(l => ids.Contains(l.Id) && l.ParentLookupId != null)
+                    .Select(l => new { l.Id, Parent = l.ParentLookupId!.Value })
+                    .ToListAsync(ct))
+                .ToDictionary(x => x.Id, x => x.Parent);
+
+            Fill(root, map);
+            return root.ToJsonString();
+        }
+        catch { return json; }
+
+        static void CollectHs(JsonNode? node, HashSet<int> acc)
+        {
+            if (node is JsonObject o)
+            {
+                foreach (var kv in o)
+                {
+                    if (!kv.Key.EndsWith("Lob", StringComparison.Ordinal)
+                        && o.ContainsKey(kv.Key + "Lob")
+                        && int.TryParse(kv.Value?.ToString(), out var id))
+                        acc.Add(id);
+                    CollectHs(kv.Value, acc);
+                }
+            }
+            else if (node is JsonArray a) { foreach (var it in a) CollectHs(it, acc); }
+        }
+
+        static void Fill(JsonNode? node, Dictionary<int, int> map)
+        {
+            if (node is JsonObject o)
+            {
+                foreach (var key in o.Select(k => k.Key).ToList())
+                {
+                    if (key.EndsWith("Lob", StringComparison.Ordinal) || !o.ContainsKey(key + "Lob")) continue;
+                    var lob = (int.TryParse(o[key]?.ToString(), out var id) && map.TryGetValue(id, out var p))
+                        ? p.ToString() : "";
+                    o[key + "Lob"] = JsonValue.Create(lob);
+                }
+                foreach (var kv in o.ToList()) Fill(kv.Value, map);
+            }
+            else if (node is JsonArray a) { foreach (var it in a) Fill(it, map); }
         }
     }
 

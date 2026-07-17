@@ -1,0 +1,178 @@
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Data Source=WAQASKHAN\\SQLEXPRESS;Initial Catalog=ICBC_DEMO;Integrated Security=True;Encrypt=False;TrustServerCertificate=True"
+  },
+
+  "Api": {
+    "//RoutePrefix": "Leading route segment for all controllers. Default 'api' -> /api/v1/.... Under an IIS app already named 'api', disable it so the URL stays /api/v1/... not /api/api/v1/.... In appsettings use \"\" (empty). For an env var / web.config use Api__RoutePrefix=none (Windows cannot hold an EMPTY env var). Accepted disable sentinels: \"\", none, (none), -.",
+    "RoutePrefix": "api"
+  },
+
+  "Jwt": {
+    "Issuer": "fsi.trade.compliance",
+    "Audience": "fsi.trade.compliance.client",
+    "Key": "08C8>T-i*QDk5I)DL2h88lGFwog:2UgCUC@s$[yDgScsd[?uW.AlGz|lUGu*Iy4&SBBfIY0N%pZ$XZM3pQ1+sd",
+    "AccessTokenDefaultMinutes": 1440,
+    "RefreshTokenFactor": 1.5,
+    "RoleTtlMinutes": {
+      "Customer": 1440,
+      "ServiceUser": 1440,
+      "DefaultExpiry": 1440
+    }
+  },
+
+  "PasswordPolicy": {
+    "EnforceFirstPasswordChange": true,
+    "EnforceDormancy": false,
+    "EnforceExpiry": true,
+    "ExpiryDays": 90,
+    "DormancyDays": 90,
+    "MaxFailedAttempts": 5,
+    "LockoutMinutes": 3,
+    "DisableExpiryForRoles": [ "Customer" ]
+  },
+
+  "TwoFactor": {
+    "Enabled": true,
+    "Method": "Totp"
+  },
+
+  "TradeRepository": {
+    "//SlaDays": "Trade Repository listing — days a transaction may sit (from Transaction_Date) before the grid's aging badge marks it overdue. Surfaced to the FE via GET /api/v1/Transaction/Stats.",
+    "SlaDays": 5
+  },
+
+  "Auth": {
+    "WhitelistedPaths": [
+      "/api/v1/Auth/Login",
+      "/api/v1/Auth/Refresh",
+      "/api/v1/Auth/ResetExpiredPassword",
+      "/api/v1/Health",
+      "/api/v1/Kyc/Case/Callback",
+      "/api/v1/updateTransactionStatusAPI",
+      "/api/updateTransactionStatusAPI",
+      "/api/v1/Diagnostics/OnboardingPayload"
+    ],
+    "RestrictConcurrentLogin": false,
+    "DeviceIdHeaderName": "X-Device-Id",
+    "RequireDeviceIdHeader": true,
+    "DeviceCheckExemptPaths": [
+      "/api/v1/Auth/Login",
+      "/api/v1/Auth/Refresh",
+      "/api/v1/Auth/ResetExpiredPassword",
+      "/api/v1/Health",
+      "/api/v1/Kyc/Case/Callback",
+      "/api/v1/updateTransactionStatusAPI",
+      "/api/updateTransactionStatusAPI",
+      "/api/v1/Diagnostics/OnboardingPayload"
+    ],
+    "BootstrapAdminRoles": [ "IT Admin" ]
+  },
+
+  "Integration": {
+    "CustomerMasterBaseUrl": "",
+    "FccmOnboardingUrl": "http://172.20.3.73:7001/InitiateOnboardingService/OB/Initiate",
+    "Onboarding": {
+      "_comment": "KYC -> FCCM onboarding submission (InitiateOnboardingService/OB/Initiate). Auth is HTTP Basic (Username/Password). The payload SHAPE and ALL its constants (CustomerType, Jurisdiction, BusinessDomain, etc.) are defined entirely in the mapping-profile file selected by MappingProfile (Mappings/onboarding/onboarding.{profile}.mapping.json) and are intentionally NOT duplicated here.",
+      "Username": "KYCADMIN",
+      "Password": "abc1234",
+      "_ApplicationIdFormat": "Pattern for the FCCM applicationId; {0} = customer code. 'CIF-{0}' -> 'CIF-<code>'. Use '{0}' to send the bare code.",
+      "ApplicationIdFormat": "CIF-{0}",
+      "_MappingProfile_note": "v2 = the newer InitiateOnboarding contract this environment uses. Its onboarding.v2.mapping.json root is exactly { requestUserId, applicationId, SyncAPIFlag, OnboardingCustomer } to match the verified working request. The OFSAA envelope fields (infodom / RequestID / PMFProcess / locale) were REMOVED from the v2 profile on 2026-07-06 because the live endpoint returns HTTP 400 ('extra property ... not according to the schema definition') when they are present at root. v1 is the legacy flat KYCRequestModel shape kept for backward-compat. Keep this on v2 for this environment.",
+      "MappingProfile": "v2",
+      "MappingDirectory": "Mappings/onboarding",
+      "MappingHotReload": false
+    },
+    "Diagnostics": {
+      "_comment": "Module-wise diagnostic logging — the new-stack equivalent of the legacy custom-DLL + NLog dedicated log files. 'Files' defines one dedicated daily-rolling file per area; each file's 'Level' controls how much it captures and 'Enabled' turns it on/off. Level is a Serilog level: 'Error'/'Fatal' = errors only, 'Warning' = warnings+errors, 'Information' = normal (API request/response + lifecycle), 'Debug'/'Verbose' = full detail (onboarding payloads, FCCM responses, every Oracle FCC_OB_RA poll, risk-param derivation). FILES: 'Application.UserManagement' = Auth/Users/Roles API calls; 'Application.Trade' = all other API calls (Transaction/KYC/Flags/Workflow/Reports/...) plus FCCM onboarding detail; 'BackgroundService' = hosted services (FccmCaseIdPoller + LogArchiver). Each Application.* file logs end-to-end API request+response bodies (sensitive endpoints redacted) and full exception inner-chains. RetentionDays: rolled files older than this are zipped by LogArchiverService into backlogs_<from>-<to>.zip (originals deleted); ArchiveScanIntervalHours controls how often it checks. LogDirectory is relative to the API content root unless absolute.",
+      "LogDirectory": "D:\\ICBC - Latest\\Logs",
+      "_LogDirectory_note": "Absolute path used here (dev). If left RELATIVE (e.g. \"Logs\") it resolves against the app content root = the published/deployed folder: published under IIS at C:\\inetpub\\wwwroot\\TradeCompliance\\ -> logs at C:\\inetpub\\wwwroot\\TradeCompliance\\Logs\\. RECOMMENDED for production: an ABSOLUTE path OUTSIDE the web-served folder (e.g. C:\\ProgramData\\ICBC\\TradeCompliance\\Logs or D:\\Logs\\TradeCompliance) so logs are not web-accessible and survive redeploys; grant the app-pool identity write access. Override per-environment via appsettings.Production.json.",
+      "RetentionDays": 30,
+      "ArchiveScanIntervalHours": 12,
+      "Files": {
+        "Application.UserManagement": {
+          "Enabled": true,
+          "Level": "Information"
+        },
+        "Application.Trade": {
+          "Enabled": true,
+          "Level": "Information"
+        },
+        "BackgroundService": {
+          "Enabled": true,
+          "Level": "Information"
+        },
+        "Api": {
+          "Enabled": true,
+          "Level": "Information"
+        }
+      }
+    },
+    "FccmOracleConnection": "User Id=ofsaafccm;Password=Oracle_1234;Data Source=(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=172.20.3.73)(PORT=1521))(CONNECT_DATA=(SID=ofsaadb)))",
+    "FccmOracleSchema": "",
+    "FccmCallbackSharedSecret": "",
+    "PollingInterval": "00:00:05",
+    "CaseIdTimeout": "00:05:00",
+    "HttpTimeout": "00:00:30",
+
+    "_FccmActionCodeStatusMap_comment": "FCCM action codes → APPLICATION_STATUS Visible_Value. The callback handler resolves the named status to a Lookup_Id via cross-tenant cascade against TmX_Lookup, so caller-tenant-specific ids (e.g. 3057/3058 for Tenant 245) work automatically. Defaults mirror the legacy updateTransactionStatusAPIController contract (30004/983 = Approve, 30003/984 = Reject). Other codes log + no-op (legacy 'send back to analyst' branch — no workflow command exists in the current scheme).",
+    "FccmActionCodeStatusMap": {
+      "30004": "APPROVED",
+      "30003": "REJECTED",
+      "983":   "APPROVED",
+      "984":   "REJECTED"
+    },
+
+    "Brains": {
+      "_comment": "BRAINS v2.0 QueryKycInfoServlet. Mode=Sandbox returns canned responses so UI sanity isn't blocked while localhost BRAINS is down; Program.cs blocks Sandbox in Production. Mirrors the production legacy INT call: APPLY_NO/TASK_NO are generated per request, REG_TYPE/REG_NO are sent empty (BRAINS keys on CUSTNO); only ZoneNo/AdjustType are configurable defaults.",
+      "Mode": "Sandbox",
+      "BaseUrl": "http://localhost:8080/icbc/brainsEU/servlet/QueryKycInfoServlet",
+      "ZoneNo": "6001",
+      "AdjustType": "1",
+      "SandboxResponseFile": "",
+      "SandboxForceStatus": ""
+    }
+  },
+
+  "PeriodicReview": {
+    "_comment": "Periodic Customer Review. Bound via IOptionsMonitor so frequency edits hot-reload without restart. Unit = Days|Weeks|Months|Years; Frequencies keyed by risk band (PEP/High/Medium/Low). Backfill of existing customers is a one-time SQL migration (database/migrations/2026_07_007_BackfillCustomerReviewSchedule.sql), not config.",
+    "Enabled": true,
+    "ScanInterval": "01:00:00",
+    "BatchSize": 50,
+    "ReviewerUserId": "F1E2D3C4-B5A6-47C8-9901-AABBCCDDEEFF",
+    "LeadTimeDays": 0,
+    "DefaultFrequency": { "Value": 3, "Unit": "Months" },
+    "Frequencies": {
+      "PEP":    { "Value": 1, "Unit": "Months" },
+      "High":   { "Value": 1, "Unit": "Months" },
+      "Medium": { "Value": 2, "Unit": "Months" },
+      "Low":    { "Value": 3, "Unit": "Months" }
+    }
+  },
+  "Workflow": {
+    "LicenseKey": "techlogix2019-dGVjaGxvZ2l4MjAxOTowNy4yNC4yMDIwOmV5Sk5ZWGhPZFcxaVpYSlBaa0ZqZEdsMmFYUnBaWE1pT2kweExDSk5ZWGhPZFcxaVpYSlBabFJ5WVc1emFYUnBiMjV6SWpvdE1Td2lUV0Y0VG5WdFltVnlUMlpUWTJobGJXVnpJam96TUN3aVRXRjRUblZ0WW1WeVQyWlVhSEpsWVdSeklqb3hNQ3dpVFdGNFRuVnRZbVZ5VDJaRGIyMXRZVzVrY3lJNkxURjk6ZTl3alVmbkM5a2JhUnFKNjVpMEsydTF6YlRXeUZkMEdta2pMbXU4eko3UlpSRG4yeVpOTHR0R2pvWjhXbUgyMzFub2Z1YmRhZUo2MnRsdzg4OUNkR3FmVEdhY0lob3dUR05KK1cxYjdBOEFBZi81dUplYkw4bWZLcXhkajIwK2cvNGdzclQzV3dtcVQ4ZllLSnRQdGh2L0F3ZnFaWUgwdHVDckVZZnl6SkJzPQ==",
+    "RuntimeId": "8D38DB8F-F3D5-4F26-A989-4FDD40F32D9D",
+    "InboxMaxPageSize": 100
+  },
+
+  "Reports": {
+    "_comment": "ChromiumCachePath — empty string means '%LOCALAPPDATA%\\FSI.Trade.Compliance\\PuppeteerCache'. Override to relocate the ~500 MB Chromium download when the LocalAppData drive is tight (env-var expansion supported).",
+    "ChromiumCachePath": "",
+    "_comment2": "ChromiumExecutablePath — OFFLINE servers (no internet) must set this to an installed Chromium/Edge so PDF generation skips the first-run download. Edge ships with Windows. Leave empty for dev/online (uses cache/download).",
+    "ChromiumExecutablePath": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
+  },
+
+  "Documents": {
+    "_comment": "BasePath — root folder for flag evidence + future generic-document uploads. Relative paths are resolved against ContentRootPath. Default 'ICBC_Data' matches the production deploy convention.",
+    "BasePath": "ICBC_Data"
+  },
+
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+
+  "AllowedHosts": "*"
+}

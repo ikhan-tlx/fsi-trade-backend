@@ -1,6 +1,7 @@
 using System.Text.Json;
 using FluentValidation.Results;
 using FSI.Trade.Compliance.Application.Common.Exceptions;
+using FSI.Trade.Compliance.Application.Common.Logging;
 using FSI.Trade.Compliance.Application.Contracts.Identity;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
 using FSI.Trade.Compliance.Application.Contracts.Workflow;
@@ -74,6 +75,10 @@ public class CreateTransactionCommandHandler
                      ?? throw new AuthenticationException("unauthenticated",
                             "Transaction create requires an authenticated caller.");
 
+        using var wf = WorkflowLog.Begin(_log, "Create Transaction",
+            ("UserId", userId), ("ProductId", req.productId), ("CompanyBranchId", req.companyBranchId));
+        wf.Step("Create requested — resolving branch, validating and persisting the transaction.");
+
         // 1. Resolve branch (validate caller is mapped to it OR the branch exists at all).
         //    Per Slice 6 Step 3 decision 2, the FE always passes companyBranchId — we
         //    just validate. Effective-date check on the user-branch mapping mirrors
@@ -110,6 +115,8 @@ public class CreateTransactionCommandHandler
                     $"Branch {req.companyBranchId} has no Branch_Code configured.")
             });
 
+        wf.Step($"Branch resolved — code '{branchCode}' (companyBranchId={req.companyBranchId}).");
+
         // 2. Resolve product → workflow scheme code (if any).
         var product = await _db.Products.AsNoTracking()
             .Where(p => p.ProductId == req.productId)
@@ -118,6 +125,8 @@ public class CreateTransactionCommandHandler
         if (product is null)
             throw new NotFoundException("product_not_found",
                 $"Product {req.productId} does not exist.");
+
+        wf.Step($"Product resolved — '{product.ProductName}' (workflow scheme: {product.WorkflowSchemeCode ?? "none"}).");
 
         // 2b. Sub-product is mandatory at create for products that have a
         // ProductTab selector (Trade). KYC / single-tab products have no
@@ -192,9 +201,12 @@ public class CreateTransactionCommandHandler
             }
         }
 
+        wf.Step("Validation passed (branch mapping, product, sub-product + active-KYC gate).");
+
         // 3. Generate server-side IDs.
         var processInstanceId = Guid.NewGuid();
         var transactionNumber = await _txnNumberGen.NextAsync(branchCode, ct);
+        wf.Step($"Generated transaction number {transactionNumber} and processInstanceId {processInstanceId}.");
 
         // 4. Build customer snapshot — riskScore is folded into udf_data as JSON
         //    so we don't need to add a new column. Legacy did the same thing.
@@ -240,7 +252,8 @@ public class CreateTransactionCommandHandler
             ProductId             = req.productId,
             UserId                = userId,
             ClientReferenceNumber = req.clientReferenceNumber,
-            CurrencyId            = req.currencyId,
+            // Currency (Currency_Lkp) is set from the UDF Currency field on the
+            // subsequent update save (TransactionAmountResolver), not the header.
             TransactionStatusLkp  = req.transactionStatusLkp ?? 555,         // legacy "Draft" default
             TransactionTypeLkp    = req.transactionTypeLkp,
             TransactionDate       = req.transactionDate ?? DateTime.UtcNow,
@@ -253,6 +266,7 @@ public class CreateTransactionCommandHandler
         };
         _db.Transactions.Add(tx);
         await _db.SaveChangesAsync(ct);                                      // generates Transaction_Id
+        wf.Step($"Transaction row persisted — TxId={tx.TransactionId}, Number={transactionNumber}, StatusLkp={tx.TransactionStatusLkp}.");
 
         var snapshot = new TransactionCustomerSnapshot
         {
@@ -269,37 +283,100 @@ public class CreateTransactionCommandHandler
         };
         _db.TransactionCustomerSnapshots.Add(snapshot);
         await _db.SaveChangesAsync(ct);
+        wf.Step($"Customer snapshot saved — {req.customer.customerName ?? "(unnamed)"} ({req.customer.customerCode ?? "no-code"})" +
+                (string.IsNullOrWhiteSpace(bandLabel) ? "." : $", risk band '{bandLabel}'."));
+
+        // 5b. Existing-customer KYC prefill — copy the customer's MOST RECENT KYC
+        //     transaction's UDF into this new transaction's detail so the wizard
+        //     form opens pre-filled with their prior KYC data. Workflow state is
+        //     deliberately NOT copied (a brand-new instance is created in step 6).
+        //     Best-effort: any failure leaves a blank form, never breaks create.
+        if (req.prefillFromLatestKyc && isKycProduct && !string.IsNullOrWhiteSpace(customerCode))
+        {
+            try
+            {
+                var priorTxnIds = await _db.TransactionCustomerSnapshots.AsNoTracking()
+                    .Where(s => s.CustomerCode == customerCode
+                             && s.TransactionId != null
+                             && s.TransactionId != tx.TransactionId)
+                    .Select(s => s.TransactionId!.Value)
+                    .Distinct()
+                    .ToListAsync(ct);
+
+                var latestKycTxnId = priorTxnIds.Count == 0 ? (int?)null : await _db.Transactions.AsNoTracking()
+                    .Where(t => priorTxnIds.Contains(t.TransactionId) && t.ProductId == req.productId)
+                    .OrderByDescending(t => t.TransactionDate ?? t.CreatedDate)
+                    .Select(t => (int?)t.TransactionId)
+                    .FirstOrDefaultAsync(ct);
+
+                var sourceUdf = latestKycTxnId is null ? null : await _db.TransactionDetails.AsNoTracking()
+                    .Where(d => d.TransactionId == latestKycTxnId.Value)
+                    .Select(d => d.UdfData)
+                    .FirstOrDefaultAsync(ct);
+
+                if (!string.IsNullOrWhiteSpace(sourceUdf))
+                {
+                    _db.TransactionDetails.Add(new TransactionDetail
+                    {
+                        TransactionId = tx.TransactionId,
+                        TenantId      = 1,
+                        UdfData       = sourceUdf,
+                        CreatedBy     = userId,
+                        CreatedDate   = DateTime.UtcNow
+                    });
+                    await _db.SaveChangesAsync(ct);
+                    _log.LogInformation(
+                        "KYC prefill: copied UDF from source KYC txn {SourceTxnId} into new txn {NewTxnId} for customer {CustomerCode}.",
+                        latestKycTxnId, tx.TransactionId, customerCode);
+                }
+                else
+                {
+                    _log.LogInformation(
+                        "KYC prefill requested for customer {CustomerCode} but no prior KYC UDF found; new form starts blank.",
+                        customerCode);
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex,
+                    "KYC prefill from latest KYC failed for customer {CustomerCode}; continuing with a blank form.",
+                    customerCode);
+            }
+        }
 
         // 6. Kick off workflow if the product has a scheme code. Sync — caller
         //    waits because the FE needs the workflow snapshot in the response.
         var schemeCode = product.WorkflowSchemeCode?.Trim();
         if (!string.IsNullOrWhiteSpace(schemeCode))
         {
+            wf.Step($"Triggering workflow — scheme '{schemeCode}', processInstanceId {processInstanceId}.");
             try
             {
-                await _engine.CreateInstanceAsync(
-                    schemeCode: schemeCode,
-                    processId:  processInstanceId,
-                    identityId: userId,
-                    parameters: new Dictionary<string, object?>
-                    {
-                        ["TransactionId"] = tx.TransactionId,
-                        ["ProductId"]     = req.productId,
-                        ["CreatorId"]     = userId
-                    },
-                    ct: ct);
+                await wf.ExternalAsync($"Workflow engine CreateInstance (scheme '{schemeCode}')", () =>
+                    _engine.CreateInstanceAsync(
+                        schemeCode: schemeCode,
+                        processId:  processInstanceId,
+                        identityId: userId,
+                        parameters: new Dictionary<string, object?>
+                        {
+                            ["TransactionId"] = tx.TransactionId,
+                            ["ProductId"]     = req.productId,
+                            ["CreatorId"]     = userId
+                        },
+                        ct: ct));
 
                 tx.IsWorkflowAttached = true;
                 tx.LastUpdatedBy      = userId;
                 tx.LastUpdatedDate    = DateTime.UtcNow;
                 await _db.SaveChangesAsync(ct);
 
-                _log.LogInformation(
-                    "Transaction {TransactionId} created with workflow {SchemeCode}, processInstanceId={ProcessInstanceId}.",
-                    tx.TransactionId, schemeCode, processInstanceId);
+                wf.Success($"Workflow triggered successfully — scheme '{schemeCode}', processInstanceId {processInstanceId} (IsWorkflowAttached=true).");
             }
             catch (Exception ex)
             {
+                wf.Failed("Workflow initialization",
+                    $"scheme '{schemeCode}', processInstanceId {processInstanceId} — {ex.Message}", ex);
+                wf.EndFailure("Workflow initialization", ex.Message);
                 _log.LogError(ex,
                     "Workflow init FAILED for transaction {TransactionId} (scheme '{SchemeCode}', processInstanceId {ProcessInstanceId}). " +
                     "The transaction row exists in DB with IsWorkflowAttached=false. Manual cleanup or re-attach required.",
@@ -309,10 +386,10 @@ public class CreateTransactionCommandHandler
         }
         else
         {
-            _log.LogInformation(
-                "Transaction {TransactionId} created without workflow — product {ProductId} has no WorkflowSchemeCode.",
-                tx.TransactionId, req.productId);
+            wf.Step($"No workflow scheme configured for product {req.productId} — created standalone (IsWorkflowAttached=false).");
         }
+
+        wf.EndSuccess($"TxId={tx.TransactionId} Number={tx.TransactionNumber} ProcessInstanceId={tx.ProcessInstanceId}.");
 
         // 7. Return the canonical detail shape — reuses our existing GET handler
         //    so the create response and the page-open response are byte-identical.

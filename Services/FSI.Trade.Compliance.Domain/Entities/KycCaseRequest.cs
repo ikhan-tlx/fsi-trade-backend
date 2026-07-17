@@ -33,6 +33,14 @@ public class KycCaseRequest
     /// <see cref="KycCaseStatus.RiskAssessed"/>. Feeds the FE lifecycle stepper.</summary>
     public DateTime? RiskAssessedAt  { get; set; }
 
+    /// <summary>Diagnostics — the exact onboarding request body last sent to FCCM.</summary>
+    public string?   FccmRequestPayload  { get; set; }
+
+    /// <summary>Diagnostics — append-only, timestamped trail of the FCCM exchange: the submit
+    /// HTTP status + body, then each poll's CASE_ID / RISK read outcome and any timeout. Lets
+    /// support see exactly what was sent and received to root-cause a stuck/failed case.</summary>
+    public string?   FccmResponsePayload { get; set; }
+
     public DateTime  LastUpdatedAt   { get; set; }
 }
 

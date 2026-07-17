@@ -45,6 +45,15 @@ public class CreateTransactionCommand : IRequest<TransactionDetailDto>
     /// </summary>
     public int?      subProductTabId       { get; set; }
 
+    /// <summary>
+    /// 2026-07-16 — Existing-customer KYC. When true (KYC product only), the
+    /// handler copies the customer's MOST RECENT KYC transaction's UDF into the
+    /// new transaction's detail so the wizard form starts pre-filled. Workflow
+    /// state is NOT copied — every create starts a brand-new workflow instance.
+    /// No-op for non-KYC products or when the customer has no prior KYC.
+    /// </summary>
+    public bool      prefillFromLatestKyc  { get; set; }
+
     public CreateCustomerInput customer { get; set; } = new();
 }
 

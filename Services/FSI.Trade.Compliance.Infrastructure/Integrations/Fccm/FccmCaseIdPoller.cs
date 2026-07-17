@@ -110,6 +110,7 @@ public class FccmCaseIdPoller : BackgroundService
                 row.Status        = KycCaseStatus.CaseCreated;
                 row.CaseCreatedAt = now;
                 row.LastUpdatedAt = now;
+                row.FccmResponsePayload = FccmExchangeLog.Append(row.FccmResponsePayload, $"POLL CASE_ID -> {caseId} (CaseCreated)");
                 _log.LogInformation("KycCaseRequest {Id}: CaseId provisioned ({CaseId}).", row.Id, caseId);
                 continue;
             }
@@ -119,6 +120,7 @@ public class FccmCaseIdPoller : BackgroundService
                 row.Status        = KycCaseStatus.Timeout;
                 row.ErrorDetail   = $"FCCM CASE_ID not provisioned within {_opt.CaseIdTimeout}.";
                 row.LastUpdatedAt = now;
+                row.FccmResponsePayload = FccmExchangeLog.Append(row.FccmResponsePayload, $"POLL CASE_ID -> null; TIMEOUT after {now - row.SubmittedAt} (no CASE_ID within {_opt.CaseIdTimeout})");
                 _log.LogWarning("KycCaseRequest {Id}: timeout — no CaseId after {Elapsed}.", row.Id, now - row.SubmittedAt);
             }
         }
@@ -142,6 +144,7 @@ public class FccmCaseIdPoller : BackgroundService
                 row.Status          = KycCaseStatus.RiskAssessed;
                 row.RiskAssessedAt  = now;
                 row.LastUpdatedAt   = now;
+                row.FccmResponsePayload = FccmExchangeLog.Append(row.FccmResponsePayload, $"POLL RISK -> {risk} (RiskAssessed)");
                 _log.LogInformation("KycCaseRequest {Id}: risk key {Risk} captured; flow complete.", row.Id, risk);
 
                 // Legacy parity: reconcile FCCM (TBML) vs BRAINS and write the

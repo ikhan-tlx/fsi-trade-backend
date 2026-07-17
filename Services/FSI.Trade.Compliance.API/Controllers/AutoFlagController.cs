@@ -35,8 +35,8 @@ public class AutoFlagController : ControllerBase
 
     [HttpGet]
     [RequiresPrivilege("AutoFlags.View")]
-    public async Task<IActionResult> List(CancellationToken ct)
-        => Ok(ResponseViewModel<List<AutoFlagSummaryDto>>.Ok(await _mediator.Send(new ListAutoFlagsQuery(), ct)));
+    public async Task<IActionResult> List([FromQuery] ListAutoFlagsQuery query, CancellationToken ct)
+        => Ok(ResponseViewModel<PagedResult<AutoFlagSummaryDto>>.Ok(await _mediator.Send(query, ct)));
 
     [HttpGet("Operands")]
     [RequiresPrivilege("AutoFlags.View")]

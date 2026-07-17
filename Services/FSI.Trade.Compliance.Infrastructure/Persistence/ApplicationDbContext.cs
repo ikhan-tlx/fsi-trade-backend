@@ -28,6 +28,9 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public DbSet<AppConfiguration>     AppConfigurations      => Set<AppConfiguration>();
     public DbSet<KycCaseRequest>       KycCaseRequests        => Set<KycCaseRequest>();
     public DbSet<CstmBrains>           CstmBrains             => Set<CstmBrains>();
+    public DbSet<CustomerReviewSchedule> CustomerReviewSchedules => Set<CustomerReviewSchedule>();
+    public DbSet<CustomerReviewHistory>  CustomerReviewHistories => Set<CustomerReviewHistory>();
+    public DbSet<CustomerInsightDaily>   CustomerInsightDailies  => Set<CustomerInsightDaily>();
     public DbSet<UserDevice>           UserDevices          => Set<UserDevice>();
     public DbSet<LoginAuditEntry>      LoginAudit           => Set<LoginAuditEntry>();
     public DbSet<Product>              Products             => Set<Product>();
@@ -82,6 +85,9 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public DbSet<ReferenceListValue>      ReferenceListValues      => Set<ReferenceListValue>();
     public DbSet<SanctionedCountry>       SanctionedCountries      => Set<SanctionedCountry>();
     public DbSet<ScreeningGood>           ScreeningGoods           => Set<ScreeningGood>();
+    public DbSet<ReferenceType>           ReferenceTypes           => Set<ReferenceType>();
+    public DbSet<ReferenceValue>          ReferenceValues          => Set<ReferenceValue>();
+    public DbSet<ReferenceValueTypeMap>   ReferenceValueTypeMaps   => Set<ReferenceValueTypeMap>();
     public DbSet<AutoFlagJob>             AutoFlagJobs             => Set<AutoFlagJob>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)

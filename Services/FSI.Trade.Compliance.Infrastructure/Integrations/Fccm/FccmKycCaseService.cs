@@ -1,9 +1,12 @@
 using System.Text.Json.Nodes;
 using FSI.Trade.Compliance.Application.Common.Exceptions;
+using FSI.Trade.Compliance.Application.Common.Logging;
 using FSI.Trade.Compliance.Application.Common.Options;
 using FSI.Trade.Compliance.Application.Contracts.Identity;
 using FSI.Trade.Compliance.Application.Contracts.Integrations;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
+using FSI.Trade.Compliance.Application.Contracts.Kyc;
+using FSI.Trade.Compliance.Application.Features.Dashboard.Summary;
 using FSI.Trade.Compliance.Domain.Entities;
 using FSI.Trade.Compliance.Domain.Entities.Customer;
 using FSI.Trade.Compliance.Infrastructure.Integrations.Fccm.Mapping;
@@ -31,6 +34,7 @@ public class FccmKycCaseService : IKycCaseService
     private readonly KycOnboardingFieldResolver _resolver;
     private readonly IOnboardingMappingProvider _mappingProvider;
     private readonly OnboardingPayloadMapper    _mapper;
+    private readonly INextReviewDateCalculator  _nextReview;
     private readonly ILogger<FccmKycCaseService> _log;
 
     public FccmKycCaseService(
@@ -41,6 +45,7 @@ public class FccmKycCaseService : IKycCaseService
         KycOnboardingFieldResolver    resolver,
         IOnboardingMappingProvider    mappingProvider,
         OnboardingPayloadMapper       mapper,
+        INextReviewDateCalculator     nextReview,
         ILogger<FccmKycCaseService>   log)
     {
         _db          = db;
@@ -51,6 +56,7 @@ public class FccmKycCaseService : IKycCaseService
         _resolver    = resolver;
         _mappingProvider = mappingProvider;
         _mapper      = mapper;
+        _nextReview  = nextReview;
         _log         = log;
     }
 
@@ -104,6 +110,7 @@ public class FccmKycCaseService : IKycCaseService
         entity.CaseCreatedAt   = null;
         entity.RiskAssessedAt  = null;
         entity.LastPolledAt    = null;
+        entity.FccmResponsePayload = FccmExchangeLog.Append(entity.FccmResponsePayload, "---- RETRY (resubmit) ----");
         entity.LastUpdatedAt   = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
 
@@ -119,6 +126,10 @@ public class FccmKycCaseService : IKycCaseService
     /// </summary>
     private async Task<KycCaseSubmissionResult> FireOnboardingAsync(KycCaseRequest entity, CancellationToken ct)
     {
+        using var wf = WorkflowLog.Begin(_log, "KYC FCCM Onboarding",
+            ("RequestId", entity.Id), ("TransactionId", entity.TransactionId), ("CustomerId", entity.CustomerId));
+        wf.Step("Onboarding submit started — resolving customer snapshot + building payload.");
+
         var actor = _current.UserName ?? _current.UserId ?? "unknown";
         var req   = new KycCaseSubmissionRequest { CustomerId = entity.CustomerId, TransactionId = entity.TransactionId };
 
@@ -242,15 +253,30 @@ public class FccmKycCaseService : IKycCaseService
             // Switching shapes (v1 / v2 / any client profile) is a config change, not a
             // code edit. The hardcoded builder above remains only as an internal fallback.
             var mapped = await BuildMappedPayloadAsync(req, snap, applicantId, actor, entity.Id, ct);
-            (upstreamRequestId, submitError) = await _http.SubmitCaseAsync(mapped, req.CustomerId, ct);
+            wf.Step("Submitting onboarding case to FCCM InitiateOnboardingService.");
+            var submit = await wf.ExternalAsync("FCCM InitiateOnboarding (HTTP POST)",
+                () => _http.SubmitCaseAsync(mapped, req.CustomerId, ct));
+            wf.Detail($"FCCM responded: HTTP {(submit.StatusCode?.ToString() ?? "n/a")}.");
+
+            // Diagnostics — persist EXACTLY what we sent and what FCCM returned.
+            entity.FccmRequestPayload  = submit.RequestBody;
+            entity.FccmResponsePayload = FccmExchangeLog.Append(entity.FccmResponsePayload,
+                submit.StatusCode is int sc
+                    ? $"SUBMIT HTTP {sc}: {submit.ResponseBody}"
+                    : $"SUBMIT: {(submit.Error ?? submit.ResponseBody ?? "(no response)")}");
+
+            upstreamRequestId = submit.RequestId;
+            submitError       = submit.Error;
         }
         catch (Exception ex)
         {
             _log.LogError(ex, "FCCM submit threw for KycCaseRequest {RequestId}.", entity.Id);
             entity.Status        = KycCaseStatus.Failed;
             entity.ErrorDetail   = $"Submit threw: {ex.Message}";
+            entity.FccmResponsePayload = FccmExchangeLog.Append(entity.FccmResponsePayload, $"SUBMIT threw: {ex.Message}");
             entity.LastUpdatedAt = DateTime.UtcNow;
             await _db.SaveChangesAsync(ct);
+            wf.EndFailure("FCCM InitiateOnboarding", $"Submit threw: {ex.Message}");
             return new KycCaseSubmissionResult { RequestId = entity.Id, Status = entity.Status };
         }
 
@@ -259,15 +285,24 @@ public class FccmKycCaseService : IKycCaseService
             entity.Status        = KycCaseStatus.Failed;
             entity.ErrorDetail   = submitError ?? "Upstream returned no requestId.";
             entity.LastUpdatedAt = DateTime.UtcNow;
+            await _db.SaveChangesAsync(ct);
+
+            // No upstream requestId => FCCM rejected the submit (e.g. HTTP 401
+            // expired/invalid credentials, or a 400 schema rejection). This is the
+            // exact "case not created" gap — now it terminates the trail loudly.
+            wf.Failed("FCCM onboarding submit", entity.ErrorDetail!);
+            wf.EndFailure("FCCM InitiateOnboarding", entity.ErrorDetail!);
+            return new KycCaseSubmissionResult { RequestId = entity.Id, Status = entity.Status };
         }
-        else
-        {
-            entity.FccmRequestId = upstreamRequestId;
-            entity.Status        = KycCaseStatus.AwaitingCaseId;
-            entity.LastUpdatedAt = DateTime.UtcNow;
-        }
+
+        entity.FccmRequestId = upstreamRequestId;
+        entity.Status        = KycCaseStatus.AwaitingCaseId;
+        entity.LastUpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
 
+        wf.Success($"FCCM accepted the onboarding — upstream RequestId={upstreamRequestId}.");
+        wf.EndSuccess($"RequestId={entity.Id} Status=AwaitingCaseId FccmRequestId={upstreamRequestId} " +
+                      "(background poller will resolve the FCCM case id).");
         return new KycCaseSubmissionResult { RequestId = entity.Id, Status = entity.Status };
     }
 
@@ -358,6 +393,87 @@ public class FccmKycCaseService : IKycCaseService
 
         await ApplyToKycCaseAsync(payload, caseRow, ct);
         await ApplyToTradeTransactionAsync(payload, caseRow, ct);
+        await UpsertReviewScheduleAsync(payload, caseRow, ct);
+    }
+
+    // -------------------------------------------------------------------
+    // Periodic Customer Review — upsert the per-customer review schedule on
+    // ANY terminal KYC decision (approve 30004 / reject 30003), using the
+    // assessed reconciled risk. Best-effort: never fails the callback.
+    // -------------------------------------------------------------------
+    private async Task UpsertReviewScheduleAsync(KycCaseCallback payload, KycCaseRequest? caseRow, CancellationToken ct)
+    {
+        var actionCode = (payload.ActionCode ?? "").Trim();
+        if (actionCode != "30004" && actionCode != "30003") return;   // only terminal decisions
+        if (caseRow is null || string.IsNullOrWhiteSpace(caseRow.CustomerId)) return;
+
+        try
+        {
+            var now          = DateTime.UtcNow;
+            var tenantId     = caseRow.TenantId;
+            var customerCode = caseRow.CustomerId;
+
+            // Assessed risk: prefer the reconciled Cstm_Brains.Final_Score for the
+            // transaction, else the KYC row's Risk_Category_Key.
+            string? riskRaw = caseRow.RiskCategoryKey;
+            if (caseRow.TransactionId is long txnId)
+            {
+                var finalScore = await _db.CstmBrains.AsNoTracking()
+                    .Where(c => c.TransactionId == (int)txnId)
+                    .Select(c => c.FinalScore)
+                    .FirstOrDefaultAsync(ct);
+                if (!string.IsNullOrWhiteSpace(finalScore)) riskRaw = finalScore;
+            }
+
+            var band      = RiskBandClassifier.Classify(riskRaw);
+            var bandLabel = band switch
+            {
+                RiskBand.Pep => "PEP", RiskBand.High => "High",
+                RiskBand.Medium => "Medium", RiskBand.Low => "Low", _ => null
+            };
+            int? riskScore = band switch
+            {
+                RiskBand.Pep => 0, RiskBand.High => 1,
+                RiskBand.Medium => 2, RiskBand.Low => 3, _ => (int?)null
+            };
+
+            var next = _nextReview.Compute(bandLabel, now);
+
+            var sched = await _db.CustomerReviewSchedules
+                .FirstOrDefaultAsync(s => s.TenantId == tenantId && s.CustomerCode == customerCode, ct);
+            if (sched is null)
+            {
+                sched = new CustomerReviewSchedule
+                {
+                    TenantId     = tenantId,
+                    CustomerCode = customerCode,
+                    CreatedBy    = "PERIODIC REVIEWER",
+                    CreatedDate  = now,
+                };
+                _db.CustomerReviewSchedules.Add(sched);
+            }
+
+            sched.CurrentRiskCategory  = bandLabel;
+            sched.CurrentRiskScore     = riskScore;
+            sched.LastReviewedDate     = now;
+            sched.LastKycTransactionId = caseRow.TransactionId is long t ? (int?)t : null;
+            sched.NextReviewDate       = next;
+            sched.Status               = ReviewScheduleStatus.Scheduled;
+            sched.LastRemark           = actionCode == "30004"
+                ? "Scheduled after KYC approval" : "Scheduled after KYC rejection";
+            sched.LastUpdatedBy        = "PERIODIC REVIEWER";
+            sched.LastUpdatedDate      = now;
+            await _db.SaveChangesAsync(ct);
+
+            _log.LogInformation(
+                "Periodic review schedule upserted for customer {Cust}: risk={Risk} nextReview={Next:o} (action {Action}).",
+                customerCode, bandLabel, next, actionCode);
+        }
+        catch (Exception ex)
+        {
+            // Best-effort: a schedule-upsert failure must not fail the FCCM callback.
+            _log.LogError(ex, "Periodic review schedule upsert failed for customer {Cust}.", caseRow.CustomerId);
+        }
     }
 
     // -------------------------------------------------------------------

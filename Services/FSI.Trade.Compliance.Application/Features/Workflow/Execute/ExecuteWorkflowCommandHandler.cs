@@ -1,4 +1,5 @@
 using FSI.Trade.Compliance.Application.Common.Exceptions;
+using FSI.Trade.Compliance.Application.Common.Logging;
 using FSI.Trade.Compliance.Application.Contracts.Identity;
 using FSI.Trade.Compliance.Application.Contracts.Integrations;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
@@ -66,14 +67,20 @@ public class ExecuteWorkflowCommandHandler : IRequestHandler<ExecuteWorkflowComm
         var userId = _current.UserId
                      ?? throw new AuthenticationException("unauthenticated", "Workflow execution requires an authenticated caller.");
 
-        var result = await _engine.ExecuteCommandAsync(
+        using var wf = WorkflowLog.Begin(_logger, "Workflow Command",
+            ("ProcessId", req.processId), ("Command", req.command), ("UserId", userId));
+        wf.Step($"Executing workflow command '{req.command}' on the engine.");
+
+        var result = await wf.ExternalAsync("OptimaJet ExecuteCommand", () => _engine.ExecuteCommandAsync(
             processId:     req.processId,
             identityId:    userId,
             command:       req.command,
             comments:      req.comments,
             parameters:    req.parameters,
             identityLabel: _current.UserName ?? userId,
-            ct:            ct);
+            ct:            ct));
+
+        wf.Step($"Engine result: executed={result.WasExecuted}, finalised={result.IsFinalised}, state='{result.CurrentState}'.");
 
         // Post-execute hook — Slice 9. Fires the FCCM case insertion when
         // the command finalised the workflow, EXCEPT when it finalised into
@@ -85,10 +92,12 @@ public class ExecuteWorkflowCommandHandler : IRequestHandler<ExecuteWorkflowComm
 
         if (result.IsFinalised && result.WasExecuted && !finalisedToDiscarded)
         {
+            wf.Step("Workflow finalised — firing FCCM case insertion (post-execute hook).");
             await TryFireCaseInsertionAsync(req.processId, ct);
         }
         else if (result.IsFinalised && result.WasExecuted && finalisedToDiscarded)
         {
+            wf.Step("Workflow finalised to DISCARDED — skipping FCCM case insertion (legacy parity).");
             _logger.LogInformation(
                 "Workflow finalised to DISCARDED for ProcessId={ProcessId} — skipping FCCM case insertion (legacy parity).",
                 req.processId);
@@ -108,6 +117,7 @@ public class ExecuteWorkflowCommandHandler : IRequestHandler<ExecuteWorkflowComm
         if (result.WasExecuted)
             await TryPersistWorkflowRemarkAsync(req, userId, DateTime.UtcNow, ct);
 
+        wf.EndSuccess($"Command='{req.command}' executed={result.WasExecuted} finalised={result.IsFinalised} state='{result.CurrentState}'.");
         return result;
     }
 

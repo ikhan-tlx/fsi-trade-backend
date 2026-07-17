@@ -28,6 +28,8 @@ public class KycCaseRequestConfiguration : IEntityTypeConfiguration<KycCaseReque
         b.Property(x => x.CaseCreatedAt)   .HasColumnName("Case_Created_At");
         b.Property(x => x.RiskAssessedAt)  .HasColumnName("Risk_Assessed_At");
         b.Property(x => x.LastUpdatedAt)   .HasColumnName("Last_Updated_At");
+        b.Property(x => x.FccmRequestPayload) .HasColumnName("Fccm_Request_Payload");   // nvarchar(max)
+        b.Property(x => x.FccmResponsePayload).HasColumnName("Fccm_Response_Payload");  // nvarchar(max)
 
         b.HasIndex(x => x.Status);
         b.HasIndex(x => new { x.CustomerId, x.SubmittedAt });

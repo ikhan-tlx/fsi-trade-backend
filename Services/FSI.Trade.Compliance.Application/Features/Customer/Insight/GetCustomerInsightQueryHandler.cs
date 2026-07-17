@@ -49,6 +49,19 @@ public class GetCustomerInsightQueryHandler
         dto.onboardedDate    = snaps.Min(x => x.CreatedDate);
         dto.lastActivityDate = snaps.Max(x => x.LastUpdatedDate ?? x.CreatedDate);
 
+        // Periodic Customer Review — schedule-backed next-review-date + risk band (same source
+        // the transaction Customer tab reads, so both views stay consistent).
+        var sched = await _db.CustomerReviewSchedules.AsNoTracking()
+            .Where(s => s.TenantId == tenantId && s.CustomerCode == code)
+            .Select(s => new { s.NextReviewDate, s.CurrentRiskCategory, s.Status })
+            .FirstOrDefaultAsync(ct);
+        if (sched is not null)
+        {
+            dto.nextReviewDate = sched.NextReviewDate;
+            dto.riskCategory   = sched.CurrentRiskCategory;
+            dto.reviewStatus   = sched.Status;
+        }
+
         var txnIds = snaps.Where(s => s.TransactionId.HasValue)
                           .Select(s => s.TransactionId!.Value).Distinct().ToList();
         if (txnIds.Count == 0) return dto;

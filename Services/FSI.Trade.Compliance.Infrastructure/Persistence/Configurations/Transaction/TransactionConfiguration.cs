@@ -17,7 +17,8 @@ public class TransactionConfiguration : IEntityTypeConfiguration<Domain.Entities
         b.Property(x => x.ProductId)             .HasColumnName("Product_Id");
         b.Property(x => x.ClientReferenceNumber) .HasColumnName("Client_Reference_Number").HasMaxLength(100);
         b.Property(x => x.UserId)                .HasColumnName("User_Id").HasMaxLength(50);
-        b.Property(x => x.CurrencyId)            .HasColumnName("Currency_Id");
+        b.Property(x => x.CurrencyLkp)           .HasColumnName("Currency_Lkp");
+        b.Property(x => x.TransactionAmount)     .HasColumnName("Transaction_Amount").HasColumnType("decimal(18,2)");
         b.Property(x => x.TransactionStatusLkp)  .HasColumnName("Transaction_Status_Lkp");
         b.Property(x => x.TransactionNumber)     .HasColumnName("Transaction_Number").HasMaxLength(100);
         b.Property(x => x.ProcessInstanceId)     .HasColumnName("Process_Instance_Id");

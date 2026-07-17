@@ -80,4 +80,31 @@ public sealed class RuleDataProvider : IRuleDataProvider
             .Select(f => f.FieldName!)
             .Distinct()
             .ToListAsync(ct);
+
+    public async Task<string?> GetLatestKycUdfAsync(string customerCode, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(customerCode)) return null;
+
+        // KYC-product ids (config-driven — product whose name mentions KYC).
+        var kycProductIds = await _db.Products.AsNoTracking()
+            .Where(p => p.ProductName != null && p.ProductName.Contains("KYC"))
+            .Select(p => p.ProductId).ToListAsync(ct);
+        if (kycProductIds.Count == 0) return null;
+
+        var txnIds = await _db.TransactionCustomerSnapshots.AsNoTracking()
+            .Where(s => s.CustomerCode == customerCode && s.TransactionId != null)
+            .Select(s => s.TransactionId!.Value).Distinct().ToListAsync(ct);
+        if (txnIds.Count == 0) return null;
+
+        // The customer's most recent KYC transaction.
+        var latestId = await _db.Transactions.AsNoTracking()
+            .Where(t => txnIds.Contains(t.TransactionId) && kycProductIds.Contains(t.ProductId))
+            .OrderByDescending(t => t.TransactionDate ?? t.CreatedDate)
+            .Select(t => (int?)t.TransactionId).FirstOrDefaultAsync(ct);
+        if (latestId is null) return null;
+
+        return await _db.TransactionDetails.AsNoTracking()
+            .Where(d => d.TransactionId == latestId.Value)
+            .Select(d => d.UdfData).FirstOrDefaultAsync(ct);
+    }
 }

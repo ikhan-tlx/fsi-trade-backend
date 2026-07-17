@@ -20,6 +20,9 @@ public class CustomerInsightDto
     public int       totalTransactions { get; set; }
     public DateTime? onboardedDate     { get; set; }
     public DateTime? lastActivityDate  { get; set; }
+    public DateTime? nextReviewDate    { get; set; }   // Periodic Customer Review (schedule-backed)
+    public string?   riskCategory      { get; set; }   // current band from the review schedule
+    public string?   reviewStatus      { get; set; }   // schedule status (Scheduled/InReview/Blocked/...)
 
     public List<TimeBucketDto> transactionsOverTime { get; set; } = new();
     public List<NamedCountDto> productMix           { get; set; } = new();

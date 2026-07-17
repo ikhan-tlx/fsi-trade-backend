@@ -96,7 +96,7 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
         if (tx is null) return hits;
         var txnDate = tx.TransactionDate ?? tx.CreatedDate;   // base for "txn" relative dates
 
-        var udf = await LoadUdfAsync(transactionId, ct);
+        var udf = await MergeKycUdfAsync(transactionId, await LoadUdfAsync(transactionId, ct), ct);
         var autoTypeId = await ResolveAutoFlagTypeIdAsync(ct);
         if (autoTypeId is null) return hits;
 
@@ -247,7 +247,7 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
         var perMatch = await _db.FlagCatalogues.AsNoTracking()
             .Where(f => f.FlagId == flagId).Select(f => f.RaisePerMatch).FirstOrDefaultAsync(ct);
 
-        var udf   = await LoadUdfAsync(transactionId, ct);
+        var udf   = await MergeKycUdfAsync(transactionId, await LoadUdfAsync(transactionId, ct), ct);
         var rules = await _db.FlagRules.AsNoTracking()
             .Where(r => r.FlagId == flagId && r.ActiveFlag)
             .ToListAsync(ct);
@@ -456,7 +456,7 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
         }
     }
 
-    // ---- reference-list membership (existing REPO_* lists + custom lists) ----
+    // ---- reference-list membership (normalized TmX_Reference_Type/_Value/_Map) ----
     /// <summary>Returns EVERY candidate value that is a member of the list (so per-match
     /// flags can fan out one row per matching value). Empty when none match.</summary>
     private List<string> AllListMatches(string listCode, List<string> candidates)
@@ -464,31 +464,19 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
         if (candidates.Count == 0 || string.IsNullOrWhiteSpace(listCode)) return new List<string>();
         var code = listCode.Trim().ToUpperInvariant();
 
-        List<string> listValues;
-        if (IsCountryList(code))
-        {
-            listValues = _db.SanctionedCountries.AsNoTracking()
-                .Where(c => candidates.Contains(c.IsoCountryCode)
-                         || candidates.Contains(c.Iso3CountryCode)
-                         || candidates.Contains(c.CountryName))
-                .Select(c => c.IsoCountryCode)
-                .ToList();
-        }
-        else if (IsGoodsList(code))
-        {
-            listValues = _db.ScreeningGoods.AsNoTracking()
-                .Where(g => candidates.Contains(g.GoodCode))
-                .Select(g => g.GoodCode)
-                .ToList();
-        }
-        else
-        {
-            // Custom reference list (TmX_Reference_List / _Value).
-            listValues = (from rl in _db.ReferenceLists.AsNoTracking()
-                          join rv in _db.ReferenceListValues.AsNoTracking() on rl.ReferenceListId equals rv.ReferenceListId
-                          where rl.ActiveFlag && rv.ActiveFlag && rl.ListCode == listCode && candidates.Contains(rv.Value)
-                          select rv.Value).ToList();
-        }
+        // Reference matching is FULLY DYNAMIC and type-agnostic: every reference list —
+        // country, goods, port, or any custom category — is resolved the same way,
+        // through the normalized TmX_Reference_Type/_Value/_Map model, keyed only by the
+        // rule's code (== TmX_Reference_Type.Type_Code). Match is by Code == the lookup
+        // Hidden_Value (design D1-a); ISO3 / synonyms / risk are Udf_Data, not matched.
+        // There are no list- or domain-specific branches: adding a new category is pure
+        // data (a new type + values), never code. An unknown code resolves to no members.
+        var listValues = (from ty in _db.ReferenceTypes.AsNoTracking()
+                          join m in _db.ReferenceValueTypeMaps.AsNoTracking() on ty.ReferenceTypeId equals m.ReferenceTypeId
+                          join v in _db.ReferenceValues.AsNoTracking() on m.ReferenceValueId equals v.ReferenceValueId
+                          where ty.TypeCode == code && ty.ActiveFlag && m.ActiveFlag && v.ActiveFlag
+                                && candidates.Contains(v.Code)
+                          select v.Code).ToList();
 
         // Prefer the candidate string (what the transaction carried) when it equals
         // the list's stored value case-insensitively; otherwise fall back to the list value.
@@ -500,14 +488,6 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
         }
         return result;
     }
-
-    private static bool IsCountryList(string code) =>
-        code is "SANCTIONED_COUNTRIES" or "HIGH_RISK_COUNTRIES" or "HIGH_RISK_COUNTRY"
-             or "COUNTRY_SANCTIONS" or "REPO_SANCTIONED_COUNTRIES";
-
-    private static bool IsGoodsList(string code) =>
-        code is "SCREENING_GOODS" or "HIGH_RISK_GOODS" or "HS_SCREENING"
-             or "REPO_SCREENING_GOODS";
 
     // ---- operand resolution (Trade/Transaction udf field → candidate codes) ----
     private List<string> ResolveCandidates(string? source, string? fieldCode, IReadOnlyDictionary<string, List<string>> udf)
@@ -582,6 +562,27 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
             .Select(d => d.UdfData)
             .FirstOrDefaultAsync(ct);
         return FlattenUdf(json);
+    }
+
+    /// <summary>Overlay the customer's LATEST KYC record's UDF onto the transaction's own
+    /// UDF, so a rule can compare a KYC operand (e.g. declared Line of Business) against a
+    /// trade operand (e.g. Derived LOB) in the same evaluation (design O-2, option B).
+    /// Trade fields win on any code collision; KYC-only fields (LineOfBus) are added.
+    /// No KYC record → the transaction UDF is returned unchanged.</summary>
+    private async Task<IReadOnlyDictionary<string, List<string>>> MergeKycUdfAsync(
+        int transactionId, IReadOnlyDictionary<string, List<string>> txnUdf, CancellationToken ct)
+    {
+        var customerCode = await _data.ResolveCustomerCodeAsync(transactionId, ct);
+        if (string.IsNullOrWhiteSpace(customerCode)) return txnUdf;
+        var kycJson = await _data.GetLatestKycUdfAsync(customerCode!, ct);
+        if (string.IsNullOrWhiteSpace(kycJson)) return txnUdf;
+        var kycMap = FlattenUdf(kycJson);
+        if (kycMap.Count == 0) return txnUdf;
+
+        var merged = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in txnUdf) merged[kv.Key] = kv.Value;
+        foreach (var kv in kycMap) if (!merged.ContainsKey(kv.Key)) merged[kv.Key] = kv.Value;
+        return merged;
     }
 
     /// <summary>Flatten a (possibly section-nested) UDF JSON object into field→values.
