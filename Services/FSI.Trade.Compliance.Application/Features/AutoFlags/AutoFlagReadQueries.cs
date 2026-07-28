@@ -221,7 +221,14 @@ public class ListAutoFlagOperandsQueryHandler : IRequestHandler<ListAutoFlagOper
         // ESI checkpoints use the DropdownQuestion type — expose them as Dropdown operands
         // (code dataType + value-bound RHS) so rules can be authored against them.
         var dropdownQuestion = T("DropdownQuestion");
-        var allowed = new HashSet<int>(new[] { dropdown, searchable, amount, number, datetime, timestamp, dropdownQuestion }.Where(x => x != null).Select(x => x!.Value));
+        // Free-text field types (Text / Textarea / AlphaNumeric) → dataType "text". They
+        // carry a literal string (no Field_Lookup_Type), so the builder offers the text
+        // operators — is equal to (exact, case-insensitive), is not equal to, and contains
+        // (LIKE / substring). The evaluator already computes these for literal operands
+        // (StaticValue: Equals = OrdinalIgnoreCase match, Contains = case-insensitive
+        // substring, NotEquals = its negation), so no evaluator change is needed.
+        var text = T("Text"); var textarea = T("Textarea"); var alphanumeric = T("AlphaNumeric");
+        var allowed = new HashSet<int>(new[] { dropdown, searchable, amount, number, datetime, timestamp, dropdownQuestion, text, textarea, alphanumeric }.Where(x => x != null).Select(x => x!.Value));
 
         var rows = await _db.TenantFieldSetups.AsNoTracking()
             .Where(f => f.IsActive && f.ProductId != null && f.TabId != null
@@ -229,13 +236,68 @@ public class ListAutoFlagOperandsQueryHandler : IRequestHandler<ListAutoFlagOper
             .Select(f => new { f.TenantFieldSetupId, f.ParentTenantFieldSetupId, f.ProductId, f.TabId, f.FieldSequence, f.FieldTypeLkp, f.FieldName, f.FieldLabel, f.LocaleFieldLabel, f.FieldTableName, f.FieldLookupType })
             .ToListAsync(ct);
 
+        // Restrict the catalogue to REAL, selectable sub-products. The trade wizard's
+        // "Select <product> sub-type" step is built from the sub-product SELECTOR fields
+        // (Field_Lookup_Type = "ProductTab"); each selector's Udf_Data carries {"TabId":N}
+        // naming the destination sub-product tab. So the authoritative set of valid tabs is
+        // exactly those destination TabIds. Fields living under any OTHER tab (legacy /
+        // non-selectable tabs such as "… - Local", WEBOC, "Letter Of Guarantee",
+        // "… Red Flags", "FCCM Information …") are not author-facing sub-products and must
+        // not appear as operands. The selector's own FieldLabel is also the wizard's display
+        // name (it can differ from Tab.Tab_Name, e.g. "Import Drawing" vs "Import Drawings"),
+        // so we mirror it too. Products without a sub-type selector (e.g. KYC) are untouched.
+        static int? ParseUdfTabId(string? udf)
+        {
+            if (string.IsNullOrWhiteSpace(udf)) return null;
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(udf);
+                if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object) return null;
+                foreach (var key in new[] { "TabId", "tabId", "tab_id" })
+                    if (doc.RootElement.TryGetProperty(key, out var el))
+                    {
+                        if (el.ValueKind == System.Text.Json.JsonValueKind.Number && el.TryGetInt32(out var n)) return n;
+                        if (el.ValueKind == System.Text.Json.JsonValueKind.String && int.TryParse(el.GetString(), out var n2)) return n2;
+                    }
+            }
+            catch { /* malformed udf → ignore */ }
+            return null;
+        }
+
+        var selectorRows = await _db.TenantFieldSetups.AsNoTracking()
+            .Where(f => f.FieldLookupType == "ProductTab" && f.UdfData != null && f.ProductId != null
+                        && (req.ProductId == null || f.ProductId == req.ProductId))
+            .Select(f => new { f.ProductId, f.UdfData, f.FieldLabel, f.LocaleFieldLabel })
+            .ToListAsync(ct);
+        // productId -> (destination TabId -> wizard label)
+        var subTypeByProduct = new Dictionary<int, Dictionary<int, string>>();
+        foreach (var s in selectorRows)
+        {
+            if (ParseUdfTabId(s.UdfData) is not int dt) continue;
+            if (!subTypeByProduct.TryGetValue(s.ProductId!.Value, out var map))
+            { map = new Dictionary<int, string>(); subTypeByProduct[s.ProductId.Value] = map; }
+            var lbl = (IsHuman(s.LocaleFieldLabel) ? s.LocaleFieldLabel
+                     : IsHuman(s.FieldLabel) ? s.FieldLabel : null)?.Trim();
+            map[dt] = lbl ?? "";
+        }
+        if (subTypeByProduct.Count > 0)
+            rows = rows.Where(r => !subTypeByProduct.TryGetValue(r.ProductId!.Value, out var valid)
+                                   || valid.ContainsKey(r.TabId!.Value)).ToList();
+
         // Multi-value detection: a field is multi-value when it is a COLUMN inside a
-        // repeating grid/table — i.e. its parent is a grid root. Grid roots carry the
-        // table/grid field types (Field_Type_Lkp 27/40, matching the dynamic-form
-        // renderer). Computed from config so it stays correct as the form changes.
-        var gridRootTypes = new HashSet<int> { 27, 40 };
+        // repeating grid/table — i.e. its parent field is a grid ROOT. A grid root is
+        // resolved by the FIELD-lookup TYPE NAME (the authoritative signal the dynamic-form
+        // renderer itself keys on — "grid"/"table"/"datagrid"/"repeater"/"tableroot"), NOT a
+        // hardcoded id. The previous {27,40} magic matched section/group container types too,
+        // so EVERY field (a child of some section) was wrongly flagged multi-value. Matching
+        // by name excludes containers like "Section"/"Group"/"Header".
+        var gridNameTokens = new[] { "grid", "datagrid", "table", "tableroot", "repeater" };
+        var gridRootTypeIds = typeByName
+            .Where(kv => gridNameTokens.Any(tok => kv.Key.IndexOf(tok, StringComparison.OrdinalIgnoreCase) >= 0))
+            .Select(kv => kv.Value)
+            .ToHashSet();
         var gridRootIds = rows
-            .Where(r => r.FieldTypeLkp != null && gridRootTypes.Contains(r.FieldTypeLkp.Value))
+            .Where(r => r.FieldTypeLkp != null && gridRootTypeIds.Contains(r.FieldTypeLkp.Value))
             .Select(r => r.TenantFieldSetupId)
             .ToHashSet();
 
@@ -258,6 +320,17 @@ public class ListAutoFlagOperandsQueryHandler : IRequestHandler<ListAutoFlagOper
             .ToList();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var list = new List<OperandOptionDto>();
+        // Prefer the wizard's sub-product selector label; fall back to Tab.Tab_Name.
+        string ResolveTabName(int? prod, int? tab)
+        {
+            if (prod is int p && tab is int t
+                && subTypeByProduct.TryGetValue(p, out var lmap)
+                && lmap.TryGetValue(t, out var lbl) && !string.IsNullOrWhiteSpace(lbl))
+                return lbl;
+            if (tab is int t2 && tabById.TryGetValue(t2, out var tn) && !string.IsNullOrWhiteSpace(tn))
+                return tn;
+            return $"Tab {tab}";
+        }
         int? curProd = null, curTab = null; var curHeader = "General";
         foreach (var r in ordered)
         {
@@ -279,13 +352,15 @@ public class ListAutoFlagOperandsQueryHandler : IRequestHandler<ListAutoFlagOper
                            : IsHuman(r.FieldLabel) ? r.FieldLabel : null;
             var table = r.FieldTableName ?? "";
             var dt = (r.FieldTypeLkp == number || r.FieldTypeLkp == amount) ? "number"
-                   : (r.FieldTypeLkp == datetime || r.FieldTypeLkp == timestamp) ? "date" : "code";
+                   : (r.FieldTypeLkp == datetime || r.FieldTypeLkp == timestamp) ? "date"
+                   : (r.FieldTypeLkp == text || r.FieldTypeLkp == textarea || r.FieldTypeLkp == alphanumeric) ? "text" : "code";
             var ftype = r.FieldTypeLkp == dropdown ? "Dropdown"
                       : r.FieldTypeLkp == dropdownQuestion ? "Dropdown"
                       : r.FieldTypeLkp == searchable ? "SearchableDropdown"
                       : r.FieldTypeLkp == amount ? "Amount"
                       : r.FieldTypeLkp == number ? "Number"
-                      : (r.FieldTypeLkp == datetime || r.FieldTypeLkp == timestamp) ? "Date" : null;
+                      : (r.FieldTypeLkp == datetime || r.FieldTypeLkp == timestamp) ? "Date"
+                      : (r.FieldTypeLkp == text || r.FieldTypeLkp == textarea || r.FieldTypeLkp == alphanumeric) ? "Text" : null;
             // KYC vs Trade is a property of the owning *product*, not the storage table.
             // KYC amount fields (e.g. "Total Annual Expected ... Turnover", KycParam3/4)
             // persist in the generic TmxTransactionDetail table, so the old
@@ -310,8 +385,7 @@ public class ListAutoFlagOperandsQueryHandler : IRequestHandler<ListAutoFlagOper
                 productId = r.ProductId,
                 productName = pname,
                 tabId = r.TabId,
-                tabName = r.TabId is int tid && tabById.TryGetValue(tid, out var tn) && !string.IsNullOrWhiteSpace(tn)
-                                ? tn : $"Tab {r.TabId}",
+                tabName = ResolveTabName(r.ProductId, r.TabId),
                 section = curHeader,
                 isMultiValue = r.ParentTenantFieldSetupId is int pid2 && gridRootIds.Contains(pid2),
             });

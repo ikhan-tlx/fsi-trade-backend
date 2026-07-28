@@ -49,9 +49,12 @@ public sealed class AuditSaveChangesInterceptor : SaveChangesInterceptor
     {
         public required string Action;
         public required string EntityType;
-        public required string? EntityKey;
+        public required EntityEntry Entry;     // held so store-generated keys can be re-read post-save
+        public required bool WasAdded;
+        public required string? EntityKey;      // pre-save key (final for Modified/Deleted; temp for Added)
         public required string? Changes;
-        public required string Description;
+        public required int FieldCount;
+        public required string? RejectReason;
     }
 
     public override InterceptionResult<int> SavingChanges(DbContextEventData e, InterceptionResult<int> r)
@@ -98,17 +101,20 @@ public sealed class AuditSaveChangesInterceptor : SaveChangesInterceptor
             }
             if (changes.Count == 0 && entry.State == EntityState.Modified) continue;
 
-            var key   = KeyOf(entry);
-            var verb  = VerbFor(entry.State, type, newStatusCode);
-            var descr = Describe(verb, type, key, changes.Count, newRejectReason);
+            var wasAdded = entry.State == EntityState.Added;
+            var key      = KeyOf(entry);
+            var verb     = VerbFor(entry.State, type, newStatusCode);
 
             _captured.Add(new Captured
             {
-                Action      = verb,
-                EntityType  = type,
-                EntityKey   = key,
-                Changes     = JsonSerializer.Serialize(changes),
-                Description = descr,
+                Action       = verb,
+                EntityType   = type,
+                Entry        = entry,
+                WasAdded     = wasAdded,
+                EntityKey    = key,
+                Changes      = JsonSerializer.Serialize(changes),
+                FieldCount   = changes.Count,
+                RejectReason = newRejectReason,
             });
         }
     }
@@ -148,13 +154,20 @@ public sealed class AuditSaveChangesInterceptor : SaveChangesInterceptor
         var list = new List<AuditLog>(_captured.Count);
         foreach (var c in _captured)
         {
+            // Re-read the key AFTER save for inserted rows: a store-generated identity
+            // (e.g. Request_Id) is only an EF temporary sentinel during SavingChanges and
+            // is assigned its real value once the row is written. Modified/Deleted rows
+            // already carried their final key at capture time.
+            var key   = c.WasAdded ? (KeyOf(c.Entry) ?? c.EntityKey) : c.EntityKey;
+            var descr = Describe(c.Action, c.EntityType, key, c.FieldCount, c.RejectReason);
+
             var row = new AuditLog
             {
                 Action      = c.Action,
                 EntityType  = c.EntityType,
-                EntityKey   = c.EntityKey,
+                EntityKey   = key,
                 ChangesJson = c.Changes,
-                Description = c.Description,
+                Description = descr,
                 Outcome     = "SUCCESS",
                 StatusCode  = status,
                 CreatedDate = now,
@@ -168,6 +181,7 @@ public sealed class AuditSaveChangesInterceptor : SaveChangesInterceptor
 
     private static string VerbFor(EntityState state, string type, string? newStatusCode) => state switch
     {
+        EntityState.Added when type == "Request" => "SUBMIT",   // maker parked a change request
         EntityState.Added   => "CREATE",
         EntityState.Deleted => "DELETE",
         _ when type == "Request" && newStatusCode == "0012" => "APPROVE",
@@ -180,6 +194,7 @@ public sealed class AuditSaveChangesInterceptor : SaveChangesInterceptor
         var who = key is null ? type : $"{type} #{key}";
         return verb switch
         {
+            "SUBMIT"  => $"Submitted {who} for approval",
             "CREATE"  => $"Created {who}",
             "DELETE"  => $"Deleted {who}",
             "APPROVE" => $"Approved {who}",

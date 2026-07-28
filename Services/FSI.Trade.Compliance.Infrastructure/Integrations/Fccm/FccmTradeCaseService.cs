@@ -214,7 +214,9 @@ internal class FccmTradeCaseService : IFccmTradeCaseService
                 MsgId       = messageId,
                 Title       = clientRef,
                 InputMatch  = "Customer",
-                InputName   = "Manual Redflag",
+                // Reflect the flag's origin instead of a hardcoded label: auto-flags read
+                // "Auto Redflag", everything else (manual red flags) reads "Manual Redflag".
+                InputName   = f.Source == "Auto" ? "Auto Redflag" : "Manual Redflag",
                 Description = description,
                 TsDate      = now,
             }, ct);

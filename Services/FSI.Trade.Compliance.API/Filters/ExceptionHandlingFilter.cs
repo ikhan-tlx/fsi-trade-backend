@@ -60,6 +60,16 @@ public class ExceptionHandlingFilter : IExceptionFilter
                 };
                 break;
 
+            case ForbiddenException fx:
+                _log.LogInformation("Forbidden: {Code} {Msg}", fx.Code, fx.Message);
+                httpStatus = 403;
+                envelope   = new ResponseViewModel<object>
+                {
+                    status = ResponseStatus.Error(httpStatus, fx.Code, fx.Message),
+                    data   = new { Success = 0, Code = fx.Code, Message = fx.Message }
+                };
+                break;
+
             case ConflictException cx:
                 _log.LogInformation("Conflict: {Code} {Msg}", cx.Code, cx.Message);
                 httpStatus = 409;

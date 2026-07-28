@@ -13,19 +13,40 @@ public sealed record MetricParamDef(
     string Name, string Label, string Type,
     string? FieldFilter = null, bool Required = false, string[]? Options = null);
 
+/// <summary>One group in a grouped-aggregate result (enhancement #2). <see cref="Key"/> is the
+/// composite group key (e.g. { "LcNumber": "LC-001" }); <see cref="Value"/> is the group's LHS
+/// aggregate; <see cref="Rhs"/> is the optional per-group counterpart aggregate (e.g. that LC's
+/// amount) the evaluator compares against — null when the rule compares to a static threshold.</summary>
+public sealed record MetricGroup(IReadOnlyDictionary<string, string> Key, string Value, string? Rhs)
+{
+    // Field-vs-counterpart mode (#3): the group's left/right field value sets, compared as sets by
+    // the evaluator (Equals/NotEquals/Contains). Null for the numeric aggregate path.
+    public IReadOnlyList<string>? LeftSet  { get; init; }
+    public IReadOnlyList<string>? RightSet { get; init; }
+}
+
 /// <summary>Outcome of computing a metric's left-operand value. Never throws — a
 /// non-computable input (missing field, no customer window, non-numeric) yields
-/// <see cref="Computable"/> = false so the condition resolves to not-satisfied.</summary>
+/// <see cref="Computable"/> = false so the condition resolves to not-satisfied.
+///
+/// A metric is either SCALAR (<see cref="Value"/>, the classic path) or GROUPED
+/// (<see cref="Groups"/>, enhancement #2 — one aggregate per group key, evaluated per group).</summary>
 public sealed class MetricResult
 {
     public bool    Computable { get; init; }
-    public string? Value      { get; init; }   // invariant-formatted scalar
+    public string? Value      { get; init; }   // invariant-formatted scalar (or first group's value)
     public object? Inputs     { get; init; }   // for the Match_Proof node
+    public IReadOnlyList<MetricGroup>? Groups { get; init; }   // set when the metric is grouped
 
     public static MetricResult Ok(string value, object? inputs = null)
         => new() { Computable = true, Value = value, Inputs = inputs };
     public static MetricResult NotComputable(object? inputs = null)
         => new() { Computable = false, Value = null, Inputs = inputs };
+
+    /// <summary>A grouped result — one aggregate per group. Value mirrors the first group so any
+    /// scalar-only consumer stays null-safe; grouped consumers read <see cref="Groups"/>.</summary>
+    public static MetricResult Grouped(IReadOnlyList<MetricGroup> groups, object? inputs = null)
+        => new() { Computable = true, Value = groups.Count > 0 ? groups[0].Value : null, Groups = groups, Inputs = inputs };
 }
 
 /// <summary>Everything a handler needs to compute a metric for one transaction.</summary>

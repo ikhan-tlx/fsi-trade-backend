@@ -14,6 +14,7 @@ public class Request
     public string?   RequestStatusCode { get; set; }
     public string?   EntityId          { get; set; }
     public string?   EntityJson        { get; set; }   // serialized entity being maker/checker'd
+    public string?   CommandKey        { get; set; }   // replay marker: "{type}:{action}" for rows created by the generic Submit endpoint (null = legacy row, not auto-replayed)
     public string?   RejectReason      { get; set; }   // checker reject reason / comment
     public string?   CreatedBy         { get; set; }
     public DateTime  CreatedDate       { get; set; }

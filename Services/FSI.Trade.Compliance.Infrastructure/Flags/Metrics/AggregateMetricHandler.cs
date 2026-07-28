@@ -70,9 +70,28 @@ public sealed class AggregateMetricHandler : IRuleMetricHandler
 
         var filter = ParseFilter(spec);
 
+        // Enhancement #1 — cross-subproduct aggregation. When `sources` is present the
+        // metric aggregates the UNION of values pulled from an explicit list of
+        // (product?, sub-product?, field) sources, so e.g. Sum can combine
+        // ILF_LcAmount (LC Issuance) + IDF_Amount (Import Drawing). Each source is only
+        // read from a row whose product/sub-product matches the source's scope (a source
+        // with no scope applies to every row). When `sources` is absent, behaviour is
+        // unchanged (single `field`, or the per-(product,sub-product) Amount role).
+        var sources = ParseSources(spec);
+
         if (string.Equals(mode, "IntraTransaction", StringComparison.OrdinalIgnoreCase))
         {
-            var values = (!string.IsNullOrWhiteSpace(field) && ctx.Udf.TryGetValue(field!, out var v)) ? v : new List<string>();
+            List<string> values;
+            if (sources.Count > 0)
+            {
+                values = new List<string>();
+                foreach (var s in sources)
+                    if (ctx.Udf.TryGetValue(s.Field, out var sv)) values.AddRange(sv);
+            }
+            else
+            {
+                values = (!string.IsNullOrWhiteSpace(field) && ctx.Udf.TryGetValue(field!, out var v)) ? v.ToList() : new List<string>();
+            }
             if (filter is not null)
             {
                 // Same-field predicate → filter the aggregated values directly.
@@ -132,6 +151,81 @@ public sealed class AggregateMetricHandler : IRuleMetricHandler
                 return fv.Any(filter.Passes);
             }).ToList();
 
+        // ── Enhancement #2 — group-based aggregation. Partition the (customer-scoped) window rows
+        // by a composite key whose parts each map PER SUB-PRODUCT to a field (so the same LC number
+        // is read from ILF_ContractRef on an issuance and IDF_UnderlyingLcRef on a drawing). Then
+        // aggregate PER GROUP and, optionally, compute a per-group counterpart (`rhs`) the evaluator
+        // compares against (e.g. Σ drawings vs Max LC amount, per LC). Customer is always the implicit
+        // outer group — grouping never crosses customers.
+        var groupBy = ParseGroupBy(spec);
+        if (groupBy.Count > 0)
+        {
+            var rhsSpec = ParseRhs(spec);
+            var cmpSpec = ParseCompare(spec);   // #3 — field-vs-counterpart per group
+            var buckets = new Dictionary<string, (Dictionary<string, string> key, List<string> lhs, List<string> rhs, List<string> cmpL, List<string> cmpR)>(StringComparer.Ordinal);
+            foreach (var (row, flat) in flats)
+            {
+                var keyParts = new Dictionary<string, string>();
+                var composite = new System.Text.StringBuilder();
+                var keyed = true;
+                foreach (var part in groupBy)
+                {
+                    var kv = new List<string>();
+                    CollectFrom(part.Sources, row.ProductId, row.SubProductTabId, flat, kv);
+                    var raw = kv.FirstOrDefault();
+                    if (string.IsNullOrWhiteSpace(raw)) { keyed = false; break; }   // row can't join this group
+                    var display = part.Trim ? raw!.Trim() : raw!;
+                    var norm = part.Trim ? raw!.Trim() : raw!;
+                    if (part.Ci) norm = norm.ToLowerInvariant();
+                    keyParts[part.As] = display;
+                    composite.Append(part.As).Append('=').Append(norm).Append('|');
+                }
+                if (!keyed) continue;
+                var ck = composite.ToString();
+                if (!buckets.TryGetValue(ck, out var b))
+                {
+                    b = (keyParts, new List<string>(), new List<string>(), new List<string>(), new List<string>());
+                    buckets[ck] = b;
+                }
+                if (cmpSpec is not null)
+                {
+                    // Field-vs-counterpart: collect the left and right field values in this group.
+                    CollectFrom(cmpSpec.Left,  row.ProductId, row.SubProductTabId, flat, b.cmpL);
+                    CollectFrom(cmpSpec.Right, row.ProductId, row.SubProductTabId, flat, b.cmpR);
+                }
+                else
+                {
+                    // LHS values for this row (sources, else a single field).
+                    if (sources.Count > 0) CollectFrom(sources, row.ProductId, row.SubProductTabId, flat, b.lhs);
+                    else if (!string.IsNullOrWhiteSpace(field) && flat.TryGetValue(field!, out var fv)) b.lhs.AddRange(fv);
+                    if (rhsSpec is not null) CollectFrom(rhsSpec.Sources, row.ProductId, row.SubProductTabId, flat, b.rhs);
+                }
+            }
+
+            var groups = new List<MetricGroup>();
+            foreach (var b in buckets.Values)
+            {
+                if (cmpSpec is not null)
+                {
+                    // Compare the group's left field value SET to its right field value SET
+                    // (per-group field-vs-counterpart). Need both sides present to compare.
+                    var left  = b.cmpL.Select(x => x.Trim()).Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                    var right = b.cmpR.Select(x => x.Trim()).Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                    if (left.Count == 0 || right.Count == 0) continue;   // nothing to correlate in this group
+                    groups.Add(new MetricGroup(b.key, string.Join(",", left), string.Join(",", right)) { LeftSet = left, RightSet = right });
+                    continue;
+                }
+                var lhsVal = Reduce(function, b.lhs);
+                if (lhsVal is null) continue;                              // group's LHS not computable → skip
+                var rhsVal = rhsSpec is not null ? Reduce(rhsSpec.Function, b.rhs) : null;
+                groups.Add(new MetricGroup(b.key, lhsVal, rhsVal));
+            }
+            return MetricResult.Grouped(groups,
+                new { function, mode, windowDays = window, from, to, grouped = true,
+                      groupKeys = groupBy.Select(g => g.As).ToArray(), groupCount = groups.Count,
+                      hasRhs = rhsSpec is not null, compare = cmpSpec is not null });
+        }
+
         if (function == "Count")
             return MetricResult.Ok(flats.Count.ToString(CultureInfo.InvariantCulture),
                 new { function, mode, windowDays = window, from, to, filtered = filter is not null, txnCount = flats.Count });
@@ -140,15 +234,30 @@ public sealed class AggregateMetricHandler : IRuleMetricHandler
         var collected = new List<string>();
         foreach (var (row, flat) in flats)
         {
-            var codes = string.IsNullOrWhiteSpace(field)
-                ? await ctx.Data.GetAmountFieldCodesAsync(row.ProductId, row.SubProductTabId, ct)
-                : new[] { field! };
-            foreach (var code in codes)
-                if (flat.TryGetValue(code, out var vals)) collected.AddRange(vals);
+            if (sources.Count > 0)
+            {
+                // Cross-subproduct: pull each source's field only from rows in that source's
+                // (product/sub-product) scope. A source with no scope matches every row.
+                foreach (var s in sources)
+                {
+                    if (s.ProductId is int sp && row.ProductId != sp) continue;
+                    if (s.SubProductTabId is int st && row.SubProductTabId != st) continue;
+                    if (flat.TryGetValue(s.Field, out var vals)) collected.AddRange(vals);
+                }
+            }
+            else
+            {
+                var codes = string.IsNullOrWhiteSpace(field)
+                    ? await ctx.Data.GetAmountFieldCodesAsync(row.ProductId, row.SubProductTabId, ct)
+                    : new[] { field! };
+                foreach (var code in codes)
+                    if (flat.TryGetValue(code, out var vals)) collected.AddRange(vals);
+            }
         }
 
         return Compute(function, collected,
-            new { function, mode, windowDays = window, from, to, filtered = filter is not null, txnCount = flats.Count, valueCount = collected.Count });
+            new { function, mode, windowDays = window, from, to, filtered = filter is not null,
+                  sources = sources.Count, txnCount = flats.Count, valueCount = collected.Count });
     }
 
     private static MetricResult Compute(string function, List<string> values, object inputs)
@@ -196,6 +305,118 @@ public sealed class AggregateMetricHandler : IRuleMetricHandler
                 default: return false;
             }
         }
+    }
+
+    /// <summary>One aggregation source (enhancement #1): a field to pull, optionally scoped to a
+    /// product / sub-product. Scope null = read the field from every row that has it.</summary>
+    private sealed record AggSource(int? ProductId, int? SubProductTabId, string Field);
+
+    private static List<AggSource> ParseSources(JsonElement spec) => ParseSourcesFrom(spec, "sources");
+
+    private static List<AggSource> ParseSourcesFrom(JsonElement parent, string prop)
+    {
+        var list = new List<AggSource>();
+        if (!parent.TryGetProperty(prop, out var arr) || arr.ValueKind != JsonValueKind.Array) return list;
+        foreach (var e in arr.EnumerateArray())
+        {
+            if (e.ValueKind != JsonValueKind.Object) continue;
+            var f = Str(e, "field");
+            if (string.IsNullOrWhiteSpace(f)) continue;
+            list.Add(new AggSource(Int(e, "productId"), Int(e, "subProductTabId"), f!.Trim()));
+        }
+        return list;
+    }
+
+    // ── Enhancement #2 helpers: group-by key parts, per-group counterpart, value collection ──
+    private sealed record GroupKeyPart(string As, List<AggSource> Sources, bool Trim, bool Ci);
+
+    private static List<GroupKeyPart> ParseGroupBy(JsonElement spec)
+    {
+        var list = new List<GroupKeyPart>();
+        if (!spec.TryGetProperty("groupBy", out var arr) || arr.ValueKind != JsonValueKind.Array) return list;
+        foreach (var e in arr.EnumerateArray())
+        {
+            if (e.ValueKind != JsonValueKind.Object) continue;
+            var name = Str(e, "as") ?? "key";
+            var srcs = ParseSourcesFrom(e, "sources");
+            if (srcs.Count == 0) continue;
+            // Default normalisation = trim + case-insensitive; honour an explicit list if given.
+            bool trim = true, ci = true;
+            if (e.TryGetProperty("normalize", out var n) && n.ValueKind == JsonValueKind.Array)
+            {
+                var opts = n.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String)
+                            .Select(x => x.GetString()!.ToLowerInvariant()).ToHashSet();
+                trim = opts.Contains("trim");
+                ci   = opts.Contains("ci");
+            }
+            list.Add(new GroupKeyPart(name, srcs, trim, ci));
+        }
+        return list;
+    }
+
+    private sealed record RhsAgg(string Function, List<AggSource> Sources);
+
+    private static RhsAgg? ParseRhs(JsonElement spec)
+    {
+        if (!spec.TryGetProperty("rhs", out var r) || r.ValueKind != JsonValueKind.Object) return null;
+        var fn = Str(r, "function") ?? "Max";
+        var srcs = ParseSourcesFrom(r, "sources");
+        if (srcs.Count == 0)
+        {
+            var f = Str(r, "field");
+            if (!string.IsNullOrWhiteSpace(f)) srcs.Add(new AggSource(Int(r, "productId"), Int(r, "subProductTabId"), f!.Trim()));
+        }
+        return srcs.Count == 0 ? null : new RhsAgg(fn, srcs);
+    }
+
+    /// <summary>Append every scope-matching source's field values from one row's flat UDF.</summary>
+    // #3 — a per-group field comparison: left field value set vs the counterpart's field value set.
+    private sealed record CompareSpec(List<AggSource> Left, List<AggSource> Right);
+
+    private static CompareSpec? ParseCompare(JsonElement spec)
+    {
+        if (!spec.TryGetProperty("compare", out var c) || c.ValueKind != JsonValueKind.Object) return null;
+        List<AggSource> Side(string name)
+        {
+            if (!c.TryGetProperty(name, out var s) || s.ValueKind != JsonValueKind.Object) return new List<AggSource>();
+            var list = ParseSourcesFrom(s, "sources");
+            if (list.Count == 0)
+            {
+                var f = Str(s, "field");
+                if (!string.IsNullOrWhiteSpace(f)) list.Add(new AggSource(Int(s, "productId"), Int(s, "subProductTabId"), f!.Trim()));
+            }
+            return list;
+        }
+        var left = Side("left"); var right = Side("right");
+        return (left.Count == 0 || right.Count == 0) ? null : new CompareSpec(left, right);
+    }
+
+    private static void CollectFrom(List<AggSource> srcs, int productId, int? tabId,
+        IReadOnlyDictionary<string, List<string>> flat, List<string> into)
+    {
+        foreach (var s in srcs)
+        {
+            if (s.ProductId is int sp && productId != sp) continue;
+            if (s.SubProductTabId is int st && tabId != st) continue;
+            if (flat.TryGetValue(s.Field, out var vals)) into.AddRange(vals);
+        }
+    }
+
+    /// <summary>Reduce a set of string values to a single aggregate scalar (invariant-formatted),
+    /// or null when a value function has no numeric input.</summary>
+    private static string? Reduce(string function, List<string> values)
+    {
+        switch (function)
+        {
+            case "Count":         return values.Count.ToString(CultureInfo.InvariantCulture);
+            case "CountDistinct": return values.Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString(CultureInfo.InvariantCulture);
+        }
+        var nums = values
+            .Select(v => decimal.TryParse(v, NumberStyles.Any, CultureInfo.InvariantCulture, out var d) ? (decimal?)d : null)
+            .Where(d => d.HasValue).Select(d => d!.Value).ToList();
+        if (nums.Count == 0) return null;
+        decimal result = function switch { "Sum" => nums.Sum(), "Avg" => nums.Average(), "Min" => nums.Min(), "Max" => nums.Max(), _ => 0m };
+        return result.ToString(CultureInfo.InvariantCulture);
     }
 
     private static AggFilter? ParseFilter(JsonElement spec)

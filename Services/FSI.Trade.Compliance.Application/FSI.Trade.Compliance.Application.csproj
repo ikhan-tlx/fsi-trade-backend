@@ -9,6 +9,10 @@
     <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="11.10.0" />
     <PackageReference Include="MediatR" Version="12.4.1" />
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.10" />
+    <!-- Relational: provides ExecuteUpdate/ExecuteDelete (set-based writes that
+         never materialise an entity — used by the Lookup admin apply handler to
+         avoid the legacy TmX_Lookup NULL-column materialisation landmine). -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="8.0.10" />
   </ItemGroup>
 
   <PropertyGroup>

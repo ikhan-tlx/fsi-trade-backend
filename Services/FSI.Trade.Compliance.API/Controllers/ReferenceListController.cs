@@ -123,6 +123,17 @@ public class ReferenceListController : ControllerBase
     public async Task<IActionResult> DeleteValue(long id, CancellationToken ct)
         => Ok(ResponseViewModel<object>.Ok(new { ok = await _mediator.Send(new DeleteReferenceValueCommand(id), ct) }));
 
+    /// <summary>Template-driven bulk import of values into a type. Server validates
+    /// each row (domain-code integrity + UDF schema), upserts + links, and returns a
+    /// per-row summary. POST /ReferenceList/Types/{id}/BulkValues.</summary>
+    [HttpPost("Types/{id:long}/BulkValues")]
+    [RequiresPrivilege("ReferenceLists.Manage")]
+    public async Task<IActionResult> BulkValues(long id, [FromBody] BulkUpsertReferenceValuesCommand cmd, CancellationToken ct)
+    {
+        cmd.typeId = id;
+        return Ok(ResponseViewModel<BulkUpsertResult>.Ok(await _mediator.Send(cmd, ct)));
+    }
+
     // ── helpers ──
     [HttpGet("LookupPicks")]
     [RequiresPrivilege("ReferenceLists.View")]

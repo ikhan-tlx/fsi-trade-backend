@@ -120,7 +120,15 @@ public static class DomainLabels
     {
         if (string.IsNullOrWhiteSpace(lookupType)) return "Custom";
         var u = lookupType.ToUpperInvariant();
+        // Distinguish the two nationality catalogues explicitly BEFORE the generic country rule —
+        // otherwise "Nationality" and "TradeNationality" both collapse to "Country" (duplicate label).
+        if (u == "NATIONALITY")                            return "Nationality";
+        if (u == "TRADENATIONALITY")                       return "Trade Nationality";
         if (u.Contains("COUNTRY") || u.Contains("NATION")) return "Country";
+        // Distinguish the two HS catalogues explicitly BEFORE the generic HS rule — otherwise both
+        // "HSCodeList" and "HSPriceList" collapse to "HS code" (duplicate label, price list missing).
+        if (u == "HSCODELIST")                             return "HS Code List";
+        if (u == "HSPRICELIST")                            return "HS Price List";
         if (u.Contains("HS") || u.Contains("GOOD"))        return "HS code";
         if (u.Contains("PORT"))                            return "Port";
         if (u.Contains("CURREN"))                          return "Currency";

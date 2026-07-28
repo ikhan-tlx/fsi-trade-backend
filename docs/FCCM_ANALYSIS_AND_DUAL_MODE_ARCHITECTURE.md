@@ -126,12 +126,12 @@ TMX already owns (no gap): transaction capture + dynamic forms; maker-checker ap
 | G3 | **KYC case decision** — investigator Approve/Reject in ECM + callback | Case decision executes on a `CaseWF` scheme (FSI workflow engine) with `Case.Investigate/Approve/Reject/SendBack` commands; decision applies the *same* status writes the callback does today (shared `ICaseDecisionApplier`) — including restoring the **send-back-to-analyst** branch legacy had | **M** | S1 |
 | G4 | **TBML case content** — staging → event rows → party/goods/contract snapshots | `TmX_Case_Event` (one per red flag + customer event; stores matched value/proof link) + `TmX_Case_Party` / reuse of existing transaction detail (no staging needed — the case links to the live transaction) | **M** | S1 |
 | G5 | **Investigator workspace** — FCCM ECM UI | FE Cases module (the `/cases` route is a placeholder today): queue grid (filter by status/priority/type), case detail (events, transaction link, customer risk, decision actions, notes), driven by the workflow engine's inbox — reuses Inbox patterns | **L** | S1–S2 |
-| G6 | Assignment & queues | `CheckRole`-actor `CaseWF` activities + `WorkflowInbox` (same mechanism as transactions); claim (`AssignToMe`) narrowing already proven | **S** | S1 |
+| G6 | Assignment, queues & multi-level investigation workflow | Designed `CaseWF` scheme (§7.3): L1/L2/L3 analyst tiers + Case Authorizer dual-control closure, pool/claim/escalation on `WorkflowInbox` (same mechanism as transactions, claim-narrowing proven); SLA auto-escalation via existing `AppDelay` conditions; per-case-type scheme mapping | **M** | S1 |
 | G7 | Case audit trail | `WorkflowProcessTransitionHistory` (engine) + `TmX_Case_Audit` for non-transition actions (notes, priority change, reassign) | **S** | S1 |
-| G8 | Duplicate detection | v1: create-time guard — open case exists for same (customer, product class) → link instead of duplicate (config). Full entity-resolution dedup deferred | **S(v1)/L(full)** | S2/S3 |
-| G9 | Case correlation & linking | `TmX_Case_Link` (case↔case, typed: duplicate/related/merged-into) + auto-link by customer code + `TMX_TRANS_FROM_REPO`-equivalent kept internally (`TmX_Case.Transaction_Id`) | **M** | S2 |
+| G8 | Duplicate detection | A correlation rule with `Action = Link (duplicate)` or `Flag_For_Review` on the admin-chosen match context (e.g. open case, same customer + product class) — no separate mechanism. Full entity-resolution dedup deferred | **S(v1)/L(full)** | S1(rule)/S3(full) |
+| G9 | Case correlation & linking | Correlation keys (event↔case↔transaction↔customer↔assessment) + **rule-driven `CaseCorrelationEngine`** (`TmX_Correlation_Rule`: configurable match context, case types, lookback, action — §7.2) with seeded same-customer default = S1; manual linking UI + typed links (duplicate/related/reopens/merged-into) = S2 | **M** | **S1**(engine)/S2(UI) |
 | G10 | Case merging | Merge = link type `merged-into` + close source case with disposition; events re-parented | **M** | S2 |
-| G11 | Alert correlation (many flags → one case, cross-transaction) | v1: per-transaction case (parity with today's per-submit case). v2: correlation window rule (same customer, open case, N days) attaches new events to the open case | **M** | S2 |
+| G11 | Alert correlation (many flags → one case, cross-transaction) | v1: per-transaction case (parity with today's per-submit case). v2: a correlation rule with `Action = Attach_Events` (admin-defined context + lookback) appends new events to the matched open case instead of opening a new one (`EvaluateOnEventAttach`) | **M** | S2 |
 | G12 | Notifications (case assigned/decided) | The workflow engine's Bucket-C notification actions (Slice 8 `IDlpNotificationClient` backlog item) — shared investment, not FCCM-specific | **M** | S2 (with Slice 8) |
 | G13 | Risk recalculation on demand | `Refresh` operation re-runs `TmxRiskAssessmentService` instead of re-reading `FCC_OB_RA` (provider swap, §6); periodic review loop unchanged | **S** | S1 |
 | G14 | Entity relationship graphs | Deferred — flat party/case links first; graph visualisation only if compliance asks | **XL** | S3/never |
@@ -236,9 +236,17 @@ Replicates the OFSAA KYC two-stage model end-to-end (**nothing less** — Append
 | `TmX_Risk_Band_Config` | `Model_Id, Band_Key (1/2/3), Label, Score_From, Score_To` — continuous score → `RISK_CATEGORY_KEY`-equivalent band via configurable ranges (FCCM: risk-category score ranges) |
 | `TmX_Risk_Recommendation_Config` | `Model_Id, Band_Key → Rcmnd_To_Onbrd (Y/N/Review)` — reproduces `FCC_OB_RA.RCMND_TO_ONBRD` (FCCM: auto-recommendation thresholds) |
 
-**Assessment pipeline (deterministic, per request):** resolve parameter values from the *same* `OnboardingMappingContext` the FCCM payload uses today (mapper reuse — §6.2) → **Stage 1 rule pass** in `Rule_No` order: first matching `Stop_On_Match` rule can force band/score/recommendation (rule hit recorded with reason) → **Stage 2 algorithm pass**: per-parameter score via score map (multi-value grids resolved by `Multi_Value_Strategy`, default MaxScore = today's `GetMaxScoreCodeValueAsync` semantics) → weighted aggregate `RISK_SCORE = Σ(wᵢ·sᵢ)/Σwᵢ` as `decimal(5,2)` → **banding** via `TmX_Risk_Band_Config` → **recommendation** via config → persist.
+**Assessment pipeline (deterministic, per request) — both stages ALWAYS compute (FCCM parity: the algorithm score is produced even when a rule supersedes it, and the supersession terms are visible):**
 
-**Assessment record `TmX_Risk_Assessment`** — supersets `FCC_OB_RA`: `Assessment_Id, Request_Id, Model_Id+Version, Jurisdiction_Cd, Risk_Score decimal(5,2), Overridden_Risk_Score decimal(5,2) NULL, Override_By/At/Reason, Risk_Category_Key, Status_Cd (Computed/Overridden/Superseded), Rcmnd_To_Onbrd, Rule_Hit (rule no + reason) NULL, Inputs_Json, Param_Scores_Json (per-parameter value/score/weight), Computed_At/By`. The per-parameter proof JSON makes every score fully explainable — stronger auditability than FCCM's black box, surfaced in the Risk Assessment tab's detail panel in standalone mode (an add-on, not a regression).
+1. Resolve parameter values from the *same* `OnboardingMappingContext` the FCCM payload uses today (mapper reuse — §6.2).
+2. **Algorithm pass (always)**: per-parameter score via score map (multi-value grids resolved by `Multi_Value_Strategy`, default MaxScore = today's `GetMaxScoreCodeValueAsync` semantics) → weighted aggregate `Algorithm_Score = Σ(wᵢ·sᵢ)/Σwᵢ` as `decimal(5,2)` → `Algorithm_Band` via `TmX_Risk_Band_Config`.
+3. **Rule pass (always)**: evaluate `TmX_Risk_Rule` in `Rule_No` order; matching rules yield a `Rule_Based_Band`/`Rule_Based_Score` + the matched **terms** (rule name, predicate, matched values, reason).
+4. **Supersession/acceleration resolution**: `Effective` outcome = the **higher-risk** of algorithm vs rule-based results (configurable per model via `Supersession_Policy`, default `HigherWins` — matching FCCM's accelerate-to-higher behaviour and the platform's PEP/higher-wins philosophy). When the rule result supersedes/accelerates the algorithm result, `Superseded_By_Rule = 1` and the driving terms are recorded — the assessment always answers *"on what terms did it get the high score."*
+5. **Recommendation** via config → persist.
+
+**Assessment record `TmX_Risk_Assessment`** — supersets `FCC_OB_RA` with dual-score traceability: `Assessment_Id, Request_Id, Model_Id+Version, Jurisdiction_Cd,` **`Algorithm_Score decimal(5,2), Algorithm_Band, Rule_Based_Score decimal(5,2) NULL, Rule_Based_Band NULL, Rule_Hits_Json (every matched rule: name, terms, matched values, reason), Superseded_By_Rule bit, Effective_Score decimal(5,2)`** *(maps to `FCC_OB_RA.RISK_SCORE`)*`, Risk_Category_Key` *(effective band)*`, Overridden_Risk_Score decimal(5,2) NULL, Override_By/At/Reason, Status_Cd (Computed/Superseded/Overridden), Rcmnd_To_Onbrd, Inputs_Json, Param_Scores_Json (per-parameter value/score/weight), Computed_At/By`.
+
+**Explainability surfaced**: the standalone Risk Assessment tab detail panel shows **both** scores side-by-side — algorithm band (with per-parameter contribution breakdown) and rule-based band (with the exact rule terms that fired) — and flags which one prevailed and why, for supersession, acceleration, tie, and manual-override situations alike. This reproduces the FCCM investigator's "why is this High" view and betters it with full arithmetic per parameter.
 
 **Score override** (parity with `OVERRIDDEN_RISK_SCORE`): privileged action (`RiskConfig.Override` or case-investigator command on `CaseWF`) writes `Overridden_Risk_Score` + reason; band recomputed from the overridden score; original score retained; audit row.
 
@@ -246,11 +254,80 @@ Replicates the OFSAA KYC two-stage model end-to-end (**nothing less** — Append
 
 ### 7.2 Case model (additive tables, TMX-owned)
 
-`TmX_Case` (`Case_Id PK`, `Case_Number "TMX-CA{seq}"`, `Case_Type KYC|TBML_SURV`, `Transaction_Id`, `Customer_Code`, `Priority` (from reconciled band), `Status_Lkp`, `Process_Instance_Id` (CaseWF), `Opened/Closed_At/By`, `Disposition`, `Source = TMX`); `TmX_Case_Event` (`Event_Id`, `Case_Id`, `Flag_Scope_Id?`, `Description`, `Matched_Value`, `Event_Type Customer|Flag`, `Created_At`) — the internal replacement for `EVENT_STAGING` rows; `TmX_Case_Link` (`From_Case, To_Case, Link_Type duplicate|related|merged_into`, audit) — S2; `TmX_Case_Audit` (non-transition actions). Party/goods/contract detail is **not copied** — the case references the live transaction (TMX has the data FCCM needed staged).
+`TmX_Case` (`Case_Id PK`, `Case_Number "TMX-CA{seq}"`, `Case_Type KYC|TBML_SURV`, `Transaction_Id`, `Customer_Code`, `Priority` (from reconciled band), `Status_Lkp`, `Process_Instance_Id` (CaseWF), `Opened/Closed_At/By`, `Disposition`, `Source = TMX`); `TmX_Case_Event` (`Event_Id`, `Case_Id`, `Flag_Scope_Id?`, `Description`, `Matched_Value`, `Event_Type Customer|Flag`, `Created_At`) — the internal replacement for `EVENT_STAGING` rows; `TmX_Case_Link` (`From_Case, To_Case, Link_Type duplicate|related|reopens|merged_into`, `Created_By/At`, `Reason`); `TmX_Case_Audit` (non-transition actions). Party/goods/contract detail is **not copied** — the case references the live transaction (TMX has the data FCCM needed staged).
+
+**Correlation (parity from day one, rule-driven and configurable):** FCCM's correlation artifacts for this deployment are hand-written by the SP (`FCC_CORRELATION_EVENT_MAP`, `FCC_PRECASE_CASE_MAP`, `CASEIDTOTRANSACTION`, plus `TMX_TRANS_FROM_REPO`). Their standalone equivalents are **native keys, not reconstructions**: event→case (`TmX_Case_Event.Case_Id`), case→transaction (`TmX_Case.Transaction_Id`), case→customer (`TmX_Case.Customer_Code`), case→risk assessment (`TmX_Case.Assessment_Id` for KYC).
+
+*How and on what context* cases correlate is **not hardcoded** — it is governed by an admin-maintained rule table evaluated by a `CaseCorrelationEngine` at case create and (optionally) at event attach:
+
+**`TmX_Correlation_Rule`** (`RiskConfig.Manage`-gated admin screen, maker-checker via `TmX_Request`, priority-ordered):
+
+| Column | Meaning |
+|---|---|
+| `Rule_No`, `Rule_Name`, `Active_Flag` | Ordering, identity, on/off per rule |
+| `Source_Case_Types` / `Target_Case_Types` | Which case types this rule correlates from/to (`KYC_ONBOARDING`, `TBML_SURV`, or both — cross-type correlation is a per-rule choice) |
+| `Match_Context` (json) | **What** must match — any combination of context attributes: `Customer_Code`, counterparty/beneficiary, national identifier, transaction reference, product/sub-product, HS-code family, flag code(s), branch — each `exact` or `normalised` (trim/case/whitespace rules) |
+| `Lookback_Days` | Time window (0 = unlimited) anchored to case open date |
+| `Include_Closed` | Whether closed cases participate |
+| `Action` | `Link (related)` \| `Link (duplicate)` \| `Attach_Events` (append new events to the matched open case instead of opening a new one — G11) \| `Flag_For_Review` (surface a correlation banner, no automatic link) |
+| `Stop_On_Match` | Whether lower-priority rules still run |
+
+Every correlation the engine performs is auditable: the link row records `Correlated_By_Rule (Rule_No + matched context values)` so an investigator can see *why* two cases were joined. Manual link/unlink (with reason) always remains available and overrides nothing silently.
+
+**Seeded default (parity baseline, editable/disablable like any rule)**: Rule 1 — same `Customer_Code`, all case types, unlimited lookback, include closed, `Link (related)` — reproducing the customer-case-history view. Banks wanting tighter behaviour (e.g. only open TBML cases within 90 days on exact counterparty match → `Attach_Events`) configure it; no code change. Manual linking UI, merge (`merged_into` + event re-parenting) layer on in S2 per G9–G10.
 
 ### 7.3 Case workflow (`CaseWF` on the FSI workflow engine)
 
-New scheme authored like any other (designer-editable): `CaseCreated → InvestigatorPool (CheckRole "Case Investigator", FillAllUsersBucket) → Assigned (AssignToMe claim-narrowing — mechanism already proven) → Decision` with commands `Approve` / `Reject` / `SendBackToAnalyst` / `Escalate`; final activities per disposition. Command post-hook (same pattern as `TrySyncTransactionStatusAsync`) calls `ICaseDecisionApplier` — so a standalone Approve produces byte-identical transaction-side effects to today's FCCM callback `30004`. Roles: new `Case Investigator` role + `Cases.View/Cases.Operate` privileges (rbac_grants.sql additions). KYC cases: created at `RiskAssessed`; TBML cases: created at trade finalise when `redflagsCount > 0` (CA-NOHIT branch identical to today).
+The case lifecycle gets a **first-class designed workflow scheme (`CaseWF`)** — authored in the same scheme dialect, edited in the same designer, executed by the same engine, and using the exact idioms the current `KYC_Workflow`/`ImportWF` schemes use for Analyst/Authorizer (pool activity + `FillAllUsersBucket` action, `AssignToMe` claim with inbox narrowing, `CurrentActivityExecuted` auto-transition, actor restrictions per transition). It extends the two-role maker-checker pattern to **multi-level investigation with dual-control closure**.
+
+**Actors (rule-resolved, same as today's schemes — roles are data, not code):**
+
+| Actor | Rule | Role value (seeded) |
+|---|---|---|
+| Case Analyst L1 | `CheckRole` | `Case Analyst L1` |
+| Case Analyst L2 | `CheckRole` | `Case Analyst L2` |
+| Case Analyst L3 | `CheckRole` | `Case Analyst L3` |
+| Case Authorizer | `CheckRole` | `Case Authorizer` (dual-control closure approver) |
+| Admin | `CheckRole` | `Admin` (SetState/cancel override, `IsForSetState` parity) |
+
+**Default `CaseWF` scheme (per level: pool → claim → assigned, mirroring `CommonInboxActivity` exactly):**
+
+```mermaid
+stateDiagram-v2
+    [*] --> L1Pool : case created (auto)
+    L1Pool --> L1Assigned : AssignToMe (claim-narrows inbox)
+    L1Assigned --> L1Pool : ReturnToPool
+    L1Assigned --> L2Pool : EscalateToL2
+    L1Assigned --> AuthorizerPool : RecommendClosure(disposition)
+    L2Pool --> L2Assigned : AssignToMe
+    L2Assigned --> L2Pool : ReturnToPool
+    L2Assigned --> L1Pool : SendBackToL1
+    L2Assigned --> L3Pool : EscalateToL3
+    L2Assigned --> AuthorizerPool : RecommendClosure(disposition)
+    L3Pool --> L3Assigned : AssignToMe
+    L3Assigned --> L2Pool : SendBackToL2
+    L3Assigned --> AuthorizerPool : RecommendClosure(disposition)
+    AuthorizerPool --> AuthorizerAssigned : AssignToMe
+    AuthorizerAssigned --> L1Pool : RejectRecommendation (back to investigation)
+    AuthorizerAssigned --> Closed : ApproveClosure (final)
+    Closed --> [*]
+```
+
+- Each `*Pool` activity carries `FillAllUsersBucket("<level role>")`; each `AssignToMe` is a self-loop claim whose inbox narrowing (pool → single claimer) is the already-proven mechanism from the 2026-06-09 fix; the pool→assigned hop is the `CurrentActivityExecuted` auto-transition idiom from `KYC_Workflow`. Transition restrictions allow only the matching level's actor — identical enforcement model to today's Analyst/Authorizer schemes.
+- **`RecommendClosure` carries the disposition** (command parameter, per-case-type vocabulary from §7.3's table) + mandatory remarks — the recommendation is *not* the closure. **Only `ApproveClosure` by a Case Authorizer finalises** (dual control, same maker-checker philosophy as Send-To-Authorizer today). `RejectRecommendation` returns the case to investigation with remarks.
+- **Timed auto-escalation (SLA)**: an auto transition per pool/assigned activity guarded by the existing **`AppDelay` / `AppDelayWithWF` conditions** (threshold minutes as the condition parameter) escalates stale cases L1→L2→L3 automatically — no timer engine needed, reusing conditions already ported.
+- **Configurability without code**: levels are just activities + actors in the scheme — a bank running one analyst tier deletes L2/L3 in the designer; one running five adds them; role names are scheme values resolved by `CheckRole`. Simpler variants (e.g. `KYC_ONBOARDING` cases may use a 1-level + authorizer scheme, `TBML_SURV` the full 3-level) are just **different schemes mapped per case type** — `TmX_Case_Type → Workflow_Scheme_Code` mapping, exactly like `TmX_Product.Workflow_Scheme_Code` maps products to transaction schemes today.
+
+Command post-hooks (same pattern as `TrySyncTransactionStatusAsync`) drive case status sync per executed command (`Command_Application_Status_Mapping` idiom against the `CASE_STATUS` lookups) and call `ICaseDecisionApplier` on `ApproveClosure` — so a standalone closure produces byte-identical transaction-side effects to today's FCCM callback `30004`/`30003`. Case assignment queues ride `WorkflowInbox` — the Cases FE module's queue is the same inbox pattern the Transactions inbox already uses. RBAC: new roles `Case Analyst L1/L2/L3`, `Case Authorizer` + `Cases.View`/`Cases.Operate`/`Cases.Authorize` privileges (rbac_grants.sql additions).
+
+**Case types and creation triggers (parity: FCCM creates a case in BOTH flows):**
+
+| Case type | Created when | Content | Decision commands |
+|---|---|---|---|
+| `KYC_ONBOARDING` | KYC assessment reaches `RiskAssessed` (post-scoring, post-reconciliation — mirrors FCCM's onboarding case at `FCC_OB_RA.CASE_ID`) | Risk assessment link (dual scores + terms), customer snapshot, prior-case links | `Approve` / `Reject` / `SendBackToAnalyst` |
+| `TBML_SURV` | Trade finalise with `redflagsCount > 0` (CA-NOHIT zero-flag branch identical to today) | 1 customer event + N flag events (matched values + auto-flag proof), transaction link | `Confirm` / `CloseNoAction` / `SendBackToAnalyst` / `Escalate` |
+
+**Lifecycle & closure (parity with ECM `STATUS_CD` lifecycle, `CR` at creation):** status vocabulary seeded as `CASE_STATUS` lookups — `Created → Assigned → Under Investigation → (Escalated) → Closed`. Closure is always **decision-driven with a disposition** recorded on `TmX_Case.Disposition`: KYC → `Approved | Rejected | Returned`; TBML → `Confirmed (STR-candidate) | False Positive | No Action | Returned`. Closure stamps `Closed_At/By`, fires `ICaseDecisionApplier` (transaction status + remark + review-schedule effects identical to the FCCM callback), and is terminal on the workflow. **Reopen** is deliberately not a mutation: a reopened matter = new case linked `related`/`reopens` to the closed one (cleaner audit than in-place resurrection; FCCM-era closed cases stay immutable). All transitions land in `WorkflowProcessTransitionHistory` + `TmX_Case_Audit`.
 
 ### 7.4 FE Cases module (fills the `/cases` placeholder route)
 
@@ -268,8 +345,13 @@ Queue page (grid: case number, type, customer, priority, status, age, assignee; 
     "SourceLabel": "TBML",             // reconciliation suffix; "TMX" in standalone
     "Standalone": {
       "CaseNumberPrefix": "TMX-CA",
-      "AutoLinkOpenCaseSameCustomer": true,     // G8 v1 dedup guard
-      "CorrelationWindowDays": 0                 // 0 = per-transaction case (parity); >0 enables G11 v2
+      "Correlation": {
+        "Enabled": true,                 // master switch for the CaseCorrelationEngine
+        "EvaluateOnEventAttach": false   // also re-run rules when new events attach (G11)
+      }
+      // HOW/WHAT correlates is data, not config: TmX_Correlation_Rule rows
+      // (admin screen, maker-checker) define match context, case types,
+      // lookback, closed-case inclusion, and action per rule — see §7.2.
     }
   },
   // Existing keys — Fccm mode only (ignored in Standalone):
@@ -411,6 +493,11 @@ Every risk-scoring capability observable from the FCCM side, its standalone equi
 | Model change control | `TmX_Risk_Model` versioning (Draft→Active→Retired), assessments stamp model version | ✅ Full ✚ (explicit versioning + full per-assessment traceability) |
 | Score explainability | `Param_Scores_Json` per-parameter proof + rule-hit reason on every assessment | ✚ Add-on (FCCM exposes only the outputs to TMX) |
 | Continuous score surfaced to analysts | Risk Assessment tab detail panel shows score + banding in standalone mode | ✚ Add-on (today only the band reaches TMX) |
+| **Dual-score visibility** — algorithm score always computed; rule-based supersession/acceleration shows *on what terms* the high score arose | Both stages always compute; `Superseded_By_Rule` + `Rule_Hits_Json` (rule, predicate, matched values, reason); tab shows both scores + prevailing reason | ✅ Full ✚ (per-parameter arithmetic breakdown added) |
+| Case creation in **both** flows — onboarding case (`FCC_OB_RA.CASE_ID`) and TBML case (`PR_CREATE_EVENT_DEMO`) | `KYC_ONBOARDING` case at `RiskAssessed`; `TBML_SURV` case at trade finalise with flags (§7.3 table); CA-NOHIT branch preserved | ✅ Full |
+| Case lifecycle & **closure** (`STATUS_CD` `CR`→…→closed, dispositions) | `CASE_STATUS` lookup lifecycle + decision-driven closure with typed dispositions per case type; reopen-as-linked-new-case; immutable closed cases | ✅ Full ✚ (explicit disposition taxonomy) |
+| FCCM internal **investigator workflow** (assignment, multi-level review, escalation — invisible to TMX today) | Designed `CaseWF` scheme (§7.3): L1/L2/L3 analyst pools with claim, escalation (manual + SLA-timed), Case Authorizer dual-control closure — designer-editable, per-case-type scheme mapping | ✅ Full ✚ (transparent in TMX, levels configurable without code) |
+| Event/case **correlation** (`FCC_CORRELATION_EVENT_MAP`, `FCC_PRECASE_CASE_MAP`, `CASEIDTOTRANSACTION`, `TMX_TRANS_FROM_REPO`) | Native keys (event↔case↔transaction↔customer↔assessment) + **configurable rule-driven `CaseCorrelationEngine`** (`TmX_Correlation_Rule`: admin controls match context, case types, lookback, closed-case inclusion, action; every link records the rule + matched values); seeded same-customer default; manual/typed linking + merge (S2) | ✅ Full (S1) ✚ admin-controlled context + link explainability |
 | Exact production weights/rules/ranges values | **Import required** — FCCM admin export (primary) or historical calibration (fallback), compliance sign-off | ⚠️ §12.1 gate (data, not capability) |
 
 ---

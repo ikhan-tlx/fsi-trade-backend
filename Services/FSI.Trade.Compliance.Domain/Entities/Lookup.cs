@@ -27,7 +27,7 @@ public class Lookup
     public string?   HiddenValue         { get; set; }
     public bool      IsActive            { get; set; } = true;     // Is_Active
     public bool      ActiveFlag          { get; set; } = true;     // Active_Flag (separate column from Is_Active in legacy)
-    public bool      UserEditable        { get; set; }
+    public bool?     UserEditable        { get; set; }     // User_Editable (nullable int in DB; NULL on legacy rows)
     public int?      SortOrder           { get; set; }
     public string?   LocaleLabel         { get; set; }
     public int?      LocaleId            { get; set; }

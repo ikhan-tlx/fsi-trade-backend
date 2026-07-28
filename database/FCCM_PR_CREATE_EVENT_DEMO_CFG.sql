@@ -8,7 +8,11 @@
 -- The ORIGINAL PR_CREATE_EVENT_DEMO is left untouched. MANTAS-stripped,
 -- unqualified (resolves in the login/atomic schema). CREATE OR REPLACE = idempotent.
 -- =====================================================================
-SET DEFINE OFF;
+-- NOTE: `SET DEFINE OFF` is a SQL*Plus/SQLcl client directive, NOT a SQL
+-- statement. Sent over a JDBC connection (DBeaver) it raises ORA-00900
+-- ("invalid SQL statement"). There are no '&' substitution variables in this
+-- proc, so it is not needed. Left commented so SQL*Plus/SQLcl runs stay clean.
+-- SET DEFINE OFF;
 
 CREATE OR REPLACE PROCEDURE PR_CREATE_EVENT_DEMO_CFG (
     MESSAGE_ID   IN     VARCHAR2,
@@ -2447,3 +2451,4 @@ END LOOP;
 --        RAISE_APPLICATION_ERROR(-20001,'Error occured : '|| DBMS_UTILITY.FORMAT_ERROR_BACKTRACE, true);
 
 END;
+/

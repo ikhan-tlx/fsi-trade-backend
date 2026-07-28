@@ -21,7 +21,16 @@ public class LookupConfiguration : IEntityTypeConfiguration<Lookup>
         b.Property(l => l.HiddenValue)     .HasColumnName("Hidden_Value");
         b.Property(l => l.IsActive)        .HasColumnName("Is_Active");
         b.Property(l => l.ActiveFlag)      .HasColumnName("Active_Flag");
-        b.Property(l => l.UserEditable)    .HasColumnName("User_Editable");
+        // User_Editable is a NULLABLE INT column in this DB (0/1, NULL on legacy rows),
+        // but the CLR concept is boolean. Mapping a non-nullable bool threw
+        // "Unable to cast Int32 to Boolean", and even the int converter threw
+        // SqlNullValueException on the NULL legacy rows. So the property is bool?
+        // with an explicit null-safe int? converter: NULL stays NULL (callers treat
+        // NULL as "editable"; only an explicit 0 locks a row).
+        b.Property(l => l.UserEditable)    .HasColumnName("User_Editable")
+            .HasConversion(
+                v => v.HasValue ? (v.Value ? 1 : 0) : (int?)null,
+                v => v.HasValue ? v.Value != 0 : (bool?)null);
         b.Property(l => l.SortOrder)       .HasColumnName("Sort_Order");
         b.Property(l => l.LocaleLabel)     .HasColumnName("Locale_Label");
         b.Property(l => l.LocaleId)        .HasColumnName("Locale_ID");

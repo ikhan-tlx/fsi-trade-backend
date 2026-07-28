@@ -18,8 +18,9 @@ namespace FSI.Trade.Compliance.Application.Contracts.Integrations;
 ///
 ///   3. Write a "Customer Details" event to EventStaging.
 ///
-///   4. Write one "Manual Redflag" event per ticked flag, sourced from
-///      <c>TmX_Transaction_Flag</c> JOINed to <c>TmX_Flag_Catalogue</c>.
+///   4. Write one red-flag event per ticked flag — InputName reflects the flag's
+///      origin ("Auto Redflag" for auto-flags, "Manual Redflag" otherwise) — sourced
+///      from <c>TmX_Transaction_Flag</c> JOINed to <c>TmX_Flag_Catalogue</c>.
 ///      The catalogue's <c>Flag_Description</c> is the canonical text —
 ///      NO hardcoded indicator strings inline. This is the structural
 ///      win over the legacy ~27-if-block × OR-chain-of-16-columns

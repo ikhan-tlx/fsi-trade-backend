@@ -1,6 +1,7 @@
 using System.Text.Json;
 using FSI.Trade.Compliance.Application.Common.Models;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
+using FSI.Trade.Compliance.Application.Features.LookupAdmin;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 
@@ -45,18 +46,22 @@ public class ListReferenceDomainsQuery : IRequest<List<DomainDto>> { }
 
 public class ListReferenceDomainsQueryHandler : IRequestHandler<ListReferenceDomainsQuery, List<DomainDto>>
 {
-    private readonly IApplicationDbContext _db;
-    public ListReferenceDomainsQueryHandler(IApplicationDbContext db) => _db = db;
-
-    public async Task<List<DomainDto>> Handle(ListReferenceDomainsQuery req, CancellationToken ct)
+    public Task<List<DomainDto>> Handle(ListReferenceDomainsQuery req, CancellationToken ct)
     {
-        var lkps = await _db.ReferenceTypes.AsNoTracking()
-            .Select(t => t.LookupType).Distinct().ToListAsync(ct);
-        var list = lkps
-            .Select(l => new DomainDto { key = l ?? "", label = DomainLabels.For(l) })
-            .GroupBy(d => d.key).Select(g => g.First())
+        // Domains are populated from the SAME static allow-list that governs Lookup Management
+        // (LookupAdminAllowList.Types) — the single compiled source of truth for which TmX_Lookup
+        // groups are user-managed — rather than every distinct Lookup_Type in the catalogue. This
+        // keeps the reference-list "Domain" dropdown aligned with the managed lookup set so an
+        // author can only scope a reference type to a governed lookup group.
+        var list = LookupAdminAllowList.Types
+            .Select(l => new DomainDto { key = l, label = DomainLabels.For(l) })
+            .GroupBy(d => d.key, StringComparer.OrdinalIgnoreCase).Select(g => g.First())
             .OrderBy(d => d.label).ToList();
-        return list;
+
+        // Preserve the ungoverned "custom / none" option so free-text reference lists (LookupType
+        // = null) remain creatable — it is not a TmX_Lookup group, so add it explicitly.
+        list.Insert(0, new DomainDto { key = "", label = DomainLabels.For(null) });
+        return Task.FromResult(list);
     }
 }
 

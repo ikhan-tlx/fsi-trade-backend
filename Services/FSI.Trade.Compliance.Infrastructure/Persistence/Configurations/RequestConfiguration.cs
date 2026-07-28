@@ -18,6 +18,7 @@ public class RequestConfiguration : IEntityTypeConfiguration<Request>
         b.Property(x => x.RequestStatusCode) .HasColumnName("Request_Status_Code").HasMaxLength(10);
         b.Property(x => x.EntityId)          .HasColumnName("Entity_Id").HasMaxLength(50);
         b.Property(x => x.EntityJson)        .HasColumnName("Entity_Json");
+        b.Property(x => x.CommandKey)        .HasColumnName("Command_Key").HasMaxLength(80);
         b.Property(x => x.RejectReason)   .HasColumnName("Reject_Reason").HasMaxLength(1000);
         b.Property(x => x.CreatedBy)         .HasColumnName("Created_By").HasMaxLength(200);
         b.Property(x => x.CreatedDate)       .HasColumnName("Created_Date");

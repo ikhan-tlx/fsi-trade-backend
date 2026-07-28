@@ -1,0 +1,10 @@
+-- SUPERSEDED — moved into the OFSAA migrations folder.
+--
+-- This standalone UAT patch has been promoted to a proper, ordered OFSAA/Oracle
+-- migration. Use that file instead (identical, idempotent):
+--
+--     database/ofsaa-migrations/2026_07_001_TmxTransFromRepo_CorrelationColumns.sql
+--
+-- See database/ofsaa-migrations/README.md for the OFSAA (Oracle) migration
+-- convention. This stub is kept only to avoid a dangling reference; it performs
+-- no changes.

@@ -90,6 +90,10 @@ INSERT @scoped(Code, Description) VALUES
     (N'ReferenceLists.View',   N'View reference types, values and their memberships'),
     (N'ReferenceLists.Manage', N'Create / edit / delete reference types, values and memberships'),
 
+    -- Lookup Management module (values of allow-listed lookup types — migration 2026_07_027)
+    (N'LookupManagement.View',   N'View managed lookup types, values and their "where used"'),
+    (N'LookupManagement.Manage', N'Submit lookup-value add / edit / activate-deactivate / delete for approval'),
+
     -- Transactions module (Slice 9)
     (N'Transactions.Resubmit',       N'Manually re-fire the FCCM trade submission for a transaction'),
 
@@ -180,6 +184,8 @@ INSERT @grants(PrivCode) VALUES
     (N'Flags.Manage'),
     (N'ReferenceLists.View'),
     (N'ReferenceLists.Manage'),
+    (N'LookupManagement.View'),
+    (N'LookupManagement.Manage'),
     (N'Transactions.Resubmit'),
     (N'Transactions.AddNote'),
     (N'Transactions.UploadDocument'),

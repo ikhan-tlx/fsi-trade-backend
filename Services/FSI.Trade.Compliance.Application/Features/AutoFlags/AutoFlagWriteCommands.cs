@@ -2,6 +2,7 @@ using FSI.Trade.Compliance.Application.Common.Exceptions;
 using FSI.Trade.Compliance.Application.Contracts.Flags;
 using FSI.Trade.Compliance.Application.Contracts.Identity;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
+using FSI.Trade.Compliance.Domain.Entities;
 using FSI.Trade.Compliance.Domain.Entities.Flags;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
@@ -217,16 +218,140 @@ public class SubmitAutoFlagCommandHandler : IRequestHandler<SubmitAutoFlagComman
     {
         var flag = await _db.FlagCatalogues.FirstOrDefaultAsync(f => f.FlagId == req.FlagId && !f.IsDeleted, ct)
                    ?? throw new NotFoundException("auto_flag_not_found", $"Auto flag '{req.FlagId}' not found.");
+
+        // This path is the FIRST activation of a Draft/new flag. An edit to an
+        // already-Active flag must NOT come through here — it would take the live
+        // control offline. Those edits are parked as a replayable request (type 0005,
+        // action 0002) via the generic Submit endpoint and never touch the live row.
+        if (string.Equals(flag.Status, "Active", StringComparison.OrdinalIgnoreCase) || flag.ActiveFlag)
+            throw new ConflictException("auto_flag_active_edit_requires_request",
+                "Editing an active auto flag must be submitted as a change request so the live flag keeps running until a checker approves.");
+
         var u = _current.UserName ?? _current.UserId ?? "system";
         var now = DateTime.UtcNow;
         flag.Status          = "PendingApproval";
+        // Stop evaluating while pending: the auto-flag evaluator gates on ActiveFlag,
+        // so an EDIT to an already-Active flag must park (ActiveFlag=false) until a
+        // checker approves — otherwise the unapproved rule would fire live. Approve
+        // (ApproveAutoFlagCommand) flips it back true; reject leaves it Draft/inactive.
+        flag.ActiveFlag      = false;
         flag.SubmittedBy     = u;
         flag.SubmittedDate   = now;
         flag.LastUpdatedBy   = u;
         flag.LastUpdatedDate = now;
+
+        // Maker/checker unify: also park a TmX_Request (type 0005) so this flag
+        // shows up in the shared Requests queue and is approved from there. On
+        // approval the checker's decision replays ApproveAutoFlagCommand (→ Active).
+        // Command_Key marks it replayable; skip if one is already pending.
+        var flagIdStr = flag.FlagId.ToString();   // hoist out of the LINQ predicate (EF can't translate int.ToString())
+        var alreadyPending = await _db.Requests.AsNoTracking().AnyAsync(r =>
+            r.RequestTypeCode == "0005" &&
+            r.EntityId == flagIdStr &&
+            r.RequestStatusCode == "0011", ct);
+        if (!alreadyPending)
+        {
+            // Serialize a representable snapshot so the Requests screen can show the
+            // checker WHAT they're approving — flag name / code / severity / scope /
+            // the rule conditions / description — without a second fetch. This is the
+            // proposed (committed-on-flag) config that goes live on approve.
+            var sevMap   = await AutoFlagLookup.SeverityNamesAsync(_db, ct);
+            var sevLabel = flag.SeverityLkpId is int sid && sevMap.TryGetValue(sid, out var sn) ? sn : "";
+
+            var scopeProductIds = await _db.FlagScopes.AsNoTracking()
+                .Where(s => s.FlagId == flag.FlagId && s.ActiveFlag)
+                .Select(s => s.ProductId)
+                .ToListAsync(ct);
+            var scopeText = scopeProductIds.Count == 0 ? "Not scoped"
+                : scopeProductIds.Any(p => p == null) ? "All products"
+                : $"{scopeProductIds.Where(p => p != null).Distinct().Count()} product scope(s)";
+
+            var ruleRows = await _db.FlagRules.AsNoTracking()
+                .Where(r => r.FlagId == flag.FlagId)
+                .OrderBy(r => r.RuleGroup).ThenBy(r => r.EvaluationOrder)
+                .ToListAsync(ct);
+            var ruleText = BuildRuleSummary(ruleRows);
+
+            var entityJson = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                Name        = flag.FlagName,
+                Code        = flag.FlagCode,
+                Severity    = sevLabel,
+                Scope       = scopeText,
+                Rule        = ruleText,
+                Description = flag.FlagDescription,
+                Status      = "PendingApproval",
+                flagId      = flag.FlagId,
+            });
+            _db.Requests.Add(new Request
+            {
+                TenantId          = _current.TenantId ?? 1,
+                RequestTypeCode   = "0005",       // Auto Flag
+                EntityStatusCode  = "0001",       // Create — first activation of a Draft/new flag
+                RequestStatusCode = "0011",       // Pending
+                EntityId          = flagIdStr,
+                EntityJson        = entityJson,
+                CommandKey        = "0005:0001",
+                CreatedBy         = u,
+                CreatedDate       = now,
+            });
+        }
+
         await _db.SaveChangesAsync(ct);
         return true;
     }
+
+    // ---- Readable rule summary for the Requests (checker) screen ----
+    // Groups joined by OR, conditions within a group by AND, mirroring the evaluator.
+    // Best-effort human text: "<field> <op> <right>"; field/list codes are shown
+    // as-is (still reviewable) — enough for a checker to see what the flag does.
+    private static string BuildRuleSummary(IReadOnlyList<FlagRule> rules)
+    {
+        if (rules is null || rules.Count == 0) return "(no conditions)";
+        var multiGroup = rules.Select(r => r.RuleGroup).Distinct().Count() > 1;
+        var groupTexts = rules
+            .GroupBy(r => r.RuleGroup)
+            .OrderBy(g => g.Key)
+            .Select(g =>
+            {
+                var joined = string.Join(" AND ", g.OrderBy(r => r.EvaluationOrder).Select(FormatCondition));
+                return multiGroup ? $"({joined})" : joined;
+            });
+        return string.Join(" OR ", groupTexts);
+    }
+
+    private static string FormatCondition(FlagRule r)
+    {
+        var left = !string.IsNullOrWhiteSpace(r.LeftFieldCode) ? r.LeftFieldCode!
+                 : !string.IsNullOrWhiteSpace(r.HandlerKey)    ? r.HandlerKey!
+                 : (r.LeftSource ?? "field");
+        var op = HumanOperator(r.Operator);
+        var right = !string.IsNullOrWhiteSpace(r.ReferenceListCode) ? $"list \"{r.ReferenceListCode}\""
+                  : !string.IsNullOrWhiteSpace(r.RightFieldCode)    ? $"field \"{r.RightFieldCode}\""
+                  : (r.StaticValue ?? "");
+        var factor = r.RightFactor != null
+            ? $" ×{r.RightFactor}{(string.IsNullOrWhiteSpace(r.RightFactorUnit) ? "" : r.RightFactorUnit)}"
+            : "";
+        return $"{left} {op} {right}{factor}".Trim();
+    }
+
+    private static string HumanOperator(string? op) => (op ?? "").Trim() switch
+    {
+        "Equals"             => "=",
+        "NotEquals"          => "≠",
+        "GreaterThan"        => ">",
+        "GreaterThanOrEqual" => "≥",
+        "LessThan"           => "<",
+        "LessThanOrEqual"    => "≤",
+        "In"                 => "in",
+        "NotIn"              => "not in",
+        "Contains"           => "contains",
+        "DateBefore"         => "is before",
+        "DateAfter"          => "is after",
+        "WithinDays"         => "within (days)",
+        ""                   => "?",
+        var other            => other,
+    };
 }
 
 /// <summary>POST /api/v1/AutoFlag/{id}/Approve — checker activates the flag (it starts evaluating).</summary>

@@ -354,6 +354,60 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
         var op = (r.Operator ?? "").Trim();
         var none = new List<string>();
 
+        // ── Enhancement #2 — grouped metric. The left operand is a per-group series (one aggregate
+        // per group key, always within one customer). Compare each group's value to its per-group
+        // counterpart (Rhs — e.g. that LC's amount) or, when absent, the static threshold; raise ONE
+        // hit per satisfying group (MatchedValue = the group key, e.g. "LcNumber=LC-001").
+        if (IsMetricSource(r.LeftSource)
+            && metrics.TryGetValue(r.RuleId, out var gm) && gm.Groups is { Count: > 0 } grps)
+        {
+            var thresh  = ApplyFactor((r.StaticValue ?? "").Trim(), r.RightFactor, r.RightFactorUnit);
+            var matched = new List<string>();
+            var parts   = new List<string>();
+            foreach (var g in grps)
+            {
+                bool ok;
+                if (g.LeftSet is not null)
+                {
+                    // #3 — field-vs-counterpart: compare the group's left field value SET to its
+                    // right (counterpart) SET. Equal degrades to scalar equality when each is single.
+                    var l = g.LeftSet; var rset = g.RightSet ?? (IReadOnlyList<string>)Array.Empty<string>();
+                    ok = op switch
+                    {
+                        "Equals"    => SetEquals(l, rset),
+                        "NotEquals" => !SetEquals(l, rset),
+                        "Contains"  => l.Any(a => rset.Any(b => a.Contains(b, StringComparison.OrdinalIgnoreCase))),
+                        _           => false,
+                    };
+                    if (ok)
+                    {
+                        var key = string.Join(",", g.Key.Select(kv => $"{kv.Key}={kv.Value}"));
+                        matched.Add(key);
+                        parts.Add($"{key}: [{g.Value}] {op} [{g.Rhs}]");
+                    }
+                    continue;
+                }
+                var rhs = g.Rhs ?? thresh;   // per-group counterpart if present, else the static threshold
+                ok = op switch
+                {
+                    "GreaterThan" => NumCompare(g.Value, rhs, (a, b) => a > b),
+                    "LessThan"    => NumCompare(g.Value, rhs, (a, b) => a < b),
+                    "Equals"      => ScalarEquals(g.Value, rhs),
+                    "NotEquals"   => !ScalarEquals(g.Value, rhs),
+                    _             => false,
+                };
+                if (ok)
+                {
+                    var key = string.Join(",", g.Key.Select(kv => $"{kv.Key}={kv.Value}"));
+                    matched.Add(key);
+                    parts.Add($"{key}: {g.Value} {op} {rhs}");
+                }
+            }
+            var raised = matched.Count > 0;
+            var det = raised ? string.Join(" · ", parts) : $"grouped {op}: 0 of {grps.Count} group(s) satisfied";
+            return (raised, det, grps.Select(x => x.Value).ToList(), matched);
+        }
+
         // Aggregate/Derived left operands are supplied by a metric handler (pre-computed
         // in ComputeMetricsAsync), not read from the UDF. A non-computable metric yields
         // no candidates → numeric/set comparisons resolve to not-satisfied (never throws).
@@ -650,6 +704,22 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
         => decimal.TryParse(a, NumberStyles.Any, CultureInfo.InvariantCulture, out var x)
            && decimal.TryParse(b, NumberStyles.Any, CultureInfo.InvariantCulture, out var y)
            && cmp(x, y);
+
+    /// <summary>Equality that is numeric when both sides parse as numbers, else case-insensitive
+    /// string equality — used by the grouped-metric comparison (enhancement #2).</summary>
+    private static bool ScalarEquals(string a, string b)
+        => (decimal.TryParse(a, NumberStyles.Any, CultureInfo.InvariantCulture, out var x)
+            && decimal.TryParse(b, NumberStyles.Any, CultureInfo.InvariantCulture, out var y))
+           ? x == y : string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Case-insensitive set equality — the two value sets contain exactly the same values
+    /// (used by the grouped field-vs-counterpart comparison, #3).</summary>
+    private static bool SetEquals(IReadOnlyList<string> a, IReadOnlyList<string> b)
+    {
+        var sa = new HashSet<string>(a, StringComparer.OrdinalIgnoreCase);
+        var sb = new HashSet<string>(b, StringComparer.OrdinalIgnoreCase);
+        return sa.SetEquals(sb);
+    }
 
     /// <summary>Scale a numeric RHS by the rule's Right_Factor:
     /// value * (unit == "Percent" ? factor/100 : factor). Null factor or a non-numeric

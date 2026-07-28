@@ -162,6 +162,16 @@ public class ListRequestsQueryHandler
                 "0001" => new[] { "UserName", "userName", "EmailAddress", "emailAddress" },
                 "0003" => new[] { "RoleName", "roleName" },
                 "0004" => new[] { "BranchName", "branchName", "BranchCode", "branchCode" },
+                "0005" => new[] { "Name", "name", "FlagName", "flagName" },
+                "0006" => new[] { "flagName", "FlagName", "Name", "name" },
+                // Field Config: the FE parks display-only productName / sectionLabel
+                // alongside the replayable PublishSectionCommand body.
+                "0007" => new[] { "sectionLabel", "productName", "ProductName" },
+                // Reference Lists — type/value carry name+code; bulk parks an optional
+                // display-only typeName alongside the replayable {typeId, rows} body.
+                "0008" => new[] { "name", "Name", "code", "Code" },
+                "0009" => new[] { "name", "Name", "code", "Code" },
+                "0010" => new[] { "typeName", "TypeName", "Name", "name" },
                 _      => new[] { "Name", "name" },
             };
             foreach (var k in keys)
