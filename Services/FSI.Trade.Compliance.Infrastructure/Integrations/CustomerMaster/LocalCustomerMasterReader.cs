@@ -19,7 +19,7 @@ namespace FSI.Trade.Compliance.Infrastructure.Integrations.CustomerMaster;
 /// <list type="bullet">
 ///   <item><b>KYC product</b> → customer doesn't exist locally yet,
 ///         BE proxies to BRAINS via <c>GET /Customer/{id}/Kyc</c>
-///         (unchanged; still served by <c>BrainsKycScreeningService</c>).</item>
+///         (unchanged; still served by <c>KycScreeningService</c>).</item>
 ///   <item><b>Trade product</b> → customer must already have a KYC
 ///         record on file. <c>GET /Customer/{id}</c> looks them up
 ///         locally and returns null (FE shows "Customer does not have

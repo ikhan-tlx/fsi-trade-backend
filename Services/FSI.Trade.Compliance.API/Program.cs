@@ -5,6 +5,7 @@ using FSI.Trade.Compliance.API.Filters;
 using FSI.Trade.Compliance.API.Routing;
 using FSI.Trade.Compliance.Application;
 using FSI.Trade.Compliance.Infrastructure;
+using FSI.Trade.Compliance.Infrastructure.Configuration;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
@@ -12,6 +13,18 @@ using Serilog;
 using Serilog.Events;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// --- DB-managed configuration bridge (Configuration Management, Phase 1) ---
+// Layer DB settings ON TOP of appsettings so managed values override the file
+// for the same key, and every existing IOptions/IOptionsMonitor<T> consumer
+// reads the DB value with hot-reload (no restart). Secrets + logging levels are
+// deliberately NOT bridged (see DbConfigurationProvider). Load() is fail-soft:
+// if the table/DB is unavailable the app still boots on appsettings alone.
+{
+    var cfgConn = builder.Configuration.GetConnectionString("DefaultConnection");
+    if (!string.IsNullOrWhiteSpace(cfgConn))
+        builder.Configuration.AddDbConfiguration(cfgConn);
+}
 
 // --- Logging ----------------------------------------------------------
 // Module-wise diagnostic files — the new-stack equivalent of the legacy
@@ -118,14 +131,10 @@ builder.Services.AddApplicationServices();
 builder.Services.AddInfrastructureServices(builder.Configuration);
 builder.Services.AddHttpContextAccessor();
 
-// Safety: the BRAINS sandbox returns synthetic KYC results — it must never run
-// in Production. Fail fast at start-up rather than silently screen against fakes.
-if (builder.Environment.IsProduction()
-    && string.Equals(builder.Configuration["Integration:Brains:Mode"], "Sandbox", StringComparison.OrdinalIgnoreCase))
-{
-    throw new InvalidOperationException(
-        "Integration:Brains:Mode = Sandbox is not permitted in Production. Set it to 'Live'.");
-}
+// KYC screening is always LIVE (no in-process sandbox mode). It calls the
+// provider at Integration:Brains:BaseUrl — a live provider in Production, or the
+// standalone BRAINS-compatible test provider (kyc-mock-provider/) in dev/UAT.
+// Screening is gated on/off by config (Onboarding.RequireExternalVerification).
 
 // --- API Versioning ---------------------------------------------------
 // Strategy:
@@ -179,9 +188,24 @@ builder.Services
             IssuerSigningKey          = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
             ClockSkew                 = TimeSpan.FromSeconds(30)
         };
+        // WebSocket clients cannot send an Authorization header, so SignalR
+        // passes the JWT as the ?access_token=... query string. Lift it into the
+        // token pipeline ONLY for the hub path so normal HTTP auth is unchanged.
+        o.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = ctx =>
+            {
+                var accessToken = ctx.Request.Query["access_token"];
+                var path = ctx.HttpContext.Request.Path;
+                if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs"))
+                    ctx.Token = accessToken;
+                return Task.CompletedTask;
+            }
+        };
     });
 
 builder.Services.AddAuthorization();
+builder.Services.AddSignalR();
 
 // --- Swagger ----------------------------------------------------------
 builder.Services.AddEndpointsApiExplorer();
@@ -235,5 +259,6 @@ app.UseMiddleware<DeviceTrackingMiddleware>();        // X-Device-Id required on
 app.UseAuthorization();
 
 app.MapControllers();
+app.MapHub<FSI.Trade.Compliance.Infrastructure.Realtime.NotificationHub>("/hubs/notifications");
 
 app.Run();

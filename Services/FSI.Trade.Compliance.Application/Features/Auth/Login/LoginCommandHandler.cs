@@ -33,9 +33,9 @@ public class LoginCommandHandler : IRequestHandler<LoginCommand, AuthResponse>
         IDeviceService                 devices,
         ICurrentDeviceService          currentDevice,
         ILoginAuditService             audit,
-        IOptions<PasswordPolicyOptions> policy,
-        IOptions<TwoFactorOptions>      twoFactor,
-        IOptions<AuthOptions>           authOpt)
+        IOptionsSnapshot<PasswordPolicyOptions> policy,
+        IOptionsSnapshot<TwoFactorOptions>      twoFactor,
+        IOptionsSnapshot<AuthOptions>           authOpt)
     {
         _userAuth      = userAuth;
         _roles         = roles;

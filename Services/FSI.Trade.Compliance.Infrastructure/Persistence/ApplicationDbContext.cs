@@ -42,6 +42,8 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public DbSet<Location>                 Locations                 => Set<Location>();
     public DbSet<Company>                  Companies                 => Set<Company>();
     public DbSet<Request>                  Requests                  => Set<Request>();
+    public DbSet<Notification>             Notifications             => Set<Notification>();
+    public DbSet<NotificationPref>         NotificationPrefs         => Set<NotificationPref>();
     public DbSet<AuditLog>              AuditLogs            => Set<AuditLog>();
     public DbSet<UserHoliday>              UserHolidays              => Set<UserHoliday>();
 
@@ -89,6 +91,12 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public DbSet<ReferenceValue>          ReferenceValues          => Set<ReferenceValue>();
     public DbSet<ReferenceValueTypeMap>   ReferenceValueTypeMaps   => Set<ReferenceValueTypeMap>();
     public DbSet<AutoFlagJob>             AutoFlagJobs             => Set<AutoFlagJob>();
+
+    // 2026_07_036 — Configuration Management.
+    public DbSet<Domain.Entities.Configuration.ConfigurationCategory>   ConfigurationCategories  => Set<Domain.Entities.Configuration.ConfigurationCategory>();
+    public DbSet<Domain.Entities.Configuration.ConfigurationDefinition> ConfigurationDefinitions => Set<Domain.Entities.Configuration.ConfigurationDefinition>();
+    public DbSet<Domain.Entities.Configuration.ConfigurationValue>      ConfigurationValues      => Set<Domain.Entities.Configuration.ConfigurationValue>();
+    public DbSet<Domain.Entities.Configuration.ConfigurationHistory>    ConfigurationHistories   => Set<Domain.Entities.Configuration.ConfigurationHistory>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

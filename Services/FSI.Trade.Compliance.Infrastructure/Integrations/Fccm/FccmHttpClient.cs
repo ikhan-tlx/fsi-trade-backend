@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using FSI.Trade.Compliance.Application.Common.Options;
+using FSI.Trade.Compliance.Application.Contracts.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -20,12 +21,15 @@ public class FccmHttpClient
     private readonly HttpClient                _http;
     private readonly IntegrationOptions        _opt;
     private readonly ILogger<FccmHttpClient>   _log;
+    private readonly ISecretConfigReader       _secrets;
 
-    public FccmHttpClient(HttpClient http, IOptions<IntegrationOptions> opt, ILogger<FccmHttpClient> log)
+    public FccmHttpClient(HttpClient http, IOptions<IntegrationOptions> opt,
+                          ILogger<FccmHttpClient> log, ISecretConfigReader secrets)
     {
         _http = http;
         _opt  = opt.Value;
         _log  = log;
+        _secrets = secrets;
     }
 
     // Wire format MUST keep PascalCase keys (OnboardingCustomer, ApplicantID,
@@ -74,10 +78,14 @@ public class FccmHttpClient
             {
                 Content = new StringContent(json, Encoding.UTF8, "application/json"),
             };
-            // Basic auth (legacy: Convert.ToBase64String(user:pass)) from the
-            // configurable Integration:Onboarding block.
+            // Basic auth (legacy: Convert.ToBase64String(user:pass)). Username comes
+            // from the bridged Integration:Onboarding block; the PASSWORD is a secret,
+            // read decrypted from the Configuration module (falls back to the
+            // appsettings value only if not yet set there). Never logged.
             var authUser = _opt.Onboarding.Username;
-            var authPass = _opt.Onboarding.Password;
+            var authPass = _secrets.Get("Integration.Onboarding.Password") ?? _opt.Onboarding.Password;
+            if (!string.IsNullOrWhiteSpace(authUser) && string.IsNullOrWhiteSpace(authPass))
+                _log.LogError("FCCM onboarding password is not configured (Integration.Onboarding.Password in the Configuration module, nor an appsettings fallback). The Basic auth header will carry an empty password.");
             if (!string.IsNullOrWhiteSpace(authUser))
             {
                 var token = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{authUser}:{authPass}"));

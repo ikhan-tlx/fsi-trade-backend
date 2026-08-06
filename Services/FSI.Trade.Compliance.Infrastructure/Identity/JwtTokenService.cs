@@ -11,7 +11,7 @@ namespace FSI.Trade.Compliance.Infrastructure.Identity;
 public class JwtTokenService : IJwtTokenService
 {
     private readonly JwtOptions _opt;
-    public JwtTokenService(IOptions<JwtOptions> opt) => _opt = opt.Value;
+    public JwtTokenService(IOptionsSnapshot<JwtOptions> opt) => _opt = opt.Value;
 
     public (string token, DateTime expiresAtUtc) IssueAccessToken(ApplicationUser user, IReadOnlyList<string> roles)
     {
@@ -56,9 +56,6 @@ public class JwtTokenService : IJwtTokenService
         foreach (var r in roles)
             if (_opt.RoleTtlMinutes.TryGetValue(r, out var m))
                 minutes = (minutes is null) ? m : Math.Min(minutes.Value, m);
-
-        if (minutes is null && _opt.RoleTtlMinutes.TryGetValue("DefaultExpiry", out var def))
-            minutes = def;
 
         return TimeSpan.FromMinutes(minutes ?? _opt.AccessTokenDefaultMinutes);
     }

@@ -9,7 +9,6 @@ using FSI.Trade.Compliance.Application.Contracts.Workflow;
 using FSI.Trade.Compliance.Domain.Entities;
 using FSI.Trade.Compliance.Infrastructure.Documents;
 using FSI.Trade.Compliance.Infrastructure.Identity;
-using FSI.Trade.Compliance.Infrastructure.Integrations.Brains;
 using FSI.Trade.Compliance.Infrastructure.Integrations.CustomerMaster;
 using FSI.Trade.Compliance.Infrastructure.Integrations.Fccm;
 using FSI.Trade.Compliance.Infrastructure.Locations;
@@ -21,11 +20,13 @@ using FSI.Trade.Compliance.Infrastructure.Services;
 using FSI.Trade.Compliance.Infrastructure.Workflow;
 using FSI.Trade.Compliance.Infrastructure.Workflow.Actions;
 using FSI.Trade.Compliance.Infrastructure.Workflow.Rules;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Http.Resilience;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace FSI.Trade.Compliance.Infrastructure;
@@ -40,12 +41,15 @@ public static class InfrastructureServiceRegistration
         services.Configure<TwoFactorOptions>     (config.GetSection(TwoFactorOptions.SectionName));
         services.Configure<IntegrationOptions>   (config.GetSection(IntegrationOptions.SectionName));
         services.Configure<PeriodicReviewOptions>(config.GetSection(PeriodicReviewOptions.SectionName));
-        services.Configure<BrainsOptions>        (config.GetSection(BrainsOptions.SectionName));
+        services.Configure<PasswordExpiryScanOptions>(config.GetSection(PasswordExpiryScanOptions.SectionName));
+        services.Configure<SlaOptions>               (config.GetSection(SlaOptions.SectionName));
+        services.Configure<KycScreeningOptions>  (config.GetSection(KycScreeningOptions.SectionName));
         services.Configure<WorkflowOptions>      (config.GetSection(WorkflowOptions.SectionName));
         services.Configure<ReportOptions>        (config.GetSection(ReportOptions.SectionName));
         services.Configure<DocumentOptions>      (config.GetSection(DocumentOptions.SectionName));
         services.Configure<TradeRepositoryOptions>(config.GetSection(TradeRepositoryOptions.SectionName));
         services.Configure<CustomerInsightSnapshotOptions>(config.GetSection(CustomerInsightSnapshotOptions.SectionName));
+        services.Configure<EmailOptions>         (config.GetSection(EmailOptions.SectionName));
 
         // EF Core (+ generic audit interceptor — writes TmX_Audit_Log on every save)
         services.AddScoped<AuditSaveChangesInterceptor>();
@@ -56,6 +60,31 @@ public static class InfrastructureServiceRegistration
             opt.AddInterceptors(sp.GetRequiredService<AuditSaveChangesInterceptor>());
         });
         services.AddScoped<IApplicationDbContext>(sp => sp.GetRequiredService<ApplicationDbContext>());
+
+        // Configuration Management (Phase 1): reload the DB→IConfiguration bridge on a settings write.
+        services.AddSingleton<FSI.Trade.Compliance.Application.Contracts.Persistence.IConfigurationRefresher,
+                              FSI.Trade.Compliance.Infrastructure.Configuration.ConfigurationRefresher>();
+        // Verification probes for the Configuration screen (FCCM connect / URL / onboarding dry-run / file validate).
+        services.AddScoped<FSI.Trade.Compliance.Application.Contracts.Configuration.IConfigurationProbe,
+                           FSI.Trade.Compliance.Infrastructure.Configuration.ConfigurationProbe>();
+        // Third-party KYC provider title + verification flag (config-driven; replaces hardcoded "BRAINS").
+        services.AddScoped<FSI.Trade.Compliance.Application.Contracts.Configuration.IProviderTitleProvider,
+                           FSI.Trade.Compliance.Infrastructure.Configuration.ProviderTitleProvider>();
+
+        // Configuration secrets at rest: Data Protection (DPAPI-protected key ring) +
+        // an encrypt-on-write / decrypt-at-use path so Secret-type settings (FCCM
+        // password, Oracle connection, …) live ENCRYPTED in the DB, never plaintext
+        // and never bridged into IConfiguration.
+        services.AddDataProtection().SetApplicationName("FSI.Trade.Compliance");
+        services.AddSingleton<FSI.Trade.Compliance.Application.Contracts.Configuration.ISecretProtector,
+                              FSI.Trade.Compliance.Infrastructure.Configuration.DataProtectionSecretProtector>();
+        services.AddSingleton<FSI.Trade.Compliance.Application.Contracts.Configuration.ISecretConfigReader>(sp =>
+            new FSI.Trade.Compliance.Infrastructure.Configuration.SecretConfigReader(
+                config.GetConnectionString("DefaultConnection") ?? string.Empty,
+                sp.GetRequiredService<FSI.Trade.Compliance.Application.Contracts.Configuration.ISecretProtector>(),
+                sp.GetRequiredService<ILogger<FSI.Trade.Compliance.Infrastructure.Configuration.SecretConfigReader>>()));
+        // Boot-time validation: log an error for any integration setting missing from Configuration.
+        services.AddHostedService<FSI.Trade.Compliance.Infrastructure.Configuration.IntegrationConfigStartupValidator>();
 
         // Explicit audit writer (reads / login / export / failures — events the
         // SaveChanges interceptor cannot see).
@@ -91,8 +120,8 @@ public static class InfrastructureServiceRegistration
             o.Password.RequireUppercase            = false;
             o.Password.RequireNonAlphanumeric      = false;
             o.Password.RequiredLength              = 6;
-            o.Lockout.MaxFailedAccessAttempts      = 5;
-            o.Lockout.DefaultLockoutTimeSpan       = TimeSpan.FromMinutes(3);
+            o.Lockout.MaxFailedAccessAttempts      = config.GetValue<int>("PasswordPolicy:MaxFailedAttempts", 5);
+            o.Lockout.DefaultLockoutTimeSpan       = TimeSpan.FromMinutes(config.GetValue<int>("PasswordPolicy:LockoutMinutes", 3));
             o.Lockout.AllowedForNewUsers           = true;
         })
         .AddUserStore<TmxUserStore>()
@@ -121,11 +150,23 @@ public static class InfrastructureServiceRegistration
         services.AddScoped<ILoginAuditService,          LoginAuditService>();
         services.AddScoped<IPrivilegeService,           PrivilegeService>();
 
+        // Notification emitter — writes TmX_Notification rows AFTER a business
+        // write commits (never in the same SaveChanges). Scoped: composes the
+        // request-scoped IApplicationDbContext.
+        services.AddScoped<FSI.Trade.Compliance.Application.Contracts.Notifications.INotificationService,
+                           NotificationService>();
+
+        // SMTP email side-channel for the notification emitter. Best-effort +
+        // OFF by default (Email:Enabled=false) — a no-op until an operator
+        // supplies SMTP creds. Uses the BCL SmtpClient (no extra package).
+        services.AddScoped<FSI.Trade.Compliance.Application.Contracts.Notifications.IEmailSender,
+                           SmtpEmailSender>();
+
         // ---------- Slice 4: Integrations ----------
         // Resilience policy (~3 attempts, 30s timeout, 5-failure breaker) per BACKLOG.
         // Applied as a typed-HttpClient handler stack so each upstream client gets
         // the same retry/breaker/timeout treatment without reimplementing.
-        services.AddHttpClient<BrainsKycScreeningService>((sp, http) =>
+        services.AddHttpClient<FSI.Trade.Compliance.Infrastructure.Integrations.Kyc.DynamicKycScreeningService>((sp, http) =>
                 {
                     http.Timeout = sp.GetRequiredService<IOptions<IntegrationOptions>>().Value.HttpTimeout;
                 })
@@ -149,16 +190,16 @@ public static class InfrastructureServiceRegistration
         // a second concrete-type registration — otherwise the resilience
         // pipeline configured by AddHttpClient<T> wouldn't apply when the
         // interface is resolved.
-        // BRAINS KYC screening — Live calls the real servlet; Sandbox returns
-        // canned responses so the UI isn't blocked while localhost BRAINS is
-        // down. Selected by Integration:Brains:Mode (Program.cs blocks Sandbox
-        // in Production). The typed HttpClient<BrainsKycScreeningService> above
-        // stays registered either way (harmless when unused in Sandbox).
-        var brainsMode = config.GetSection(BrainsOptions.SectionName)["Mode"];
-        if (string.Equals(brainsMode, nameof(BrainsMode.Sandbox), StringComparison.OrdinalIgnoreCase))
-            services.AddScoped<IKycScreeningService, SandboxKycScreeningService>();
-        else
-            services.AddScoped<IKycScreeningService>(sp => sp.GetRequiredService<BrainsKycScreeningService>());
+        // Third-party KYC screening — ALWAYS live: the real HTTP adapter calls the
+        // provider servlet at Integration:Brains:BaseUrl (the live provider, or the
+        // standalone BRAINS-compatible test provider in kyc-mock-provider/). There is
+        // no in-process sandbox mode; screening is gated on/off by config
+        // (Onboarding.RequireExternalVerification). Resolved via factory delegate so
+        // the typed-HttpClient resilience pipeline applies when the interface is resolved.
+        services.AddScoped<IKycScreeningService>(sp =>
+            sp.GetRequiredService<FSI.Trade.Compliance.Infrastructure.Integrations.Kyc.DynamicKycScreeningService>());
+        services.AddScoped<FSI.Trade.Compliance.Application.Contracts.Configuration.IKycProviderEngine>(sp =>
+            sp.GetRequiredService<FSI.Trade.Compliance.Infrastructure.Integrations.Kyc.DynamicKycScreeningService>());
 
         // Slice 11 P0 §1 — ICustomerMasterService is now backed by
         // LocalCustomerMasterReader (reads TmX_Customer_Master snapshots)
@@ -222,6 +263,19 @@ public static class InfrastructureServiceRegistration
 
         // Aggregate auto-flag queue worker — evaluates cross-transaction flags off the save path.
         services.AddHostedService<Flags.AutoFlagJobWorker>();
+
+        // Phase 3 — daily password-expiry notification scanner. Read-only on users;
+        // raises password.expiring / password.expired notifications via the emitter
+        // (reuses TmX_Notification, no migration). Gated on PasswordExpiryScan.Enabled
+        // AND PasswordPolicy.EnforceExpiry.
+        services.AddHostedService<Identity.PasswordExpiryScanService>();
+
+        // SLA / deadline notification scanner. Best-effort + read-only on business
+        // data; finds open WorkflowInbox work items past their SLA (or approaching
+        // it) and raises sla.breached / sla.atrisk notifications via the emitter
+        // (reuses TmX_Notification, no migration). Gated on Sla.Enabled, tunable
+        // from /admin/configuration via the DB→IConfiguration bridge (hot-reload).
+        services.AddHostedService<Sla.SlaBreachScanService>();
 
         // ---------- Slice 5: Workflow ----------
         // Action + rule providers consume Application contracts via DI.

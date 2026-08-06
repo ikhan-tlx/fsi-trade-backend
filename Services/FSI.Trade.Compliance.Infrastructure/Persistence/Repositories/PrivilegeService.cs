@@ -64,4 +64,35 @@ public class PrivilegeService : IPrivilegeService
 
         return codes;
     }
+
+    public async Task<List<string>> GetUserIdsWithPrivilegeAsync(
+        string            privilegeName,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(privilegeName)) return new List<string>();
+
+        var name = privilegeName.Trim();
+
+        // Reverse of the forward query: privilege name -> roles that grant it ->
+        // users mapped to those roles. Active_Flag intentionally NOT filtered
+        // (same convention as GetPrivilegesForRolesAsync).
+        var userIds = await _db.UserRoleMappings
+            .AsNoTracking()
+            .Join(
+                _db.RolePrivilegeMappings.AsNoTracking(),
+                urm => urm.RoleId,
+                rpm => rpm.RoleId,
+                (urm, rpm) => new { urm.UserId, rpm.PrivilegeId })
+            .Join(
+                _db.Privileges.AsNoTracking(),
+                x => x.PrivilegeId,
+                p => p.Id,
+                (x, p) => new { x.UserId, p.Name })
+            .Where(x => x.Name == name)
+            .Select(x => x.UserId)
+            .Distinct()
+            .ToListAsync(ct);
+
+        return userIds;
+    }
 }

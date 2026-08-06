@@ -1,6 +1,8 @@
 # Oracle FCCM Integration — Analysis, Gap Assessment & Dual-Mode (Oracle / Standalone) Architecture
 
-**Status**: 📐 Analysis + architecture proposal for approval — no code changed.
+> ⛔ **SUPERSEDED (2026-07-15)** by [`ECM_MASTER_PLAN.md`](ECM_MASTER_PLAN.md) — the consolidated single source of truth. This document is retained for history; where it conflicts with the master plan (e.g. `dbo TmX_Case*` table placement → `CMS` schema; Fccm/Standalone taxonomy → Fccm/Internal/Hybrid), the master plan wins.
+
+**Status**: ⛔ Superseded — see banner. (Original: analysis + architecture proposal.)
 **Date**: 2026-07-13
 **Decisions locked with FSI**: (1) **BRAINS stays in both modes** — only Oracle FCCM becomes optional; TMX-computed risk reconciles against BRAINS with the same "higher risk wins / PEP always wins" rule. (2) Standalone case management is a **TMX Case module executing on the planned FSI workflow engine** (see `WORKFLOW_ENGINE_REPLACEMENT_PLAN.md`); FCCM-parity extras (correlation, merging) phase in later.
 **Sources**: full read of `Infrastructure/Integrations/{Fccm,Brains}`, `Infrastructure/Kyc`, `KycCaseController`/`KycRiskAssessmentController`, onboarding mapping profiles, legacy `Integration KYC` project (incl. `PR_CREATE_EVENT_DEMO` DDL), `docs/LEGACY_FCCM_TRADE_FLOW.md`, `docs/onboarding-mapping/ONBOARDING_MAPPING_DESIGN.md`, and the official *Brains to TBML interface document* (QueryKycInfo v2.0 + batch risk-level exchange), extracted 2026-07-13 (`_brains_tbml_extract.txt` at workspace root).
@@ -21,6 +23,7 @@
 10. [Implementation phases & effort](#10-phases)
 11. [Risks & mitigations](#11-risks)
 12. [Open items](#12-open-items)
+13. [Audit-gate readiness](#13-audit-gates)
 
 ---
 
@@ -314,7 +317,7 @@ stateDiagram-v2
 ```
 
 - Each `*Pool` activity carries `FillAllUsersBucket("<level role>")`; each `AssignToMe` is a self-loop claim whose inbox narrowing (pool → single claimer) is the already-proven mechanism from the 2026-06-09 fix; the pool→assigned hop is the `CurrentActivityExecuted` auto-transition idiom from `KYC_Workflow`. Transition restrictions allow only the matching level's actor — identical enforcement model to today's Analyst/Authorizer schemes.
-- **`RecommendClosure` carries the disposition** (command parameter, per-case-type vocabulary from §7.3's table) + mandatory remarks — the recommendation is *not* the closure. **Only `ApproveClosure` by a Case Authorizer finalises** (dual control, same maker-checker philosophy as Send-To-Authorizer today). `RejectRecommendation` returns the case to investigation with remarks.
+- **`RecommendClosure` carries the disposition** (command parameter, per-case-type vocabulary from §7.3's table) + mandatory remarks — the recommendation is *not* the closure. **Only `ApproveClosure` by a Case Authorizer finalises** (dual control, same maker-checker philosophy as Send-To-Authorizer today). `RejectRecommendation` returns the case to investigation with remarks. **Segregation of duties is enforced, not assumed**: the approver must differ from the recommender *and* from any analyst who worked the case at any level (guard in the `ApproveClosure` post-hook against the case's transition history) — no self-approval path exists even for users holding multiple roles (AG3, §13).
 - **Timed auto-escalation (SLA)**: an auto transition per pool/assigned activity guarded by the existing **`AppDelay` / `AppDelayWithWF` conditions** (threshold minutes as the condition parameter) escalates stale cases L1→L2→L3 automatically — no timer engine needed, reusing conditions already ported.
 - **Configurability without code**: levels are just activities + actors in the scheme — a bank running one analyst tier deletes L2/L3 in the designer; one running five adds them; role names are scheme values resolved by `CheckRole`. Simpler variants (e.g. `KYC_ONBOARDING` cases may use a 1-level + authorizer scheme, `TBML_SURV` the full 3-level) are just **different schemes mapped per case type** — `TmX_Case_Type → Workflow_Scheme_Code` mapping, exactly like `TmX_Product.Workflow_Scheme_Code` maps products to transaction schemes today.
 
@@ -433,7 +436,7 @@ Sequenced **after** the workflow-engine replacement reaches Phase 5 (CaseWF ride
 |---|---|---|---|
 | **S0. Seam extraction + calibration** | Rename `IFccmTradeCaseService`→`ITradeCaseService`; extract `IRiskAssessmentSource`, `ICaseDecisionApplier`, `RiskReconciler` (pure refactor, Fccm impls only — ships dark); import `FCC_OB_RISK_PRMS_CODE_SCRE_MAP` → `TmX_Risk_Param_Score_Map`; calibrate band formula against historical `Risk_Category_Key` values; startup config validation | Refactor deployed in Fccm mode with zero behaviour change (regression: existing KYC/TBML E2E); score-map imported; calibration report signed off (§12.1) | **1.5 wk** |
 | **S1. Standalone core** | `TmxRiskAssessmentService` + proof rows; `TmX_Case`/`TmX_Case_Event`/`TmX_Case_Audit` migrations; `TmxKycCaseService`/`TmxTradeCaseService`/`TmxCaseOperationsService`; `CaseWF` scheme + `Case Investigator` role + privileges; decision parity via shared applier (incl. send-back branch); generalised `CaseProgressWorker` | In Standalone mode on a dev DB: KYC E2E (create→authorize→score→reconcile→case→approve→status APPROVED + review schedule) and TBML E2E (flags→case+events; zero-flag→CA-NOHIT) both green; Fccm mode regression green | **3 wk** |
-| **S2. Cases FE module + hardening** | Cases queue + detail pages (fills `/cases`); dedup guard (G8 v1); case linking (G9); notifications wiring if Slice 8 landed (G12); Risk Assessment tab source-label + standalone proof panel; `FE_CHANGES_REQUIRED.md` entries | Investigator journey fully in-UI; mixed-history customer renders correctly; UAT sign-off in Standalone mode | **2.5–3 wk** |
+| **S2. Cases FE module + hardening** | Cases queue + detail pages (fills `/cases`); dedup guard (G8 v1); case linking (G9); notifications wiring if Slice 8 landed (G12); Risk Assessment tab source-label + standalone proof panel; audit-pack query/screen (AG11); `FE_CHANGES_REQUIRED.md` entries | Investigator journey fully in-UI; mixed-history customer renders correctly; **internal-audit walkthrough of every §13 gate passed in UAT**; UAT sign-off in Standalone mode | **2.5–3 wk** |
 | **S3. Optional/confirm-first** | Correlation window (G11 v2), case merging (G10), BRAINS batch file exchange (G15, if TMX inherits it), regulatory extract (G16), score-map admin screen with maker-checker | Per-item | per item (M each) |
 
 **Standalone-capable in ~7 weeks** after S0 starts (S0–S2), independent of bank-side Oracle decommission timing. Rollback at any point = flip `Mode` back to `Fccm` (providers are stateless; ledger rows carry their source; TMX-era cases simply stop progressing if the bank reverts — they remain readable).
@@ -469,6 +472,28 @@ Sequenced **after** the workflow-engine replacement reaches Phase 5 (CaseWF ride
 7. **Environment reality check**: given the target Oracle env lacks the trade staging objects since June, confirm whether the bank still intends to provision them (Fccm mode fully live) or whether Standalone mode leapfrogs that DBA work entirely.
 
 ---
+
+---
+
+<a id="13-audit-gates"></a>
+## 13. Audit-gate readiness — the application must clear every audit gate
+
+Hard requirement: in **either mode**, and through the migration itself, the application passes internal audit, IT audit, and regulatory examination without caveats. Each gate below names the control, where it lives, and the phase that delivers it. **The full §13 walkthrough is an explicit exit criterion for S2 / standalone go-live** (and the migration-evidence gates apply to the FCCM-mode refactor phases too). The workflow-engine replacement carries its own matching commitments (byte-compatible transition history, parity harness evidence — see `WORKFLOW_ENGINE_REPLACEMENT_PLAN.md` §16/§22).
+
+| Gate | Requirement | Control in this design | Delivered |
+|---|---|---|---|
+| **AG1 — Complete, immutable audit trail** | Every business event answers who/what/when/why; no gaps, no in-place mutation of history | Workflow transition history (all case + transaction moves); `TmX_Case_Audit` (non-transition actions: notes, priority, reassign, link/unlink with reason); `ApplicationRemark` per decision; hash-chained `TmX_Audit_Log` (exists); correlation links record rule + matched values; closed cases immutable; reopen = new linked case | Exists + S1 |
+| **AG2 — Automated-decision explainability** | Any automated score/flag/correlation is reproducible and explainable to an examiner | Dual-score assessment record (`Algorithm_Score` + `Rule_Hits_Json` terms + `Param_Scores_Json` arithmetic); auto-flag `Match_Proof`; correlation `Correlated_By_Rule`; reconciliation inputs/outputs in `Cstm_Brains` | S1 |
+| **AG3 — Segregation of duties** | No actor approves their own work; config changes dual-controlled | Maker-checker (`TmX_Request`) on risk model, score maps, rules, correlation rules, flags; dual-control `ApproveClosure` with **enforced recommender≠approver≠case-worker guard** (§7.3); fine-grained `[RequiresPrivilege]` codes throughout | S1 |
+| **AG4 — Change control & versioning** | Every model/config/schema change is versioned, approved, and attributable | `TmX_Risk_Model` Draft→Active with approval stamps; assessments stamp model version; workflow scheme version history (engine plan §14); numbered idempotent migrations; `rbac_grants.sql` seed discipline; ledger entries (`FE_CHANGES_REQUIRED.md`/`BE_revamp_Changes.md`) as the contract-change record | S0–S2 |
+| **AG5 — Access & authentication evidence** | All entry points authenticated, authorized, and logged; no anonymous mutation surface | `[RequiresPrivilege]` on every case/risk/config endpoint; login/device audit (`TmX_Login_Audit`, `UserDevices`); **callback shared-secret enforced (closes today's `[AllowAnonymous]` unsigned-callback gap — R6)**; session-revocation hardening per the User Management redesign | **S0** |
+| **AG6 — Environment & configuration integrity** | Production cannot silently run misconfigured or stubbed | Startup fail-fast validation per mode (Oracle conn + onboarding URL required in Fccm mode; non-empty model config in Standalone — **kills the silent-stub finding, R5**); existing Brains-sandbox production guard as the pattern | **S0** |
+| **AG7 — Data retention & integrity** | Compliance records never hard-deleted; retention governed | No hard delete of cases/assessments/events/links; FCCM-era rows preserved readable forever (`Case_Source` lineage); log archival (`LogArchiverService`, 30-day zip) — DB-side retention policy formalised with compliance (backlog item exists) | S1 + policy |
+| **AG8 — Reproducibility & lineage** | Any historical decision re-derivable from stored inputs | `Inputs_Json` + model id/version on every assessment; `KycCaseRequest` request/response payload logs (exist); mode lineage on every ledger row | S1 |
+| **AG9 — Migration evidence** | The switch itself is audit-defensible | S0 calibration report + compliance sign-off; shadow-scoring diff logs (Fccm vs TMX bands on live traffic); parity-harness results retained; UAT rollback drill record | S0–cutover |
+| **AG10 — Log governance** | Logs complete, sensitive data redacted, access-controlled | Module-wise Serilog files; credential/body redaction + size caps in `ApiRequestLoggingMiddleware` (exist); absolute non-web-served log paths (documented); archival | Exists |
+| **AG11 — One-query audit pack** | For any case/assessment/decision, the full evidence chain is producible on demand | Audit-pack screen/report: case → events (+flag proofs) → assessment (dual scores + terms) → reconciliation → workflow history → decisions → links, in one view/export (reports engine) | S2 |
+| **AG12 — Regulatory extracts** | Whatever compliance files from FCCM today remains producible | §12.5 discovery drives scope; TMX reports engine renders once defined (G16) | Confirm → S3 |
 
 ---
 

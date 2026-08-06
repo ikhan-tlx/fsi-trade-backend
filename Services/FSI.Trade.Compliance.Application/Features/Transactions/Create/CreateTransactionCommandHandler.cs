@@ -53,13 +53,18 @@ public class CreateTransactionCommandHandler
         "Application Cancelled", "Cancelled", "Discarded", "Rejected",
     };
 
+    private readonly FSI.Trade.Compliance.Application.Contracts.Integrations.IKycScreeningService _screening;
+    private readonly FSI.Trade.Compliance.Application.Contracts.Configuration.IProviderTitleProvider _onboarding;
+
     public CreateTransactionCommandHandler(
         IApplicationDbContext         db,
         ICurrentUserService           current,
         IWorkflowEngine               engine,
         ITransactionNumberGenerator   txnNumberGen,
         IMediator                     mediator,
-        ILogger<CreateTransactionCommandHandler> log)
+        ILogger<CreateTransactionCommandHandler> log,
+        FSI.Trade.Compliance.Application.Contracts.Integrations.IKycScreeningService screening,
+        FSI.Trade.Compliance.Application.Contracts.Configuration.IProviderTitleProvider onboarding)
     {
         _db           = db;
         _current      = current;
@@ -67,6 +72,8 @@ public class CreateTransactionCommandHandler
         _txnNumberGen = txnNumberGen;
         _mediator     = mediator;
         _log          = log;
+        _screening    = screening;
+        _onboarding   = onboarding;
     }
 
     public async Task<TransactionDetailDto> Handle(CreateTransactionCommand req, CancellationToken ct)
@@ -162,6 +169,9 @@ public class CreateTransactionCommandHandler
         var isKycProduct = string.Equals(product.ProductName?.Trim(), KycProductName,
                                           StringComparison.OrdinalIgnoreCase);
         var customerCode = req.customer.customerCode?.Trim();
+        // Risk band resolved by external verification (Phase 2); when set it is
+        // authoritative over any FE-supplied riskScore for the stored band.
+        string? verificationBand = null;
         if (isKycProduct && !string.IsNullOrWhiteSpace(customerCode))
         {
             // Terminal APPLICATION_STATUS ids (id-agnostic across envs; match by
@@ -199,6 +209,45 @@ public class CreateTransactionCommandHandler
                     $"(transaction {activeKyc.TransactionNumber}). It must be finalised " +
                     $"(Approved or Rejected) before a new KYC can be created.");
             }
+
+            // External onboarding verification (Phase 2) — config-driven and
+            // BE-AUTHORITATIVE (the FE pre-check is UX only; this is the source of
+            // truth, so a direct API call cannot bypass it). When
+            // Onboarding.RequireExternalVerification is ON, the third-party provider
+            // must confirm the customer before a KYC can be created; when OFF, only
+            // the local active-KYC gate above applies (today's behaviour).
+            if (_onboarding.RequireExternalVerification)
+            {
+                var providerTitle = _onboarding.Title;
+                var screening = await _screening.GetKycForCustomerAsync(customerCode!, ct);
+                if (screening is not null && !string.IsNullOrWhiteSpace(screening.RiskScore))
+                {
+                    // Verified — the provider's mapped risk band is authoritative.
+                    verificationBand = screening.RiskScore!.Trim();
+                    wf.Step($"External verification via {providerTitle}: customer verified (band {verificationBand}).");
+                }
+                else
+                {
+                    // No record / unreachable — apply the configured failure policy.
+                    var mode = _onboarding.FailureHandling;
+                    if (string.Equals(mode, "Block", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _log.LogInformation(
+                            "KYC verification gate: BLOCKED create for customer {Cust} — {Provider} has no record.",
+                            customerCode, providerTitle);
+                        throw new ConflictException("onboarding_verification_failed",
+                            $"Customer information is not present in {providerTitle} system, " +
+                            $"please add in {providerTitle} first.");
+                    }
+                    // "Allow with flag" / "Allow with warning" → proceed, but record it.
+                    _log.LogWarning(
+                        "KYC verification gate: {Provider} has no record for customer {Cust}; " +
+                        "proceeding under policy '{Mode}'.", providerTitle, customerCode, mode);
+                    // TODO(Phase 2.x): for 'Allow with flag', raise a manual red-flag on the
+                    // created transaction; for 'Allow with warning', surface the note in the
+                    // create response so the FE can show a non-blocking banner.
+                }
+            }
         }
 
         wf.Step("Validation passed (branch mapping, product, sub-product + active-KYC gate).");
@@ -216,7 +265,8 @@ public class CreateTransactionCommandHandler
         // (legacy domain) and the dashboard RiskBandClassifier numeric branch
         // reads it. The RISK_BAND lookup is the authoritative band->number map.
         string? customerUdf = null;
-        var bandLabel = req.customer.riskScore?.Trim();
+        // Verification-resolved band wins; otherwise fall back to the FE-supplied value.
+        var bandLabel = verificationBand ?? req.customer.riskScore?.Trim();
         if (!string.IsNullOrWhiteSpace(bandLabel))
         {
             var hidden = await _db.Lookups

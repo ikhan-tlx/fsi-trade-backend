@@ -29,7 +29,7 @@ public class GetTransactionStatsQueryHandler
         IApplicationDbContext             db,
         ICurrentUserService              current,
         ILocationHierarchyService        locations,
-        IOptions<TradeRepositoryOptions> options)
+        IOptionsSnapshot<TradeRepositoryOptions> options)
     {
         _db        = db;
         _current   = current;

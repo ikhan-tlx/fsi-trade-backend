@@ -42,6 +42,8 @@ public interface IApplicationDbContext
     DbSet<Location>                Locations               { get; }
     DbSet<Company>                 Companies               { get; }
     DbSet<Request>                 Requests                { get; }
+    DbSet<Notification>            Notifications           { get; }
+    DbSet<NotificationPref>        NotificationPrefs       { get; }
     DbSet<AuditLog>             AuditLogs            { get; }
     DbSet<UserHoliday>             UserHolidays            { get; }
 
@@ -91,6 +93,12 @@ public interface IApplicationDbContext
     DbSet<ReferenceValueTypeMap>   ReferenceValueTypeMaps   { get; }
     // 2026_07_002 — aggregate auto-flag engine.
     DbSet<AutoFlagJob>             AutoFlagJobs             { get; }
+
+    // 2026_07_036 — Configuration Management (DB-driven settings).
+    DbSet<Domain.Entities.Configuration.ConfigurationCategory>   ConfigurationCategories  { get; }
+    DbSet<Domain.Entities.Configuration.ConfigurationDefinition> ConfigurationDefinitions { get; }
+    DbSet<Domain.Entities.Configuration.ConfigurationValue>      ConfigurationValues      { get; }
+    DbSet<Domain.Entities.Configuration.ConfigurationHistory>    ConfigurationHistories   { get; }
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

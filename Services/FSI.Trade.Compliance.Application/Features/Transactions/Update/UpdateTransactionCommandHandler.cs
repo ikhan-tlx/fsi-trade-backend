@@ -4,6 +4,7 @@ using FSI.Trade.Compliance.Application.Common.Exceptions;
 using FSI.Trade.Compliance.Application.Common.Logging;
 using FSI.Trade.Compliance.Application.Contracts.Flags;
 using FSI.Trade.Compliance.Application.Contracts.Identity;
+using FSI.Trade.Compliance.Application.Contracts.Notifications;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
 using FSI.Trade.Compliance.Application.Features.Flags.Write;
 using FSI.Trade.Compliance.Application.Features.Transactions.Common;
@@ -42,6 +43,8 @@ public class UpdateTransactionCommandHandler
     private readonly ICurrentUserService     _current;
     private readonly IMediator               _mediator;
     private readonly IAutoFlagEvaluator      _autoFlags;
+    private readonly INotificationService    _notifications;
+    private readonly IPrivilegeService       _privilegeService;
     private readonly ILogger<UpdateTransactionCommandHandler> _log;
 
     public UpdateTransactionCommandHandler(
@@ -49,13 +52,17 @@ public class UpdateTransactionCommandHandler
         ICurrentUserService   current,
         IMediator             mediator,
         IAutoFlagEvaluator    autoFlags,
+        INotificationService  notifications,
+        IPrivilegeService     privilegeService,
         ILogger<UpdateTransactionCommandHandler> log)
     {
-        _db        = db;
-        _current   = current;
-        _mediator  = mediator;
-        _autoFlags = autoFlags;
-        _log       = log;
+        _db               = db;
+        _current          = current;
+        _mediator         = mediator;
+        _autoFlags        = autoFlags;
+        _notifications    = notifications;
+        _privilegeService = privilegeService;
+        _log              = log;
     }
 
     public async Task<TransactionDetailDto> Handle(UpdateTransactionCommand req, CancellationToken ct)
@@ -199,9 +206,11 @@ public class UpdateTransactionCommandHandler
         // rules in scope and stage Source=Auto results onto the same context,
         // committed by the SaveChanges below. Best-effort: a rule-engine fault
         // must not block the transaction save.
+        // Captured for the flag.raised notification emitted AFTER the save below.
+        IReadOnlyList<AutoFlagHit> autoFlagHits = Array.Empty<AutoFlagHit>();
         try
         {
-            await _autoFlags.EvaluateAndStageAsync(req.transactionId, userId, now, ct);
+            autoFlagHits = await _autoFlags.EvaluateAndStageAsync(req.transactionId, userId, now, ct);
         }
         catch (Exception ex)
         {
@@ -233,6 +242,94 @@ public class UpdateTransactionCommandHandler
             _log.LogWarning(ex,
                 "Linking checkbox_file documents failed for transaction {Txn}; continuing.",
                 req.transactionId);
+        }
+
+        // ---------- 7. flag.raised notification (Phase 2) ----------
+        // When the auto-flag engine raised one or more flags on this save, notify
+        // the transaction owner + everyone who can view flags (Flags.View). AFTER
+        // the business SaveChanges and fully guarded — a notification fault must
+        // NEVER affect the transaction save. ONE summary notification per
+        // transaction (not per hit) to avoid spam; severity = the highest among
+        // the raised flags. NOTE: manual-flag notifications (req.flags with
+        // isFlagged) are intentionally NOT wired here — the auto-flag hits are the
+        // safe, high-value path; manual wiring is deferred to keep this minimal.
+        try
+        {
+            if (autoFlagHits.Count > 0)
+            {
+                var flagIds = autoFlagHits.Select(h => h.FlagId).Distinct().ToList();
+
+                // Resolve each raised flag → name + severity lookup id (one query).
+                var catalogues = await _db.FlagCatalogues.AsNoTracking()
+                    .Where(f => flagIds.Contains(f.FlagId))
+                    .Select(f => new { f.FlagId, f.FlagName, f.SeverityLkpId })
+                    .ToListAsync(ct);
+
+                // Resolve those flags' FLAG_SEVERITY hidden values in one query.
+                var sevLkpIds = catalogues.Where(c => c.SeverityLkpId != null)
+                    .Select(c => c.SeverityLkpId!.Value).Distinct().ToList();
+                var hiddenBySevId = await _db.Lookups.AsNoTracking()
+                    .Where(l => l.LookupType == "FLAG_SEVERITY" && sevLkpIds.Contains(l.Id))
+                    .Select(l => new { l.Id, l.HiddenValue })
+                    .ToDictionaryAsync(x => x.Id, x => x.HiddenValue, ct);
+
+                // Body = the flag name(s), comma-joined up to ~3.
+                var flagNames = catalogues
+                    .Select(c => c.FlagName)
+                    .Where(n => !string.IsNullOrWhiteSpace(n))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var body = string.Join(", ", flagNames.Take(3));
+                if (flagNames.Count > 3) body += $" +{flagNames.Count - 3} more";
+
+                // Highest severity among the hits → notification severity.
+                // FLAG_SEVERITY hidden value: Critical→critical, High→warning, else info.
+                var severity = "info";
+                var rank = 0;
+                foreach (var c in catalogues)
+                {
+                    if (c.SeverityLkpId is null) continue;
+                    if (!hiddenBySevId.TryGetValue(c.SeverityLkpId.Value, out var hidden)) continue;
+                    var (sev, r) = (hidden ?? "").Trim().ToUpperInvariant() switch
+                    {
+                        "CRITICAL" => ("critical", 3),
+                        "HIGH"     => ("warning",  2),
+                        _          => ("info",     1),
+                    };
+                    if (r > rank) { rank = r; severity = sev; }
+                }
+
+                // Display ref for the title — transaction number / client ref, else id.
+                var txRef = !string.IsNullOrWhiteSpace(tx.TransactionNumber)
+                    ? tx.TransactionNumber!
+                    : !string.IsNullOrWhiteSpace(tx.ClientReferenceNumber)
+                        ? tx.ClientReferenceNumber!
+                        : tx.TransactionId.ToString();
+
+                // Recipients: the transaction owner + all Flags.View holders.
+                var recipients = new List<string>();
+                var owner = tx.UserId ?? tx.CreatedBy;
+                if (!string.IsNullOrWhiteSpace(owner)) recipients.Add(owner);
+                recipients.AddRange(await _privilegeService.GetUserIdsWithPrivilegeAsync("Flags.View", ct));
+
+                await _notifications.RaiseAsync(
+                    recipients,
+                    "flag.raised",
+                    severity,
+                    $"Flag raised on transaction {txRef}",
+                    body,
+                    "Transaction",
+                    txRef,
+                    $"/transactions/trade/{tx.TransactionId}",
+                    userId,              // actor — the caller who triggered it isn't self-notified
+                    null,
+                    tx.TenantId,
+                    ct);
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "flag.raised notification failed for transaction {Txn}; continuing.", req.transactionId);
         }
 
         _log.LogInformation(

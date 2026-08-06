@@ -11,7 +11,7 @@ public class IntegrationOptions
     public const string SectionName = "Integration";
 
     // BrainsKycBaseUrl removed 2026-06 — BRAINS now uses the v2.0 servlet
-    // configured under Integration:Brains (BrainsOptions.BaseUrl).
+    // configured under Integration:Brains (KycScreeningOptions.BaseUrl).
 
     /// <summary>Customer master HTTP service base URL (legacy: gateway <c>DLP/GetCustomerId</c>).</summary>
     public string CustomerMasterBaseUrl  { get; set; } = "";

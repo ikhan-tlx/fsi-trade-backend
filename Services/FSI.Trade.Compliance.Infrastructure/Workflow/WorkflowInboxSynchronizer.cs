@@ -1,3 +1,4 @@
+using FSI.Trade.Compliance.Application.Contracts.Notifications;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
 using FSI.Trade.Compliance.Domain.Entities.Workflow;
 using Microsoft.EntityFrameworkCore;
@@ -109,7 +110,88 @@ public sealed class WorkflowInboxSynchronizer
                 actorGuids = new HashSet<Guid> { claimerGuid };
             }
 
-            SyncInbox(db, e.ProcessId, actorGuids);
+            var newAssignees = SyncInbox(db, e.ProcessId, actorGuids);
+
+            // Emit an "assigned" notification per NEWLY-queued actor (covers both
+            // direct assignment AND landing in a role pool, e.g. all Authorizers),
+            // AFTER the inbox rows have been persisted. Fully guarded so a
+            // notification failure can never disturb the inbox rewrite.
+            if (newAssignees.Count > 0)
+            {
+                try
+                {
+                    var notifications = scope.ServiceProvider.GetRequiredService<INotificationService>();
+
+                    // Resolve the transaction behind this process so the notification
+                    // NAMES it (by transaction number, not the internal id) and
+                    // deep-links to the transaction rather than the generic inbox.
+                    string? txRef = null;
+                    string deepLink = "/inbox";
+                    int? tenantId = null;
+                    try
+                    {
+                        var rootId = db.WorkflowProcessInstances
+                            .Where(p => p.Id == e.ProcessId)
+                            .Select(p => p.RootProcessId)
+                            .FirstOrDefault() ?? e.ProcessId;
+                        var txn = db.Transactions
+                            .Where(t => t.ProcessInstanceId == rootId)
+                            .Select(t => new
+                            {
+                                t.TransactionId,
+                                t.TransactionNumber,
+                                t.ClientReferenceNumber,
+                                t.TenantId,
+                            })
+                            .FirstOrDefault();
+                        if (txn != null)
+                        {
+                            txRef = !string.IsNullOrWhiteSpace(txn.TransactionNumber) ? txn.TransactionNumber
+                                  : !string.IsNullOrWhiteSpace(txn.ClientReferenceNumber) ? txn.ClientReferenceNumber
+                                  : txn.TransactionId.ToString();
+                            deepLink = $"/transactions/trade/{txn.TransactionId}";
+                            tenantId = txn.TenantId;
+                        }
+                    }
+                    catch { /* fall back to the generic /inbox link below */ }
+
+                    // A send-back (e.g. authorizer → analyst) is a rework signal,
+                    // not a fresh task — surface it distinctly (warning severity +
+                    // clearer wording) while keeping the same "assigned" type so it
+                    // stays under the one Assignments preference.
+                    var isReturn = !string.IsNullOrWhiteSpace(executedCommand)
+                        && (executedCommand.IndexOf("SendBack", StringComparison.OrdinalIgnoreCase) >= 0
+                            || executedCommand.IndexOf("Return", StringComparison.OrdinalIgnoreCase) >= 0
+                            || executedCommand.IndexOf("Reject", StringComparison.OrdinalIgnoreCase) >= 0);
+
+                    var title = isReturn
+                        ? (txRef != null ? $"Transaction sent back to you: {txRef}" : "A transaction was sent back to you")
+                        : (txRef != null ? $"New task assigned: transaction {txRef}" : "A task was assigned to you");
+                    string? body = isReturn
+                        ? "An authorizer returned this transaction for revision."
+                        : (txRef != null ? "This item is now in your queue." : null);
+                    var severity = isReturn ? "warning" : "info";
+
+                    notifications.RaiseAsync(
+                        newAssignees.Select(g => g.ToString()),
+                        "assigned",
+                        severity,
+                        title,
+                        body,
+                        "Transaction",
+                        txRef,          // show the transaction NUMBER (not the DB id)
+                        deepLink,       // deep-links to the transaction when resolved
+                        null,           // actor unknown at this layer
+                        null,
+                        tenantId,
+                        CancellationToken.None)
+                      .GetAwaiter().GetResult();
+                }
+                catch (Exception nex)
+                {
+                    _log.LogError(nex, "Assignment notification emit failed for ProcessId={ProcessId}.", e.ProcessId);
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -131,7 +213,12 @@ public sealed class WorkflowInboxSynchronizer
     private static bool IsClaimCommand(string? command) =>
         !string.IsNullOrWhiteSpace(command) && ClaimCommands.Contains(command.Trim());
 
-    private void SyncInbox(IApplicationDbContext db, Guid processId, HashSet<Guid> actorGuids)
+    /// <summary>
+    /// Rewrites the inbox for <paramref name="processId"/> to exactly
+    /// <paramref name="actorGuids"/> and returns the guids of the actors that
+    /// were NEWLY added (so the caller can emit "assigned" notifications).
+    /// </summary>
+    private List<Guid> SyncInbox(IApplicationDbContext db, Guid processId, HashSet<Guid> actorGuids)
     {
         var existing = db.WorkflowInboxes.Where(i => i.ProcessId == processId).ToList();
         var existingIds = existing.Select(i => i.IdentityId).ToHashSet();
@@ -141,7 +228,8 @@ public sealed class WorkflowInboxSynchronizer
         if (stale.Count > 0) db.WorkflowInboxes.RemoveRange(stale);
 
         // Add rows for newly-eligible actors.
-        foreach (var g in actorGuids.Where(g => g != Guid.Empty && !existingIds.Contains(g)))
+        var newlyAdded = actorGuids.Where(g => g != Guid.Empty && !existingIds.Contains(g)).ToList();
+        foreach (var g in newlyAdded)
         {
             db.WorkflowInboxes.Add(new WorkflowInbox
             {
@@ -156,9 +244,10 @@ public sealed class WorkflowInboxSynchronizer
         {
             _log.LogInformation(
                 "Inbox sync: ProcessId={ProcessId} now queued to {Count} actor(s) (+{Added}/-{Removed}).",
-                processId, actorGuids.Count,
-                actorGuids.Count(g => !existingIds.Contains(g)), stale.Count);
+                processId, actorGuids.Count, newlyAdded.Count, stale.Count);
         }
+
+        return newlyAdded;
     }
 
     private void DropInbox(IApplicationDbContext db, Guid processId)

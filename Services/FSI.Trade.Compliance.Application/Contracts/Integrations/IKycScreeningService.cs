@@ -3,7 +3,7 @@ namespace FSI.Trade.Compliance.Application.Contracts.Integrations;
 /// <summary>
 /// Reads a customer's most-recent KYC screening result (risk score + name).
 /// Application contract — vendor-agnostic. Today's only implementation
-/// (<c>BrainsKycScreeningService</c>) calls BRAINS over HTTP; tomorrow's
+/// (<c>KycScreeningService</c>) calls the provider over HTTP; tomorrow's
 /// could be a different vendor with no consumer-side change.
 /// </summary>
 public interface IKycScreeningService

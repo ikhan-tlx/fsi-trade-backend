@@ -24,17 +24,20 @@ namespace FSI.Trade.Compliance.API.Authentication;
 /// </summary>
 public class DeviceTrackingMiddleware
 {
-    private readonly RequestDelegate _next;
-    private readonly AuthOptions     _opt;
+    private readonly RequestDelegate          _next;
+    private readonly IOptionsMonitor<AuthOptions> _opt;
 
-    public DeviceTrackingMiddleware(RequestDelegate next, IOptions<AuthOptions> opt)
+    public DeviceTrackingMiddleware(RequestDelegate next, IOptionsMonitor<AuthOptions> opt)
     {
         _next = next;
-        _opt  = opt.Value;
+        _opt  = opt;
     }
 
     public async Task Invoke(HttpContext ctx, IDeviceService devices)
     {
+        // Read the latest managed AuthOptions for this request (hot-reload).
+        var opt = _opt.CurrentValue;
+
         // Include PathBase so exempt paths still match under an IIS application
         // path (e.g. "/api"): Request.Path is "/v1/..." there while
         // DeviceCheckExemptPaths are "/api/v1/...". PathBase is empty off-IIS,
@@ -42,7 +45,7 @@ public class DeviceTrackingMiddleware
         var path = (ctx.Request.PathBase + ctx.Request.Path).Value ?? string.Empty;
 
         // Exempt paths — pass through with no device check.
-        foreach (var exempt in _opt.DeviceCheckExemptPaths)
+        foreach (var exempt in opt.DeviceCheckExemptPaths)
         {
             if (path.StartsWith(exempt, StringComparison.OrdinalIgnoreCase))
             {
@@ -58,17 +61,17 @@ public class DeviceTrackingMiddleware
             return;
         }
 
-        if (!_opt.RequireDeviceIdHeader)
+        if (!opt.RequireDeviceIdHeader)
         {
             await _next(ctx);
             return;
         }
 
-        var deviceId = ctx.Request.Headers.TryGetValue(_opt.DeviceIdHeaderName, out var v) ? v.ToString() : null;
+        var deviceId = ctx.Request.Headers.TryGetValue(opt.DeviceIdHeaderName, out var v) ? v.ToString() : null;
         if (string.IsNullOrWhiteSpace(deviceId))
         {
             await WriteEnvelopeAsync(ctx, 400, "device_id_required",
-                $"Header '{_opt.DeviceIdHeaderName}' is required for this endpoint.");
+                $"Header '{opt.DeviceIdHeaderName}' is required for this endpoint.");
             return;
         }
 

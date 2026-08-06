@@ -20,4 +20,15 @@ public interface IPrivilegeService
     Task<IReadOnlyCollection<string>> GetPrivilegesForRolesAsync(
         IEnumerable<string> roleNames,
         CancellationToken   ct = default);
+
+    /// <summary>
+    /// Reverse lookup: returns the distinct set of user ids whose roles grant
+    /// the supplied privilege — the checker fan-out for notifications. Joins
+    /// TmX_User_Role_Mapping × TmX_Role_Privilege_Mapping × TmX_Privilege on
+    /// Privilege_Name. Empty result on null/blank input. Active_Flag is not
+    /// filtered (same convention as the forward direction).
+    /// </summary>
+    Task<List<string>> GetUserIdsWithPrivilegeAsync(
+        string            privilegeName,
+        CancellationToken ct = default);
 }

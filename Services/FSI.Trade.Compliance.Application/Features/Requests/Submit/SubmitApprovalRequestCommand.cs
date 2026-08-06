@@ -1,6 +1,7 @@
 using System.Text.Json;
 using FSI.Trade.Compliance.Application.Common.Exceptions;
 using FSI.Trade.Compliance.Application.Contracts.Identity;
+using FSI.Trade.Compliance.Application.Contracts.Notifications;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
 using FSI.Trade.Compliance.Application.Features.Requests.Common;
 using FSI.Trade.Compliance.Domain.Entities;
@@ -34,10 +35,16 @@ public class SubmitApprovalRequestCommandHandler : IRequestHandler<SubmitApprova
     private readonly IApplicationDbContext   _db;
     private readonly ICurrentUserService     _current;
     private readonly IApprovalReplayRegistry _registry;
+    private readonly INotificationService    _notifications;
+    private readonly IPrivilegeService       _privilegeService;
 
     public SubmitApprovalRequestCommandHandler(
-        IApplicationDbContext db, ICurrentUserService current, IApprovalReplayRegistry registry)
-    { _db = db; _current = current; _registry = registry; }
+        IApplicationDbContext db, ICurrentUserService current, IApprovalReplayRegistry registry,
+        INotificationService notifications, IPrivilegeService privilegeService)
+    {
+        _db = db; _current = current; _registry = registry;
+        _notifications = notifications; _privilegeService = privilegeService;
+    }
 
     public async Task<long> Handle(SubmitApprovalRequestCommand req, CancellationToken ct)
     {
@@ -88,6 +95,47 @@ public class SubmitApprovalRequestCommandHandler : IRequestHandler<SubmitApprova
         };
         _db.Requests.Add(row);
         await _db.SaveChangesAsync(ct);   // audit interceptor records this as SUBMIT (by the maker)
+
+        // Notify the checkers (holders of Requests.Approve) that a request is
+        // pending. AFTER the business SaveChanges; fully guarded so a
+        // notification failure can never affect the parked request.
+        try
+        {
+            var typeLabel = type switch
+            {
+                "0001" => "User",
+                "0002" => "Lookup",
+                "0003" => "Role",
+                "0004" => "Branch",
+                "0005" => "Auto Flag",
+                _      => "Request",
+            };
+            var actionLabel = action switch
+            {
+                "0001" => "Create",
+                "0002" => "Update",
+                "0003" => "Delete",
+                "0004" => "Deactivate",
+                _      => action,
+            };
+
+            var checkers = await _privilegeService.GetUserIdsWithPrivilegeAsync("Requests.Approve", ct);
+            await _notifications.RaiseAsync(
+                checkers,
+                "request.pending",
+                "info",
+                "Request pending your approval",
+                $"{typeLabel} • {actionLabel}",
+                "Request",
+                row.RequestId.ToString(),
+                $"/requests/{row.RequestId}/edit",
+                who,               // maker = actor, excluded from the fan-out
+                null,
+                row.TenantId,
+                ct);
+        }
+        catch { /* emitter is self-guarding; belt-and-suspenders here too */ }
+
         return row.RequestId;
     }
 }

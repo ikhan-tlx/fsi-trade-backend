@@ -1,5 +1,6 @@
 using System.Data;
 using FSI.Trade.Compliance.Application.Common.Options;
+using FSI.Trade.Compliance.Application.Contracts.Configuration;
 using FSI.Trade.Compliance.Domain.Entities.FccmStaging;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -42,20 +43,47 @@ namespace FSI.Trade.Compliance.Infrastructure.Integrations.Fccm;
 /// </summary>
 public class FccmOracleReader
 {
+    private const string OracleConnKey = "Integration.FccmOracleConnection";
+
     private readonly IntegrationOptions        _opt;
     private readonly ILogger<FccmOracleReader> _log;
+    private readonly ISecretConfigReader       _secrets;
     private          bool                     _warnedAboutStub;
+    private          string?                  _resolvedConn;
+    private          bool                     _resolvedConnSet;
 
-    public FccmOracleReader(IOptions<IntegrationOptions> opt, ILogger<FccmOracleReader> log)
+    public FccmOracleReader(IOptions<IntegrationOptions> opt, ILogger<FccmOracleReader> log,
+                            ISecretConfigReader secrets)
     {
         _opt = opt.Value;
         _log = log;
+        _secrets = secrets;
     }
 
-    private bool IsStub => string.IsNullOrWhiteSpace(_opt.FccmOracleConnection);
+    /// <summary>The Oracle connection string — the ENCRYPTED value managed in the
+    /// Configuration module (Integration.FccmOracleConnection), decrypted at use;
+    /// falls back to the appsettings value only if the config value is unset.
+    /// Resolved once per instance.</summary>
+    private string? ResolvedConn
+    {
+        get
+        {
+            if (!_resolvedConnSet)
+            {
+                var fromConfig = _secrets.Get(OracleConnKey);
+                _resolvedConn = !string.IsNullOrWhiteSpace(fromConfig)
+                    ? fromConfig
+                    : (string.IsNullOrWhiteSpace(_opt.FccmOracleConnection) ? null : _opt.FccmOracleConnection);
+                _resolvedConnSet = true;
+            }
+            return _resolvedConn;
+        }
+    }
+
+    private bool IsStub => string.IsNullOrWhiteSpace(ResolvedConn);
 
     private OracleConnection CreateConnection() =>
-        new OracleConnection(_opt.FccmOracleConnection);
+        new OracleConnection(ResolvedConn);
 
     /// <summary>
     /// Opens the connection and pins the session's CURRENT_SCHEMA to the

@@ -1,5 +1,6 @@
 using FSI.Trade.Compliance.Application.Common.Exceptions;
 using FSI.Trade.Compliance.Application.Contracts.Identity;
+using FSI.Trade.Compliance.Application.Contracts.Notifications;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
 using FSI.Trade.Compliance.Application.Features.LookupAdmin;
 using FSI.Trade.Compliance.Application.Features.Requests.Common;
@@ -40,15 +41,18 @@ public class SubmitRequestCommandHandler : IRequestHandler<SubmitRequestCommand,
     private readonly ICurrentUserService     _current;
     private readonly IMediator               _mediator;
     private readonly IApprovalReplayRegistry _registry;
+    private readonly INotificationService    _notifications;
 
     public SubmitRequestCommandHandler(
         IApplicationDbContext db, ICurrentUserService current,
-        IMediator mediator, IApprovalReplayRegistry registry)
+        IMediator mediator, IApprovalReplayRegistry registry,
+        INotificationService notifications)
     {
-        _db       = db;
-        _current  = current;
-        _mediator = mediator;
-        _registry = registry;
+        _db            = db;
+        _current       = current;
+        _mediator      = mediator;
+        _registry      = registry;
+        _notifications = notifications;
     }
 
     public async Task<long> Handle(SubmitRequestCommand req, CancellationToken ct)
@@ -129,6 +133,48 @@ public class SubmitRequestCommandHandler : IRequestHandler<SubmitRequestCommand,
         entity.LastUpdatedDate   = DateTime.UtcNow;
 
         await _db.SaveChangesAsync(ct);
+
+        // Notify the ORIGINAL MAKER of the checker's decision. AFTER the
+        // business SaveChanges; fully guarded. actor = checker (the maker ≠
+        // checker invariant is enforced above via the isOwn guard, so the maker
+        // is never excluded as "the actor").
+        try
+        {
+            if (decision == ApproveCode)
+            {
+                await _notifications.RaiseAsync(
+                    new[] { entity.CreatedBy ?? "" },
+                    "request.approved",
+                    "success",
+                    "Your request was approved",
+                    null,
+                    "Request",
+                    entity.RequestId.ToString(),
+                    $"/requests/{entity.RequestId}/edit",
+                    checker,
+                    null,
+                    entity.TenantId,
+                    ct);
+            }
+            else if (decision == RejectCode)
+            {
+                await _notifications.RaiseAsync(
+                    new[] { entity.CreatedBy ?? "" },
+                    "request.rejected",
+                    "warning",
+                    "Your request was rejected",
+                    entity.RejectReason,
+                    "Request",
+                    entity.RequestId.ToString(),
+                    $"/requests/{entity.RequestId}/edit",
+                    checker,
+                    null,
+                    entity.TenantId,
+                    ct);
+            }
+        }
+        catch { /* emitter is self-guarding; belt-and-suspenders here too */ }
+
         return entity.RequestId;
     }
 }

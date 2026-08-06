@@ -23,7 +23,7 @@ public class ChangePasswordCommandHandler : IRequestHandler<ChangePasswordComman
         IRefreshTokenStore             refresh,
         ICurrentDeviceService          currentDevice,
         ILoginAuditService             loginAudit,
-        IOptions<PasswordPolicyOptions> policy)
+        IOptionsSnapshot<PasswordPolicyOptions> policy)
     {
         _userAuth      = userAuth;
         _audit         = audit;
