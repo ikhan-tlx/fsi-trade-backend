@@ -33,6 +33,8 @@ public class ConfigurationDefinitionConfiguration : IEntityTypeConfiguration<Con
         b.Property(x => x.ConfigurationKey)  .HasColumnName("Configuration_Key").HasMaxLength(200).IsRequired();
         b.Property(x => x.DisplayName)       .HasColumnName("Display_Name").HasMaxLength(200).IsRequired();
         b.Property(x => x.Description)       .HasColumnName("Description").HasMaxLength(1000);
+        b.Property(x => x.HelpDetail)        .HasColumnName("Help_Detail");
+        b.Property(x => x.Section)           .HasColumnName("Section").HasMaxLength(100);
         b.Property(x => x.CategoryKey)       .HasColumnName("Category_Key").HasMaxLength(50).IsRequired();
         b.Property(x => x.DataType)          .HasColumnName("Data_Type").HasMaxLength(20).IsRequired();
         b.Property(x => x.DefaultValue)      .HasColumnName("Default_Value");

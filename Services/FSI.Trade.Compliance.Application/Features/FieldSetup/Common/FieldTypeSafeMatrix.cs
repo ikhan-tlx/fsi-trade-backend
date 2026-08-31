@@ -26,15 +26,30 @@ namespace FSI.Trade.Compliance.Application.Features.FieldSetup.Common;
 /// </summary>
 public static class FieldTypeSafeMatrix
 {
+    public const int Date     = 2;
     public const int Text     = 3;
     public const int Textarea = 4;   // rendered as "Long text"
+    public const int Number   = 55;
+
+    // The scalar "free-entry" family: Text, Long text, Number, Date. All four
+    // persist a plain scalar value in the field's UDF_Data JSON (no lookup
+    // binding, no child rows), so swapping among them only changes the input
+    // CONTROL, not the storage class — the conversion can't strand a lookup
+    // binding or orphan child rows. NOTE: it does NOT migrate values already
+    // stored, so a field that already holds data incompatible with the new type
+    // (e.g. free text under a Number control) will read back blank/invalid until
+    // re-entered. Lookups (25/26), Table (27), Section (30) and formula-driven
+    // fields remain platform-managed and are intentionally absent.
+    private static readonly int[] ScalarFamily = { Text, Textarea, Number, Date };
 
     // currentLkp -> the set of lkp codes it may convert to (incl. itself).
     private static readonly IReadOnlyDictionary<int, HashSet<int>> _safe =
         new Dictionary<int, HashSet<int>>
         {
-            [Text]     = new HashSet<int> { Text, Textarea },
-            [Textarea] = new HashSet<int> { Text, Textarea },
+            [Text]     = new HashSet<int>(ScalarFamily),
+            [Textarea] = new HashSet<int>(ScalarFamily),
+            [Number]   = new HashSet<int>(ScalarFamily),
+            [Date]     = new HashSet<int>(ScalarFamily),
         };
 
     /// <summary>True when a field of this type can be retyped at all through

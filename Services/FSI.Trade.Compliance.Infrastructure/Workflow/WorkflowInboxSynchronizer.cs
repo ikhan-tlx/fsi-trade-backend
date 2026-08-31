@@ -243,8 +243,9 @@ public sealed class WorkflowInboxSynchronizer
         if (changes > 0)
         {
             _log.LogInformation(
-                "Inbox sync: ProcessId={ProcessId} now queued to {Count} actor(s) (+{Added}/-{Removed}).",
-                processId, actorGuids.Count, newlyAdded.Count, stale.Count);
+                "Inbox sync: ProcessId={ProcessId} now queued to {Count} actor(s) (+{Added}/-{Removed}). Actors=[{Actors}].",
+                processId, actorGuids.Count, newlyAdded.Count, stale.Count,
+                string.Join(", ", actorGuids));
         }
 
         return newlyAdded;

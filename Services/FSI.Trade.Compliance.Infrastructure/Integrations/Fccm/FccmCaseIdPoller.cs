@@ -112,6 +112,25 @@ public class FccmCaseIdPoller : BackgroundService
                 row.LastUpdatedAt = now;
                 row.FccmResponsePayload = FccmExchangeLog.Append(row.FccmResponsePayload, $"POLL CASE_ID -> {caseId} (CaseCreated)");
                 _log.LogInformation("KycCaseRequest {Id}: CaseId provisioned ({CaseId}).", row.Id, caseId);
+
+                // Parity with the trade path: stamp the resolved FCCM case id onto
+                // the linked transaction row so the transaction detail / list / status
+                // pill surface Fccm_Case_Id for KYC too (previously only the
+                // KycCaseRequest row carried it). Only fills when empty — never
+                // overwrites an existing case id.
+                if (row.TransactionId is not null)
+                {
+                    var txId = (int)row.TransactionId.Value;
+                    var txn = await db.Transactions.FirstOrDefaultAsync(t => t.TransactionId == txId, ct);
+                    if (txn is not null && string.IsNullOrWhiteSpace(txn.FccmCaseId))
+                    {
+                        txn.FccmCaseId     = caseId;
+                        txn.LastUpdatedDate = now;
+                        _log.LogInformation(
+                            "KycCaseRequest {Id}: stamped Fccm_Case_Id={CaseId} onto transaction {TxId}.",
+                            row.Id, caseId, txId);
+                    }
+                }
                 continue;
             }
 

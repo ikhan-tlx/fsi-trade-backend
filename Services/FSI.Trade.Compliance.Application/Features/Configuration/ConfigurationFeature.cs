@@ -23,7 +23,9 @@ public class ConfigSettingDto
     public string  key { get; set; } = default!;
     public string  displayName { get; set; } = default!;
     public string? description { get; set; }
+    public string? helpDetail { get; set; }
     public string  category { get; set; } = default!;
+    public string? section { get; set; }
     public string  dataType { get; set; } = default!;
     public object? value { get; set; }
     public object? defaultValue { get; set; }
@@ -182,7 +184,9 @@ public class GetConfigCatalogQueryHandler : IRequestHandler<GetConfigCatalogQuer
                 key = d.ConfigurationKey,
                 displayName = d.DisplayName,
                 description = d.Description,
+                helpDetail = d.HelpDetail,
                 category = d.CategoryKey,
+                section = d.Section,
                 dataType = d.DataType,
                 value = ConfigCoerce.ToTyped(d.DataType, raw),
                 defaultValue = ConfigCoerce.ToTyped(d.DataType, d.DefaultValue),
@@ -292,21 +296,35 @@ public record SaveManyConfigCommand(List<(string Key, JsonElement Value)> Change
 public record ResetConfigCommand(string Key) : IRequest<ConfigSettingDto>;
 public record RollbackConfigCommand(string Key, long HistoryId) : IRequest<ConfigSettingDto>;
 
+/// <summary>Approve-time apply of an approval-gated setting: sets the effective
+/// value and clears the pending flag, BYPASSING the Requires_Approval "park"
+/// branch (so it does not re-queue itself). Replayed by the maker-checker on
+/// approve (ApprovalReplayRegistry, type 0011). Display-only payload extras
+/// (oldValue / displayName / dataType) are ignored when binding.</summary>
+public class ApplyConfigChangeCommand : IRequest<ConfigSettingDto>
+{
+    public string key { get; set; } = default!;
+    public JsonElement value { get; set; }
+}
+
 public class ConfigWriteHandlers :
     IRequestHandler<SaveConfigValueCommand, ConfigSettingDto>,
     IRequestHandler<SaveManyConfigCommand, SaveManyResultDto>,
     IRequestHandler<ResetConfigCommand, ConfigSettingDto>,
-    IRequestHandler<RollbackConfigCommand, ConfigSettingDto>
+    IRequestHandler<RollbackConfigCommand, ConfigSettingDto>,
+    IRequestHandler<ApplyConfigChangeCommand, ConfigSettingDto>
 {
     private readonly IApplicationDbContext _db;
     private readonly ICurrentUserService _current;
     private readonly IConfigurationRefresher _refresher;
     private readonly FSI.Trade.Compliance.Application.Contracts.Configuration.ISecretProtector _secrets;
+    private readonly IMediator _mediator;
 
     public ConfigWriteHandlers(IApplicationDbContext db, ICurrentUserService current,
                                IConfigurationRefresher refresher,
-                               FSI.Trade.Compliance.Application.Contracts.Configuration.ISecretProtector secrets)
-    { _db = db; _current = current; _refresher = refresher; _secrets = secrets; }
+                               FSI.Trade.Compliance.Application.Contracts.Configuration.ISecretProtector secrets,
+                               IMediator mediator)
+    { _db = db; _current = current; _refresher = refresher; _secrets = secrets; _mediator = mediator; }
 
     private string Who => _current.UserId ?? "system";
 
@@ -366,6 +384,22 @@ public class ConfigWriteHandlers :
         return await Project(def.ConfigurationKey, ct);
     }
 
+    public async Task<ConfigSettingDto> Handle(ApplyConfigChangeCommand req, CancellationToken ct)
+    {
+        // Maker-checker apply (approve). Set the effective value + clear pending,
+        // deliberately NOT going through SaveOneAsync (which would re-park it).
+        var (def, val) = await LoadAsync(req.key, ct);
+        var storage = ConfigCoerce.ToStorage(def.DataType, req.value);
+        if (def.IsSensitive && !IsMaskOrEmpty(storage) && !_secrets.IsProtected(storage))
+            storage = _secrets.Protect(storage!);
+        var old = val?.Value;
+        await EnsureValue(def, val, storage, ct);       // sets Value + clears Pending_Value
+        AppendHistory(def, val, old, storage, "Update", ct);
+        await _db.SaveChangesAsync(ct);
+        _refresher.Refresh();
+        return await Project(req.key, ct);
+    }
+
     // ----- internals -----
     private async Task<ConfigSettingDto> SaveOneAsync(string key, JsonElement value, CancellationToken ct, bool refresh)
     {
@@ -389,13 +423,37 @@ public class ConfigWriteHandlers :
         var old = val?.Value;
         if (def.RequiresApproval)
         {
-            // Dual control: stage as pending; do NOT change the effective value.
+            // Dual control. Two artifacts, deliberately:
+            //   1) a TmX_Request row  → the visible/actionable item in the Requests
+            //      screen (approve replays ApplyConfigChangeCommand; reject clears the
+            //      park). Created FIRST so its guards (one-pending-per-entity + replay
+            //      fail-fast) surface before we touch the value row.
+            //   2) the parked Pending_Value → keeps the Config screen showing
+            //      "awaiting approval" for this setting.
+            // `value` carries the coerced STORAGE form (already encrypted for secrets);
+            // ApplyConfigChangeCommand round-trips it via ToStorage and won't re-encrypt.
+            var payload = JsonSerializer.SerializeToElement(new
+            {
+                key         = def.ConfigurationKey,
+                value       = storage,
+                oldValue    = old,
+                displayName = def.DisplayName,
+                dataType    = def.DataType,
+                newDisplay  = def.IsSensitive ? "••••••" : ConfigCoerce.ToTyped(def.DataType, storage)?.ToString(),
+                oldDisplay  = def.IsSensitive ? "••••••" : ConfigCoerce.ToTyped(def.DataType, old)?.ToString(),
+            });
+            await _mediator.Send(new Requests.Submit.SubmitApprovalRequestCommand
+            {
+                RequestTypeCode  = Requests.Common.ApprovalReplayRegistry.TypeConfigChange,
+                EntityStatusCode = Requests.Common.ApprovalReplayRegistry.ActionUpdate,
+                EntityId         = def.ConfigurationKey,
+                Payload          = payload,
+            }, ct);
+
             val = await EnsureRow(def, ct);
             val.PendingValue = storage; val.PendingBy = Who; val.PendingDate = DateTime.UtcNow;
             val.LastUpdatedBy = Who; val.LastUpdatedDate = DateTime.UtcNow;
             AppendHistory(def, val, old, storage, "SubmitForApproval", ct);
-            // TODO(Phase 2): route to the TmX_Request maker-checker queue + an approver
-            //                resolution endpoint that applies Pending_Value on approve.
         }
         else
         {

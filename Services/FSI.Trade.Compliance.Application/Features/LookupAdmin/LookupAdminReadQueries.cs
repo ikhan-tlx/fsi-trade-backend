@@ -64,11 +64,18 @@ public class ListManagedTypesQueryHandler : IRequestHandler<ListManagedTypesQuer
             .GroupBy(b => b.FieldLookupType!.Trim(), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.Select(x => x.TenantFieldSetupId).Distinct().Count(), StringComparer.OrdinalIgnoreCase);
 
-        // Managed set = the allow-list itself. We no longer intersect with field bindings —
-        // the allow-list is the single source of truth for what is manageable. (boundFieldCount
-        // below is still computed from the bindings, for information only; 0 = not bound to any
-        // field, e.g. the HS catalogues referenced via groupLookupBy(...) expressions.)
+        // Managed set = the compiled allow-list UNION the admin-created types recorded in
+        // the TmX_Lookup_Type registry (Is_Manageable = 1). (boundFieldCount below is still
+        // computed from field bindings, for information only; 0 = not bound to any field.)
+        var registryTypes = await _db.LookupTypeRegistrations.AsNoTracking()
+            .Where(r => r.IsManageable)
+            .Select(r => r.LookupType)
+            .ToListAsync(ct);
+
         var managedTypes = LookupAdminAllowList.Types
+            .Concat(registryTypes)
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Select(t => t.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 

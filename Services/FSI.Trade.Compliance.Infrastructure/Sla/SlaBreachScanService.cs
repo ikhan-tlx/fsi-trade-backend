@@ -120,7 +120,7 @@ internal sealed class SlaBreachScanService : BackgroundService
         var maxTransitionByProcess = maxTransition.ToDictionary(x => x.ProcessId, x => x.MaxTime);
 
         var now    = DateTime.UtcNow;
-        var window = TimeSpan.FromHours(o.DefaultHours);
+        var window = TimeSpan.FromDays(o.WindowDays);
 
         // Escalation audience (breach only), fetched lazily and at most once per
         // pass — and ONLY when EscalateToApprovers is enabled. There is no
@@ -191,7 +191,7 @@ internal sealed class SlaBreachScanService : BackgroundService
                     await notify.RaiseAsync(
                         recipients, "sla.breached", "critical",
                         $"SLA breached: transaction {refText}",
-                        $"This item has been awaiting action for over {o.DefaultHours}h.",
+                        $"This item has been awaiting action for over {o.WindowDays} day(s).",
                         "Transaction", refText, deepLink,
                         null, key, tenantId, ct);
                     breachedRaised++;
@@ -206,7 +206,7 @@ internal sealed class SlaBreachScanService : BackgroundService
                     await notify.RaiseAsync(
                         assignees, "sla.atrisk", "warning",
                         $"SLA at risk: transaction {refText}",
-                        $"Action needed soon — approaching the {o.DefaultHours}h deadline.",
+                        $"Action needed soon — approaching the {o.WindowDays}-day deadline.",
                         "Transaction", refText, deepLink,
                         null, key, tenantId, ct);
                     atRiskRaised++;

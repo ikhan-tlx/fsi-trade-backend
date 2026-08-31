@@ -84,15 +84,19 @@ public class FccmOnboardingOptions
     /// Shipped profiles: <c>"v1"</c> (flat legacy KYCRequestModel shape) and
     /// <c>"v2"</c> (rich nested OB v2 shape); any custom profile name works if the file
     /// exists. This is the single switch for the payload shape — a config change, not code.
-    /// <para><b>Default is <c>"v1"</c>.</b> If this is omitted or left empty the application
-    /// falls back to <c>"v1"</c> (see <see cref="EffectiveMappingProfile"/>).</para>
+    /// <para><b>Default is <c>"v2"</c>.</b> The active value normally comes from the
+    /// Configuration module (Integration.Onboarding.MappingProfile, Default_Value 'v2'),
+    /// bridged into IConfiguration. This code default is the last-resort fallback for a
+    /// DB-down boot (the bridge is fail-soft), and must match the DB default so behaviour
+    /// is identical whether or not the config table is reachable (see
+    /// <see cref="EffectiveMappingProfile"/>).</para>
     /// </summary>
-    public string MappingProfile { get; set; } = "v1";
+    public string MappingProfile { get; set; } = "v2";
 
     /// <summary>The profile the engine actually uses: <see cref="MappingProfile"/> when
-    /// set, otherwise the default <c>"v1"</c>. Guarantees a valid profile is always chosen.</summary>
+    /// set, otherwise the default <c>"v2"</c>. Guarantees a valid profile is always chosen.</summary>
     public string EffectiveMappingProfile
-        => string.IsNullOrWhiteSpace(MappingProfile) ? "v1" : MappingProfile.Trim();
+        => string.IsNullOrWhiteSpace(MappingProfile) ? "v2" : MappingProfile.Trim();
 
     /// <summary>
     /// Directory holding <c>onboarding.*.mapping.json</c> profiles. Relative to the

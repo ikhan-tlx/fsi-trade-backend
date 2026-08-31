@@ -14,20 +14,27 @@ public class FieldTypeSafeMatrixTests
     [InlineData(3, 4, true)]   // Text → Long text
     [InlineData(4, 3, true)]   // Long text → Text
     [InlineData(3, 3, true)]   // no-op
-    [InlineData(3, 25, false)] // Text → Dropdown (unsafe)
-    [InlineData(25, 3, false)] // Dropdown → Text (unsafe)
-    [InlineData(55, 3, false)] // Number → Text (unsafe)
-    [InlineData(30, 4, false)] // Section → Long text (unsafe)
-    public void IsSafeConversion_OnlyAllowsTextFamily(int from, int to, bool expected)
+    [InlineData(3, 55, true)]  // Text → Number   (scalar family)
+    [InlineData(3, 2, true)]   // Text → Date     (scalar family)
+    [InlineData(55, 3, true)]  // Number → Text   (scalar family)
+    [InlineData(2, 4, true)]   // Date → Long text(scalar family)
+    [InlineData(55, 2, true)]  // Number → Date   (scalar family)
+    [InlineData(3, 25, false)] // Text → Dropdown (unsafe — lookup)
+    [InlineData(25, 3, false)] // Dropdown → Text (unsafe — lookup)
+    [InlineData(30, 4, false)] // Section → Long text (unsafe — structural)
+    [InlineData(27, 3, false)] // Table → Text    (unsafe — structural)
+    public void IsSafeConversion_AllowsScalarFamily(int from, int to, bool expected)
         => Assert.Equal(expected, FieldTypeSafeMatrix.IsSafeConversion(from, to));
 
     [Theory]
-    [InlineData(3, true)]
-    [InlineData(4, true)]
-    [InlineData(25, false)]
-    [InlineData(55, false)]
+    [InlineData(3, true)]   // Text
+    [InlineData(4, true)]   // Long text
+    [InlineData(55, true)]  // Number
+    [InlineData(2, true)]   // Date
+    [InlineData(25, false)] // Dropdown — locked
+    [InlineData(27, false)] // Table — locked
     [InlineData(null, false)]
-    public void IsConvertible_TrueOnlyForTextFamily(int? lkp, bool expected)
+    public void IsConvertible_TrueForScalarFamily(int? lkp, bool expected)
         => Assert.Equal(expected, FieldTypeSafeMatrix.IsConvertible(lkp));
 
     [Theory]

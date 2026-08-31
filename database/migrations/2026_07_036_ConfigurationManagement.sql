@@ -6,9 +6,16 @@
 -- Design Html/CONFIGURATION_MANAGEMENT_IMPLEMENTATION_NOTES.md.
 --
 -- Creates the DB-driven settings store (Category + Definition + Value +
--- History), seeds the catalogue + Global values reconciled against the REAL
--- appsettings.json, and seeds Configuration.View/.Manage privileges + the
--- IT Admin grant.
+-- History), seeds the catalogue + Global values, and seeds
+-- Configuration.View/.Manage privileges + the IT Admin grant.
+--
+-- *** ENVIRONMENT VALUES ARE DECLARED, AND MANDATORY (Section 3b) ***
+--   The Global value of EVERY non-secret setting is declared in ONE block
+--   (Section 3b, the @VAL table). Set these for the target environment before
+--   running (e.g. UAT: Integration.TradeCaseDefaults.Jurisdiction = N'PAK').
+--   The migration ABORTS (RAISERROR) if any non-secret setting has no declared
+--   value, so nothing is ever seeded blank/by accident. Catalogue METADATA
+--   (Section 3a, @DEF) is fixed and not environment-specific.
 --
 -- KEY DESIGN NOTE (the IOptions bridge): a setting's Configuration_Key is the
 -- dotted appsettings path (e.g. 'PeriodicReview.BatchSize'). The
@@ -16,15 +23,15 @@
 -- into IConfiguration under that path (dots -> ':'), so every existing
 -- IOptions/IOptionsMonitor<T> consumer reads the DB value with hot-reload and
 -- ZERO call-site change. Secrets stay in appsettings (Is_Sensitive=1, not
--- bridged). Logging.* + Onboarding.* keys are stored/managed here but bridged
--- to real consumers in Phase 2 (see the summary doc); they are NOT wired to
--- business logic in Phase 1.
+-- bridged) and are NOT declared here. Logging.* + Onboarding.* keys are
+-- stored/managed here but bridged to real consumers in Phase 2.
 --
 -- Idempotent: every object guarded by IF NOT EXISTS / OBJECT_ID; seed rows
 -- guarded by NOT EXISTS on the natural key. Safe to re-run.
 --
 -- Run:
---   sqlcmd -S "WAQASKHAN\SQLEXPRESS" -d ICBC_DEMO -E -i "<path>\2026_07_036_ConfigurationManagement.sql"
+--   sqlcmd -S "WAQASKHAN\SQLEXPRESS" -d ICBC_DEMO -E -b -i "<path>\2026_07_036_ConfigurationManagement.sql"
+--   (-b makes sqlcmd stop the whole file if the value-declaration guard aborts.)
 -- =========================================================================
 
 USE [ICBC_DEMO];
@@ -150,87 +157,201 @@ GO
 DECLARE @who nvarchar(100) = N'System (2026_07_036)';
 DECLARE @now datetime2(3)  = SYSUTCDATETIME();
 
--- staging: one row per setting (Value = the current Global value = the real appsettings value)
-DECLARE @D TABLE (
+-- =========================================================================
+-- 3a. CATALOGUE METADATA  (FIXED — not environment-specific; do not edit per env)
+--     key, label, category, data-type, DEFAULT (fallback), unit, rules, flags.
+--     Default_Value is only the last-resort fallback; the ACTIVE value comes
+--     from the declaration in Section 3b.
+-- =========================================================================
+DECLARE @DEF TABLE (
     K nvarchar(200), Name nvarchar(200), Cat nvarchar(50), Dt nvarchar(20),
-    Def nvarchar(max), Val nvarchar(max), Unit nvarchar(40), Rules nvarchar(max),
+    Def nvarchar(max), Unit nvarchar(40), Rules nvarchar(max),
     Editable bit, Sensitive bit, Approval bit, Restart bit, Ord int);
 
-INSERT INTO @D (K,Name,Cat,Dt,Def,Val,Unit,Rules,Editable,Sensitive,Approval,Restart,Ord) VALUES
+INSERT INTO @DEF (K,Name,Cat,Dt,Def,Unit,Rules,Editable,Sensitive,Approval,Restart,Ord) VALUES
 -- security
-('Jwt.AccessTokenDefaultMinutes',N'Access token lifetime','security','Integer',N'1440',N'1440',N'minutes',N'{"min":5,"max":480,"step":5}',1,0,1,0,10),
-('Auth.RestrictConcurrentLogin',N'Restrict concurrent login','security','Boolean',N'false',N'false',NULL,NULL,1,0,0,0,20),
-('Auth.RequireDeviceIdHeader',N'Require device-id header','security','Boolean',N'true',N'true',NULL,NULL,1,0,0,0,30),
-('TwoFactor.Enabled',N'Two-factor authentication','security','Boolean',N'true',N'true',NULL,NULL,1,0,0,0,40),
-('TwoFactor.Method',N'Two-factor method','security','Enum',N'Totp',N'Totp',NULL,N'{"allowedValues":["Email","SMS","Totp","None"]}',1,0,0,0,50),
+('Jwt.AccessTokenDefaultMinutes',N'Access token lifetime','security','Integer',N'1440',N'minutes',N'{"min":5,"max":480,"step":5}',1,0,1,0,10),
+('Auth.RestrictConcurrentLogin',N'Restrict concurrent login','security','Boolean',N'false',NULL,NULL,1,0,0,0,20),
+('Auth.RequireDeviceIdHeader',N'Require device-id header','security','Boolean',N'true',NULL,NULL,1,0,0,0,30),
+('TwoFactor.Enabled',N'Two-factor authentication','security','Boolean',N'true',NULL,NULL,1,0,0,0,40),
+('TwoFactor.Method',N'Two-factor method','security','Enum',N'Totp',NULL,N'{"allowedValues":["Email","SMS","Totp","None"]}',1,0,0,0,50),
 -- password (real section = PasswordPolicy)
-('PasswordPolicy.MaxFailedAttempts',N'Max failed attempts','password','Integer',N'5',N'5',N'attempts',N'{"min":1,"max":10,"step":1}',1,0,0,0,10),
-('PasswordPolicy.LockoutMinutes',N'Lockout duration','password','Integer',N'3',N'3',N'minutes',N'{"min":1,"max":1440,"step":5}',1,0,0,0,20),
-('PasswordPolicy.EnforceExpiry',N'Enforce password expiry','password','Boolean',N'true',N'true',NULL,NULL,1,0,0,0,30),
-('PasswordPolicy.ExpiryDays',N'Password expiry','password','Integer',N'90',N'90',N'days',N'{"min":30,"max":365,"step":15}',1,0,1,0,40),
-('PasswordPolicy.DormancyDays',N'Dormancy threshold','password','Integer',N'90',N'90',N'days',N'{"min":15,"max":365,"step":5}',1,0,0,0,50),
+('PasswordPolicy.MaxFailedAttempts',N'Max failed attempts','password','Integer',N'5',N'attempts',N'{"min":1,"max":10,"step":1}',1,0,0,0,10),
+('PasswordPolicy.LockoutMinutes',N'Lockout duration','password','Integer',N'3',N'minutes',N'{"min":1,"max":1440,"step":5}',1,0,0,0,20),
+('PasswordPolicy.EnforceExpiry',N'Enforce password expiry','password','Boolean',N'true',NULL,NULL,1,0,0,0,30),
+('PasswordPolicy.ExpiryDays',N'Password expiry','password','Integer',N'90',N'days',N'{"min":30,"max":365,"step":15}',1,0,1,0,40),
+('PasswordPolicy.DormancyDays',N'Dormancy threshold','password','Integer',N'90',N'days',N'{"min":15,"max":365,"step":5}',1,0,0,0,50),
 -- review
-('PeriodicReview.Enabled',N'Periodic review','review','Boolean',N'true',N'true',NULL,NULL,1,0,0,0,10),
-('PeriodicReview.ScanInterval',N'Scan interval','review','TimeSpan',N'01:00:00',N'01:00:00',NULL,NULL,1,0,0,0,20),
-('PeriodicReview.BatchSize',N'Batch size','review','Integer',N'50',N'50',N'records',N'{"min":1,"max":500,"step":10}',1,0,0,0,30),
-('PeriodicReview.LeadTimeDays',N'Lead time','review','Integer',N'0',N'0',N'days',N'{"min":0,"max":90,"step":1}',1,0,0,0,40),
-('PeriodicReview.DefaultFrequency',N'Default review frequency','review','Json',N'{"Value":3,"Unit":"Months"}',N'{"Value":3,"Unit":"Months"}',NULL,NULL,1,0,0,0,50),
-('PeriodicReview.Frequencies',N'Frequency by risk band','review','Json',N'{"PEP":{"Value":1,"Unit":"Months"},"High":{"Value":1,"Unit":"Months"},"Medium":{"Value":2,"Unit":"Months"},"Low":{"Value":3,"Unit":"Months"}}',N'{"PEP":{"Value":1,"Unit":"Months"},"High":{"Value":1,"Unit":"Months"},"Medium":{"Value":2,"Unit":"Months"},"Low":{"Value":3,"Unit":"Months"}}',NULL,NULL,1,0,0,0,60),
+('PeriodicReview.Enabled',N'Periodic review','review','Boolean',N'true',NULL,NULL,1,0,0,0,10),
+('PeriodicReview.ScanInterval',N'Scan interval','review','TimeSpan',N'01:00:00',NULL,NULL,1,0,0,0,20),
+('PeriodicReview.BatchSize',N'Batch size','review','Integer',N'50',N'records',N'{"min":1,"max":500,"step":10}',1,0,0,0,30),
+('PeriodicReview.LeadTimeDays',N'Lead time','review','Integer',N'0',N'days',N'{"min":0,"max":90,"step":1}',1,0,0,0,40),
+('PeriodicReview.DefaultFrequency',N'Default review frequency','review','Json',N'{"Value":3,"Unit":"Months"}',NULL,NULL,1,0,0,0,50),
+('PeriodicReview.Frequencies',N'Frequency by risk band','review','Json',N'{"PEP":{"Value":1,"Unit":"Months"},"High":{"Value":1,"Unit":"Months"},"Medium":{"Value":2,"Unit":"Months"},"Low":{"Value":3,"Unit":"Months"}}',NULL,NULL,1,0,0,0,60),
 -- insight (real section = CustomerInsightSnapshot)
-('CustomerInsightSnapshot.Enabled',N'Customer insight service','insight','Boolean',N'true',N'true',NULL,NULL,1,0,0,0,10),
-('CustomerInsightSnapshot.CheckInterval',N'Check interval','insight','TimeSpan',N'06:00:00',N'06:00:00',NULL,NULL,1,0,0,0,20),
+('CustomerInsightSnapshot.Enabled',N'Customer insight service','insight','Boolean',N'true',NULL,NULL,1,0,0,0,10),
+('CustomerInsightSnapshot.CheckInterval',N'Check interval','insight','TimeSpan',N'06:00:00',NULL,NULL,1,0,0,0,20),
 -- repo
-('TradeRepository.SlaDays',N'Review SLA','repo','Integer',N'5',N'5',N'days',N'{"min":1,"max":30,"step":1}',1,0,0,0,10),
+('TradeRepository.SlaDays',N'Review SLA','repo','Integer',N'5',N'days',N'{"min":1,"max":30,"step":1}',1,0,0,0,10),
 -- fccm / integration
-('Integration.FccmOracleConnection',N'FCCM database connection','fccm','Secret',N'',NULL,NULL,NULL,0,1,0,0,10),
-('Integration.TradeCaseDefaults.Jurisdiction',N'Default jurisdiction','fccm','String',N'All',N'All',NULL,NULL,1,0,0,0,20),
-('Integration.TradeCaseDefaults.CaseType',N'Default case type','fccm','Enum',N'TBML_SURV',N'TBML_SURV',NULL,N'{"allowedValues":["TBML_SURV","TF_SURV","SANC_SCR"]}',1,0,0,0,30),
-('Integration.PollingInterval',N'Polling interval','fccm','TimeSpan',N'00:00:05',N'00:00:05',NULL,NULL,1,0,0,0,40),
-('Integration.CaseIdTimeout',N'Case-id timeout','fccm','TimeSpan',N'00:05:00',N'00:05:00',NULL,NULL,1,0,0,0,50),
-('Integration.HttpTimeout',N'HTTP timeout','fccm','TimeSpan',N'00:00:30',N'00:00:30',NULL,NULL,1,0,0,0,55),
-('Integration.FccmOnboardingUrl',N'FCCM onboarding URL','fccm','String',N'http://172.20.3.73:7001/InitiateOnboardingService/OB/Initiate',N'http://172.20.3.73:7001/InitiateOnboardingService/OB/Initiate',NULL,N'{"format":"url"}',1,0,0,0,60),
-('Integration.FccmActionCodeStatusMap',N'Action-code status map','fccm','Json',N'{"30004":"APPROVED","30003":"REJECTED","983":"APPROVED","984":"REJECTED"}',N'{"30004":"APPROVED","30003":"REJECTED","983":"APPROVED","984":"REJECTED"}',NULL,NULL,1,0,0,0,70),
--- onboarding / external verification (NEW — Phase 2 consumers; not bridged in Phase 1)
-('Onboarding.RequireExternalVerification',N'Require external verification for KYC','onboarding','Boolean',N'false',N'false',NULL,NULL,1,0,0,0,10),
-('Onboarding.BaseUrl',N'Base URL','onboarding','String',N'',N'http://localhost:8080/icbc/brainsEU/servlet/QueryKycInfoServlet',NULL,N'{"format":"url"}',1,0,0,0,20),
-('Onboarding.ResponseMapping',N'Response mapping','onboarding','Json',N'{"riskField":"STATUS","map":{"0":"PEP","1":"High","2":"Medium","3":"Low"},"successFlag":{"TRANSOK":"0"}}',N'{"riskField":"STATUS","map":{"0":"PEP","1":"High","2":"Medium","3":"Low"},"successFlag":{"TRANSOK":"0"}}',NULL,NULL,1,0,0,0,30),
-('Onboarding.FailureHandling',N'Failure handling','onboarding','Enum',N'Block',N'Block',NULL,N'{"allowedValues":["Block","Allow with flag","Allow with warning"]}',1,0,0,0,40),
-('Onboarding.CallTimeout',N'Call timeout','onboarding','TimeSpan',N'00:00:30',N'00:00:30',NULL,NULL,1,0,0,0,50),
+('Integration.FccmOracleConnection',N'FCCM database connection','fccm','Secret',N'',NULL,NULL,0,1,0,0,10),
+('Integration.TradeCaseDefaults.Jurisdiction',N'Default jurisdiction','fccm','String',N'All',NULL,NULL,1,0,0,0,20),
+('Integration.TradeCaseDefaults.CaseType',N'Default case type','fccm','Enum',N'TBML_SURV',NULL,N'{"allowedValues":["TBML_SURV","TF_SURV","SANC_SCR"]}',1,0,0,0,30),
+('Integration.PollingInterval',N'Polling interval','fccm','TimeSpan',N'00:00:05',NULL,NULL,1,0,0,0,40),
+('Integration.CaseIdTimeout',N'Case-id timeout','fccm','TimeSpan',N'00:05:00',NULL,NULL,1,0,0,0,50),
+('Integration.HttpTimeout',N'HTTP timeout','fccm','TimeSpan',N'00:00:30',NULL,NULL,1,0,0,0,55),
+('Integration.FccmOnboardingUrl',N'FCCM onboarding URL','fccm','String',N'http://172.20.3.73:7001/InitiateOnboardingService/OB/Initiate',NULL,N'{"format":"url"}',1,0,0,0,60),
+('Integration.FccmActionCodeStatusMap',N'Action-code status map','fccm','Json',N'{"30004":"APPROVED","30003":"REJECTED","983":"APPROVED","984":"REJECTED"}',NULL,NULL,1,0,0,0,70),
+-- onboarding / external verification (Phase 2 consumers; not bridged in Phase 1)
+('Onboarding.RequireExternalVerification',N'Require external verification for KYC','onboarding','Boolean',N'false',NULL,NULL,1,0,0,0,10),
+('Onboarding.BaseUrl',N'Base URL','onboarding','String',N'',NULL,N'{"format":"url"}',1,0,0,0,20),
+('Onboarding.ResponseMapping',N'Response mapping','onboarding','Json',N'{"riskField":"STATUS","map":{"0":"PEP","1":"High","2":"Medium","3":"Low"},"successFlag":{"TRANSOK":"0"}}',NULL,NULL,1,0,0,0,30),
+('Onboarding.FailureHandling',N'Failure handling','onboarding','Enum',N'Block',NULL,N'{"allowedValues":["Block","Allow with flag","Allow with warning"]}',1,0,0,0,40),
+('Onboarding.CallTimeout',N'Call timeout','onboarding','TimeSpan',N'00:00:30',NULL,NULL,1,0,0,0,50),
 -- reports / documents
-('Documents.BasePath',N'Document storage path','reports','String',N'ICBC_Data',N'ICBC_Data',NULL,NULL,0,0,0,0,10),
-('Reports.ChromiumExecutablePath',N'Chromium executable path','reports','String',N'',N'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',NULL,NULL,1,0,0,0,20),
-('Reports.FooterDisclaimer',N'Report footer disclaimer','reports','Text',N'Internal use only.',N'This report is generated from ICBC Trade Compliance records and is intended for internal compliance use only.',NULL,NULL,1,0,0,0,30),
--- logging / diagnostics (managed here; Phase 2 wires the LoggingLevelSwitch. directory/retention are restart-scoped)
-('Logging.Modules.Api',N'Api','logging','LogModule',N'{"enabled":true,"level":"Information"}',N'{"enabled":true,"level":"Information"}',NULL,NULL,1,0,0,0,10),
-('Logging.Modules.Application.Trade',N'Application.Trade','logging','LogModule',N'{"enabled":true,"level":"Information"}',N'{"enabled":true,"level":"Debug"}',NULL,NULL,1,0,0,0,20),
-('Logging.Modules.Application.UserManagement',N'Application.UserManagement','logging','LogModule',N'{"enabled":true,"level":"Information"}',N'{"enabled":true,"level":"Information"}',NULL,NULL,1,0,0,0,30),
-('Logging.Modules.BackgroundService',N'BackgroundService','logging','LogModule',N'{"enabled":true,"level":"Information"}',N'{"enabled":true,"level":"Information"}',NULL,NULL,1,0,0,0,40),
-('Logging.Directory',N'Log directory','logging','String',N'D:\ICBC - Latest\Logs',N'D:\ICBC - Latest\Logs',NULL,NULL,1,0,0,1,50),
-('Logging.RetentionDays',N'Retention','logging','Integer',N'30',N'30',N'days',N'{"min":1,"max":365,"step":1}',1,0,0,1,60),
-('Logging.ArchiveScanIntervalHours',N'Archive scan interval','logging','Integer',N'12',N'12',N'hours',N'{"min":1,"max":72,"step":1}',1,0,0,1,70);
+('Documents.BasePath',N'Document storage path','reports','String',N'ICBC_Data',NULL,NULL,0,0,0,0,10),
+('Reports.ChromiumExecutablePath',N'Chromium executable path','reports','String',N'',NULL,NULL,1,0,0,0,20),
+('Reports.FooterDisclaimer',N'Report footer disclaimer','reports','Text',N'Internal use only.',NULL,NULL,1,0,0,0,30),
+-- logging / diagnostics (managed here; Phase 2 wires the LoggingLevelSwitch; directory/retention are restart-scoped)
+('Logging.Modules.Api',N'Api','logging','LogModule',N'{"enabled":true,"level":"Information"}',NULL,NULL,1,0,0,0,10),
+('Logging.Modules.Application.Trade',N'Application.Trade','logging','LogModule',N'{"enabled":true,"level":"Information"}',NULL,NULL,1,0,0,0,20),
+('Logging.Modules.Application.UserManagement',N'Application.UserManagement','logging','LogModule',N'{"enabled":true,"level":"Information"}',NULL,NULL,1,0,0,0,30),
+('Logging.Modules.BackgroundService',N'BackgroundService','logging','LogModule',N'{"enabled":true,"level":"Information"}',NULL,NULL,1,0,0,0,40),
+('Logging.Directory',N'Log directory','logging','String',N'D:\ICBC - Latest\Logs',NULL,NULL,1,0,0,1,50),
+('Logging.RetentionDays',N'Retention','logging','Integer',N'30',N'days',N'{"min":1,"max":365,"step":1}',1,0,0,1,60),
+('Logging.ArchiveScanIntervalHours',N'Archive scan interval','logging','Integer',N'12',N'hours',N'{"min":1,"max":72,"step":1}',1,0,0,1,70);
 
--- descriptions kept in a second pass for readability (optional; safe if absent)
--- insert new definitions
+-- =========================================================================
+-- 3b. ENVIRONMENT VALUES  *** REQUIRED — DECLARE EVERY NON-SECRET VALUE ***
+--     This is the single place you set values per environment. Edit a value
+--     and re-run. Lines tagged  << ENV >>  are the ones that usually differ
+--     between environments (e.g. UAT jurisdiction = 'PAK', UAT FCCM host).
+--     Rules:
+--       * Every non-secret setting in @DEF MUST appear here with a non-blank
+--         value — the guard in 3c ABORTS the migration otherwise.
+--       * Do NOT list secrets (Is_Sensitive=1, e.g. Integration.FccmOracle
+--         Connection) — set those encrypted from the Configuration UI.
+-- =========================================================================
+DECLARE @VAL TABLE (K nvarchar(200) PRIMARY KEY, Val nvarchar(max) NULL);
+INSERT INTO @VAL (K, Val) VALUES
+-- security
+('Jwt.AccessTokenDefaultMinutes', N'1440'),
+('Auth.RestrictConcurrentLogin',  N'false'),
+('Auth.RequireDeviceIdHeader',    N'true'),
+('TwoFactor.Enabled',             N'true'),
+('TwoFactor.Method',              N'Totp'),
+-- password
+('PasswordPolicy.MaxFailedAttempts', N'5'),
+('PasswordPolicy.LockoutMinutes',    N'3'),
+('PasswordPolicy.EnforceExpiry',     N'true'),
+('PasswordPolicy.ExpiryDays',        N'90'),
+('PasswordPolicy.DormancyDays',      N'90'),
+-- review
+('PeriodicReview.Enabled',          N'true'),
+('PeriodicReview.ScanInterval',     N'01:00:00'),
+('PeriodicReview.BatchSize',        N'50'),
+('PeriodicReview.LeadTimeDays',     N'0'),
+('PeriodicReview.DefaultFrequency', N'{"Value":3,"Unit":"Months"}'),
+('PeriodicReview.Frequencies',      N'{"PEP":{"Value":1,"Unit":"Months"},"High":{"Value":1,"Unit":"Months"},"Medium":{"Value":2,"Unit":"Months"},"Low":{"Value":3,"Unit":"Months"}}'),
+-- insight
+('CustomerInsightSnapshot.Enabled',       N'true'),
+('CustomerInsightSnapshot.CheckInterval', N'06:00:00'),
+-- repo
+('TradeRepository.SlaDays', N'5'),
+-- fccm / integration
+('Integration.TradeCaseDefaults.Jurisdiction', N'All'),                                                             -- << ENV >>  UAT e.g. N'PAK'
+('Integration.TradeCaseDefaults.CaseType',      N'TBML_SURV'),
+('Integration.PollingInterval',                 N'00:00:05'),
+('Integration.CaseIdTimeout',                   N'00:05:00'),
+('Integration.HttpTimeout',                     N'00:00:30'),
+('Integration.FccmOnboardingUrl',               N'http://172.20.3.73:7001/InitiateOnboardingService/OB/Initiate'),  -- << ENV >>  UAT FCCM host
+('Integration.FccmActionCodeStatusMap',         N'{"30004":"APPROVED","30003":"REJECTED","983":"APPROVED","984":"REJECTED"}'),
+-- onboarding / external verification
+('Onboarding.RequireExternalVerification', N'false'),
+('Onboarding.BaseUrl',                     N'http://localhost:8080/icbc/brainsEU/servlet/QueryKycInfoServlet'),      -- << ENV >>  UAT provider URL
+('Onboarding.ResponseMapping',             N'{"riskField":"STATUS","map":{"0":"PEP","1":"High","2":"Medium","3":"Low"},"successFlag":{"TRANSOK":"0"}}'),
+('Onboarding.FailureHandling',             N'Block'),
+('Onboarding.CallTimeout',                 N'00:00:30'),
+-- reports / documents
+('Documents.BasePath',            N'ICBC_Data'),
+('Reports.ChromiumExecutablePath',N'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'),                  -- << ENV >>  UAT server path
+('Reports.FooterDisclaimer',      N'This report is generated from ICBC Trade Compliance records and is intended for internal compliance use only.'),
+-- logging / diagnostics
+('Logging.Modules.Api',                        N'{"enabled":true,"level":"Information"}'),
+('Logging.Modules.Application.Trade',          N'{"enabled":true,"level":"Debug"}'),
+('Logging.Modules.Application.UserManagement', N'{"enabled":true,"level":"Information"}'),
+('Logging.Modules.BackgroundService',          N'{"enabled":true,"level":"Information"}'),
+('Logging.Directory',                          N'D:\ICBC - Latest\Logs'),                                           -- << ENV >>  UAT log path
+('Logging.RetentionDays',                      N'30'),
+('Logging.ArchiveScanIntervalHours',           N'12');
+
+-- =========================================================================
+-- 3c. COMPLETENESS GUARD — every non-secret setting MUST have a declared value
+-- =========================================================================
+-- (i) declared values referencing an unknown setting key (typo / removed key)
+IF EXISTS (SELECT 1 FROM @VAL v WHERE NOT EXISTS (SELECT 1 FROM @DEF d WHERE d.K = v.K))
+BEGIN
+    PRINT '!! These declared values (Section 3b) reference an UNKNOWN setting key:';
+    SELECT v.K AS Unknown_Value_Key FROM @VAL v WHERE NOT EXISTS (SELECT 1 FROM @DEF d WHERE d.K = v.K);
+    RAISERROR('Configuration migration aborted: unknown key(s) in the value declaration (Section 3b). Nothing was seeded.', 16, 1);
+    RETURN;
+END;
+
+-- (ii) non-secret settings that are NOT DECLARED at all (no row in @VAL).
+--      A declared value MAY be an explicit empty string (some settings are
+--      legitimately blank, e.g. an optional URL); what is NOT allowed is
+--      forgetting to declare a setting. So the guard checks PRESENCE of a row.
+IF EXISTS (
+    SELECT 1 FROM @DEF d
+    WHERE  d.Sensitive = 0
+      AND  NOT EXISTS (SELECT 1 FROM @VAL v WHERE v.K = d.K))
+BEGIN
+    PRINT '!! These non-secret settings are NOT DECLARED in Section 3b — every value MUST be declared:';
+    SELECT d.Cat AS Category, d.K AS Undeclared_Setting_Key
+    FROM   @DEF d
+    WHERE  d.Sensitive = 0
+      AND  NOT EXISTS (SELECT 1 FROM @VAL v WHERE v.K = d.K)
+    ORDER BY d.Cat, d.K;
+    RAISERROR('Configuration migration aborted: one or more non-secret settings are not declared (Section 3b). Nothing was seeded.', 16, 1);
+    RETURN;
+END;
+
+-- (iii) soft check: declared but EMPTY — surfaced so an accidental blank is
+--       visible, but NOT fatal (empty can be intentional).
+IF EXISTS (SELECT 1 FROM @VAL v JOIN @DEF d ON d.K = v.K
+           WHERE d.Sensitive = 0 AND (v.Val IS NULL OR LTRIM(RTRIM(v.Val)) = N''))
+BEGIN
+    PRINT '(i) NOTE - the following settings are declared with an EMPTY value (confirm intentional):';
+    SELECT d.Cat AS Category, v.K AS Empty_Value_Key
+    FROM   @VAL v JOIN @DEF d ON d.K = v.K
+    WHERE  d.Sensitive = 0 AND (v.Val IS NULL OR LTRIM(RTRIM(v.Val)) = N'')
+    ORDER BY d.Cat, v.K;
+END;
+PRINT 'Section 3 - value declaration complete: every non-secret setting is declared.';
+
+-- ---------- insert definitions (metadata) ----------
 INSERT INTO dbo.TmX_Configuration_Definition
     (Configuration_Key, Display_Name, Description, Category_Key, Data_Type, Default_Value,
      Validation_Rules, Unit, Is_Editable, Is_Sensitive, Requires_Approval, Applies_On_Restart,
      Is_Active, Display_Order, Created_By, Created_Date, Last_Updated_By, Last_Updated_Date)
 SELECT d.K, d.Name, NULL, d.Cat, d.Dt, d.Def, d.Rules, d.Unit,
        d.Editable, d.Sensitive, d.Approval, d.Restart, 1, d.Ord, @who, @now, @who, @now
-FROM   @D d
+FROM   @DEF d
 WHERE  NOT EXISTS (SELECT 1 FROM dbo.TmX_Configuration_Definition x WHERE x.Configuration_Key = d.K);
 PRINT CONCAT('Section 3 - definitions inserted: ', @@ROWCOUNT);
 
--- insert the Global active value for each (skip sensitive: value stays in appsettings)
+-- ---------- insert the Global active value for each non-secret setting ----------
+--            (skip sensitive: their value stays in appsettings / encrypted store)
 INSERT INTO dbo.TmX_Configuration_Value
     (Configuration_Definition_ID, Configuration_Value, Is_Active, Created_By, Created_Date, Last_Updated_By, Last_Updated_Date)
-SELECT def.Configuration_Definition_ID, d.Val, 1, @who, @now, @who, @now
-FROM   @D d
-JOIN   dbo.TmX_Configuration_Definition def ON def.Configuration_Key = d.K
+SELECT def.Configuration_Definition_ID, v.Val, 1, @who, @now, @who, @now
+FROM   @VAL v
+JOIN   @DEF d   ON d.K = v.K
+JOIN   dbo.TmX_Configuration_Definition def ON def.Configuration_Key = v.K
 WHERE  d.Sensitive = 0
-  AND  NOT EXISTS (SELECT 1 FROM dbo.TmX_Configuration_Value v
-                   WHERE v.Configuration_Definition_ID = def.Configuration_Definition_ID
-                     AND v.Branch_ID IS NULL AND v.Role_ID IS NULL AND v.Environment IS NULL);
+  AND  NOT EXISTS (SELECT 1 FROM dbo.TmX_Configuration_Value cv
+                   WHERE cv.Configuration_Definition_ID = def.Configuration_Definition_ID
+                     AND cv.Branch_ID IS NULL AND cv.Role_ID IS NULL AND cv.Environment IS NULL);
 PRINT CONCAT('Section 3 - Global values inserted: ', @@ROWCOUNT);
 
 -- seed a Create history row per new definition (audit trail baseline)
@@ -280,5 +401,5 @@ BEGIN
 END
 GO
 
-PRINT '2026_07_036 complete - Configuration Management schema + catalogue + privileges seeded.';
+PRINT '2026_07_036 complete - Configuration Management schema + catalogue + declared values + privileges seeded.';
 GO

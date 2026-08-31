@@ -35,6 +35,7 @@ public class FccmKycCaseService : IKycCaseService
     private readonly IOnboardingMappingProvider _mappingProvider;
     private readonly OnboardingPayloadMapper    _mapper;
     private readonly INextReviewDateCalculator  _nextReview;
+    private readonly PeriodicReviewOptions       _review;
     private readonly ILogger<FccmKycCaseService> _log;
 
     public FccmKycCaseService(
@@ -46,6 +47,7 @@ public class FccmKycCaseService : IKycCaseService
         IOnboardingMappingProvider    mappingProvider,
         OnboardingPayloadMapper       mapper,
         INextReviewDateCalculator     nextReview,
+        IOptions<PeriodicReviewOptions> review,
         ILogger<FccmKycCaseService>   log)
     {
         _db          = db;
@@ -57,6 +59,7 @@ public class FccmKycCaseService : IKycCaseService
         _mappingProvider = mappingProvider;
         _mapper      = mapper;
         _nextReview  = nextReview;
+        _review      = review.Value;
         _log         = log;
     }
 
@@ -618,7 +621,12 @@ public class FccmKycCaseService : IKycCaseService
             Comments      = string.IsNullOrWhiteSpace(payload.ActionReason)
                                 ? $"FCCM verdict received → {targetStatusName} (prev status lkp = {previous})"
                                 : $"FCCM verdict → {targetStatusName}: {payload.ActionReason}",
-            UserId        = "fccm-callback",
+            // User_ID is FK'd to TmX_User (XFKTmX_App_Remark_To_User) and NOT NULL,
+            // so a placeholder string like "fccm-callback" violates the constraint.
+            // The FCCM callback is a SYSTEM action, so attribute the audit remark to
+            // the periodic-review SERVICE principal (a real TmX_User created for this
+            // purpose). Fallback to the transaction owner if the service id is unset.
+            UserId        = string.IsNullOrWhiteSpace(_review.ReviewerUserId) ? tx.UserId : _review.ReviewerUserId,
             CreatedBy     = "FCCM Callback",
             CreatedDate   = DateTime.UtcNow
         };

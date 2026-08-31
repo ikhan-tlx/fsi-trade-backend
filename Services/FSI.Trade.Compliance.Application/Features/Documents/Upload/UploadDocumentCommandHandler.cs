@@ -4,6 +4,7 @@ using FSI.Trade.Compliance.Application.Contracts.Identity;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
 using FSI.Trade.Compliance.Domain.Entities.Documents;
 using MediatR;
+using Microsoft.EntityFrameworkCore;
 
 namespace FSI.Trade.Compliance.Application.Features.Documents.Upload;
 
@@ -33,16 +34,47 @@ public class UploadDocumentCommandHandler
 
         var tenantId = _current.TenantId ?? 1;
 
+        // Resolve the storage folder.
+        //   • Transaction-scoped upload → Transaction/<TransactionNumber>/... so all of a
+        //     transaction's files live together (flag evidence under a FlagsEvidence
+        //     sub-folder). The transaction is already a saved draft, so it always has a
+        //     number; if it were somehow missing we fall back to the id to stay safe.
+        //   • No transaction (generic/legacy) → keep the loose hint + /yyyy/MM/ partition.
+        string subfolder;
+        bool   appendDatePartition;
+        if (req.TransactionId.HasValue)
+        {
+            var txnNumber = await _db.Transactions.AsNoTracking()
+                .Where(t => t.TransactionId == req.TransactionId.Value)
+                .Select(t => t.TransactionNumber)
+                .FirstOrDefaultAsync(ct);
+
+            var folderKey = string.IsNullOrWhiteSpace(txnNumber)
+                ? req.TransactionId.Value.ToString()
+                : txnNumber!;
+
+            subfolder = req.IsFlagEvidence
+                ? $"Transaction/{folderKey}/FlagsEvidence"
+                : $"Transaction/{folderKey}";
+            appendDatePartition = false;
+        }
+        else
+        {
+            subfolder = req.SubfolderHint;
+            appendDatePartition = true;
+        }
+
         // Write the file to backing storage. Returns a fully-populated
         // Document entity (size + hash + paths + provider all set).
         var document = await _storage.SaveAsync(
-            content:           req.Content,
-            originalFileName:  req.OriginalFileName,
-            mimeType:          req.MimeType,
-            uploadedBy:        userId,
-            tenantId:          tenantId,
-            subfolderHint:     req.SubfolderHint,
-            ct:                ct);
+            content:             req.Content,
+            originalFileName:    req.OriginalFileName,
+            mimeType:            req.MimeType,
+            uploadedBy:          userId,
+            tenantId:            tenantId,
+            subfolderHint:       subfolder,
+            appendDatePartition: appendDatePartition,
+            ct:                  ct);
 
         _db.Documents.Add(document);
         await _db.SaveChangesAsync(ct);

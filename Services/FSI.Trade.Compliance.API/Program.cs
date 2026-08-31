@@ -65,7 +65,11 @@ var fileDefs = new (string Key, Func<string, bool> Match)[]
     ("Application.UserManagement", sc => sc.Contains("Application.UserManagement")),
     ("Application.Trade",          sc => sc.Contains("Application.Trade")
                                        || (sc.Contains("Integrations.Fccm") && !sc.Contains("FccmCaseIdPoller"))),
-    ("BackgroundService",          sc => sc.Contains("FccmCaseIdPoller") || sc.Contains("LogArchiverService")),
+    // Hosted/background services. Includes the periodic KYC review driver +
+    // its workflow inbox synchronizer so the [PERIODIC-REVIEW ...] step trail
+    // (create → drive → each command → halt diagnostic) is captured on UAT.
+    ("BackgroundService",          sc => sc.Contains("FccmCaseIdPoller") || sc.Contains("LogArchiverService")
+                                       || sc.Contains("Kyc.Review") || sc.Contains("WorkflowInboxSynchronizer")),
     // API/controller layer + ASP.NET Core host logs. Without this, controller and
     // framework logs reach only the Console sink, which is invisible under IIS.
     ("Api",                        sc => sc.Contains("FSI.Trade.Compliance.API")
@@ -93,6 +97,11 @@ builder.Host.UseSerilog((ctx, lc) =>
         var lowest = activeFiles.Min(s => s.Level);
         lc.MinimumLevel.Override("Application", lowest);
         lc.MinimumLevel.Override("FSI.Trade.Compliance.Infrastructure.Integrations.Fccm", lowest);
+        // Let the periodic KYC review driver + inbox synchronizer emit down to the
+        // lowest enabled file level so their [PERIODIC-REVIEW ...] trail is written
+        // (they log at Information, but this also allows Debug detail when enabled).
+        lc.MinimumLevel.Override("FSI.Trade.Compliance.Infrastructure.Kyc.Review", lowest);
+        lc.MinimumLevel.Override("FSI.Trade.Compliance.Infrastructure.Workflow.WorkflowInboxSynchronizer", lowest);
 
         foreach (var f in activeFiles)
         {

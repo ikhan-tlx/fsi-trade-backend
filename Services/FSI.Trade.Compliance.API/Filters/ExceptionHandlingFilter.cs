@@ -89,6 +89,24 @@ public class ExceptionHandlingFilter : IExceptionFilter
                 };
                 break;
 
+            // A storage-tier failure (missing/read-only folder, no write permission)
+            // is a SERVER fault, not an auth challenge — 500 + full logging so the real
+            // cause (e.g. Documents.BasePath not writable by the app-pool identity) is
+            // visible, instead of a misleading 401 that pops the login modal.
+            case DocumentStorageException dsx:
+                var storeModule    = LogModules.FromPath(context.HttpContext.Request.Path.Value);
+                var storeModuleLog = _loggerFactory.CreateLogger(LogModules.Category(storeModule));
+                storeModuleLog.LogError(context.Exception,
+                    "Document storage failure on {Method} {Path}",
+                    context.HttpContext.Request.Method, context.HttpContext.Request.Path.Value);
+                httpStatus = 500;
+                envelope   = new ResponseViewModel<object>
+                {
+                    status = ResponseStatus.Error(httpStatus, dsx.Code, dsx.Message),
+                    data   = new { Success = 0, Code = dsx.Code, Message = dsx.Message }
+                };
+                break;
+
             default:
                 // Log the FULL exception (Serilog renders the inner-exception
                 // chain via {Exception}) into the request's module file so it

@@ -1,4 +1,6 @@
+using System.IO;
 using System.Security.Cryptography;
+using FSI.Trade.Compliance.Application.Common.Exceptions;
 using FSI.Trade.Compliance.Application.Common.Options;
 using FSI.Trade.Compliance.Application.Contracts.Documents;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
@@ -57,6 +59,7 @@ internal class LocalDiskDocumentStorage : IDocumentStorage
         string uploadedBy,
         int tenantId,
         string subfolderHint,
+        bool appendDatePartition = true,
         CancellationToken ct = default)
     {
         if (content is null) throw new ArgumentNullException(nameof(content));
@@ -66,10 +69,30 @@ internal class LocalDiskDocumentStorage : IDocumentStorage
         var providerLkpId = await ResolveLocalDiskLookupAsync(ct);
 
         var now           = DateTime.UtcNow;
-        var subfolder     = string.IsNullOrWhiteSpace(subfolderHint) ? "general" : Sanitise(subfolderHint);
-        var relativeDir   = Path.Combine(subfolder, now.ToString("yyyy"), now.ToString("MM"));
+        var subfolder     = Sanitise(subfolderHint);   // empty → "general"; multi-segment + traversal-safe
+        // Transaction-scoped callers supply an already-structured path (e.g.
+        // Transaction/<number>[/FlagsEvidence]) and pass appendDatePartition=false so it
+        // is used verbatim; other callers keep the /yyyy/MM/ month partition.
+        var relativeDir   = appendDatePartition
+            ? Path.Combine(subfolder, now.ToString("yyyy"), now.ToString("MM"))
+            : subfolder;
         var absoluteDir   = Path.Combine(ResolveBasePath(), relativeDir);
-        Directory.CreateDirectory(absoluteDir);
+        try
+        {
+            Directory.CreateDirectory(absoluteDir);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            // A missing/read-only storage folder or a process identity without write
+            // permission is a SERVER-side configuration fault — surface it as such
+            // (500, logged) rather than letting the raw UnauthorizedAccessException be
+            // mapped to HTTP 401 (which would pop the login modal and hide the cause).
+            _logger.LogError(ex,
+                "Document storage directory is not writable: '{Dir}'. Check Documents.BasePath and the app-pool identity's Modify permission.",
+                absoluteDir);
+            throw new DocumentStorageException(
+                $"The document storage location is not writable ('{absoluteDir}').", ex);
+        }
 
         var safeOriginalName = SanitiseFileName(originalFileName);
         var extension        = Path.GetExtension(safeOriginalName);
@@ -83,10 +106,22 @@ internal class LocalDiskDocumentStorage : IDocumentStorage
         {
             (fileSize, hashHex) = await WriteAndHashAsync(content, absolutePath, ct);
         }
-        catch
+        catch (Exception ex)
         {
             // Best-effort cleanup if a partial file got written.
             try { if (File.Exists(absolutePath)) File.Delete(absolutePath); } catch { /* swallow */ }
+
+            // Translate filesystem permission/IO failures to a domain error so the API
+            // maps them to 500 (logged) instead of the generic
+            // UnauthorizedAccessException→401 (which surfaces as a spurious login modal).
+            if (ex is UnauthorizedAccessException or IOException)
+            {
+                _logger.LogError(ex,
+                    "Failed to write document to '{Path}'. Check Documents.BasePath and the app-pool identity's Modify permission.",
+                    absolutePath);
+                throw new DocumentStorageException(
+                    $"The document could not be written to storage ('{absolutePath}').", ex);
+            }
             throw;
         }
 

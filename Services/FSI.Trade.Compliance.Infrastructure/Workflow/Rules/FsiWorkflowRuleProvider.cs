@@ -1,8 +1,10 @@
 using System.Text.Json;
+using FSI.Trade.Compliance.Application.Common.Options;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using OptimaJet.Workflow.Core.Model;
 using OptimaJet.Workflow.Core.Runtime;
 
@@ -36,11 +38,21 @@ public class FsiWorkflowRuleProvider : IWorkflowRuleProvider
 {
     private readonly IServiceScopeFactory               _scopes;
     private readonly ILogger<FsiWorkflowRuleProvider>   _log;
+    private readonly IOptionsMonitor<PeriodicReviewOptions> _review;
 
-    public FsiWorkflowRuleProvider(IServiceScopeFactory scopes, ILogger<FsiWorkflowRuleProvider> log)
+    // The KYC scheme code the system-principal bypass is scoped to. The scheme
+    // CODE is stable across environments (only its actor role NAMES differ), so
+    // gating on it keeps the bypass from ever leaking into another workflow.
+    private const string KycSchemeCode = "KYC_Workflow";
+
+    public FsiWorkflowRuleProvider(
+        IServiceScopeFactory scopes,
+        ILogger<FsiWorkflowRuleProvider> log,
+        IOptionsMonitor<PeriodicReviewOptions> review)
     {
         _scopes = scopes;
         _log    = log;
+        _review = review;
     }
 
     // ---------- IWorkflowRuleProvider (v3.5) ----------
@@ -49,6 +61,31 @@ public class FsiWorkflowRuleProvider : IWorkflowRuleProvider
     {
         try
         {
+            // Option A — SYSTEM PRINCIPAL bypass. The configured periodic-review
+            // service identity satisfies the KYC actor rules WITHOUT any role
+            // mapping, inbox row, branch association or Active account, so the
+            // auto-review is deterministic regardless of how each environment
+            // names the scheme's authorizer actor. Fail-closed: exact GUID +
+            // enabled flag + KYC scheme only (IsSystemPrincipal); and for the
+            // authorize gate (CheckRole) the service must ALSO be the creator of
+            // this transaction — so it can only auto-authorize reviews IT created
+            // and can never approve a human's transaction. Every grant is audited.
+            if (IsSystemPrincipal(identityId, processInstance))
+            {
+                if (ruleName is "IsCreator" or "Boss")
+                {
+                    LogBypass(ruleName, processInstance, identityId);
+                    return true;
+                }
+                if (ruleName == "CheckRole"
+                    && IsCreatorAsync(processInstance.ProcessId, identityId, CancellationToken.None).GetAwaiter().GetResult())
+                {
+                    LogBypass(ruleName, processInstance, identityId);
+                    return true;
+                }
+                // Not creator (or unknown rule): fall through to normal evaluation.
+            }
+
             return ruleName switch
             {
                 "IsCreator" => IsCreatorAsync(processInstance.ProcessId, identityId, CancellationToken.None).GetAwaiter().GetResult(),
@@ -88,6 +125,27 @@ public class FsiWorkflowRuleProvider : IWorkflowRuleProvider
     }
 
     public List<string> GetRules() => new() { "IsCreator", "CheckRole", "Boss" };
+
+    // ---------- System-principal (Option A) ----------
+
+    /// <summary>
+    /// True when <paramref name="identityId"/> is the configured periodic-review
+    /// service identity, the bypass is enabled, and the process is the KYC scheme.
+    /// Fail-closed on every condition.
+    /// </summary>
+    private bool IsSystemPrincipal(string identityId, ProcessInstance processInstance)
+    {
+        var o = _review.CurrentValue;
+        if (o is null || !o.SystemActorBypass) return false;
+        if (string.IsNullOrWhiteSpace(o.ReviewerUserId) || string.IsNullOrWhiteSpace(identityId)) return false;
+        if (!string.Equals(identityId.Trim(), o.ReviewerUserId.Trim(), StringComparison.OrdinalIgnoreCase)) return false;
+        return string.Equals(processInstance.SchemeCode, KycSchemeCode, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void LogBypass(string ruleName, ProcessInstance processInstance, string identityId) =>
+        _log.LogInformation(
+            "[SYSTEM-ACTOR] periodic-review bypass GRANTED rule={Rule} scheme={Scheme} process={Pid} identity={Id} command={Cmd}.",
+            ruleName, processInstance.SchemeCode, processInstance.ProcessId, identityId, processInstance.CurrentCommand);
 
     // ---------- Rule implementations ----------
 

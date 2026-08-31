@@ -64,6 +64,7 @@ public class DocumentController : ControllerBase
     public async Task<IActionResult> Upload(
         IFormFile           file,
         [FromQuery] string? subfolderHint,
+        [FromQuery] int?    transactionId,
         CancellationToken   ct)
     {
         if (file is null || file.Length == 0)
@@ -71,6 +72,11 @@ public class DocumentController : ControllerBase
                 400, "file_required", "Upload requires a non-empty file field."));
 
         await using var stream = file.OpenReadStream();
+
+        // Flag evidence is the default use of this endpoint; a caller uploading a
+        // plain transaction document passes a different hint (e.g. "transaction/detail").
+        var isFlagEvidence = string.IsNullOrWhiteSpace(subfolderHint)
+            || string.Equals(subfolderHint, "flag-evidence", StringComparison.OrdinalIgnoreCase);
 
         var result = await _mediator.Send(new UploadDocumentCommand
         {
@@ -82,6 +88,8 @@ public class DocumentController : ControllerBase
             SubfolderHint     = string.IsNullOrWhiteSpace(subfolderHint)
                                     ? "flag-evidence"
                                     : subfolderHint!,
+            TransactionId     = transactionId,
+            IsFlagEvidence    = isFlagEvidence,
         }, ct);
 
         return Ok(ResponseViewModel<UploadDocumentResult>.Ok(result));

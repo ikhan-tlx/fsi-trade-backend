@@ -23,9 +23,12 @@ public class SlaOptions
     /// <summary>How often the scanner runs a pass.</summary>
     public TimeSpan ScanInterval { get; set; } = TimeSpan.FromHours(1);
 
-    /// <summary>The SLA window, in hours, from the clock start (entered-current-state
-    /// time, falling back to the transaction's created date).</summary>
-    public int DefaultHours { get; set; } = 24;
+    /// <summary>The SLA window, in DAYS, from the clock start (entered-current-state
+    /// time, falling back to the transaction's created date). This is the SINGLE
+    /// SLA window: it drives both the breach/at-risk notification scanner AND the
+    /// Trade Repository grid aging badge (GetTransactionStatsQueryHandler), so the
+    /// two never diverge.</summary>
+    public int WindowDays { get; set; } = 5;
 
     /// <summary>Raise the at-risk notification once elapsed time reaches this
     /// percentage of the SLA window (e.g. 80 = at 80% of DefaultHours).</summary>

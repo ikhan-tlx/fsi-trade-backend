@@ -23,18 +23,21 @@ public class GetTransactionStatsQueryHandler
     private readonly IApplicationDbContext     _db;
     private readonly ICurrentUserService       _current;
     private readonly ILocationHierarchyService _locations;
-    private readonly TradeRepositoryOptions    _options;
+    // Single SLA window (days) — the SAME setting that drives the SLA-breach
+    // notification scanner, so the grid aging badge and the notifications never
+    // diverge (was a separate TradeRepository.SlaDays).
+    private readonly SlaOptions               _sla;
 
     public GetTransactionStatsQueryHandler(
         IApplicationDbContext             db,
         ICurrentUserService              current,
         ILocationHierarchyService        locations,
-        IOptionsSnapshot<TradeRepositoryOptions> options)
+        IOptionsSnapshot<SlaOptions>     sla)
     {
         _db        = db;
         _current   = current;
         _locations = locations;
-        _options   = options.Value;
+        _sla       = sla.Value;
     }
 
     public async Task<TransactionStatsDto> Handle(GetTransactionStatsQuery req, CancellationToken ct)
@@ -117,7 +120,7 @@ public class GetTransactionStatsQueryHandler
             sentToAuthorizer = sentToAuthorizer,
             createdToday     = createdToday,
             flagged          = flagged,
-            slaDays          = _options.SlaDays,
+            slaDays          = _sla.WindowDays,
             byProduct        = byProduct
         };
     }

@@ -1,4 +1,5 @@
 using FSI.Trade.Compliance.Application.Common.Models;
+using FSI.Trade.Compliance.Application.Features.Audit.Common;
 using MediatR;
 
 namespace FSI.Trade.Compliance.Application.Features.Audit.List;
@@ -6,7 +7,7 @@ namespace FSI.Trade.Compliance.Application.Features.Audit.List;
 /// <summary>Paged audit-trail listing — GET /api/v1/Audit?page=&amp;pageSize=&amp;sort=&amp;filter=
 /// Plus structured advanced-filter params (all optional, AND-combined):
 /// dateFrom, dateTo (on createdDate), userName, entityType, action, outcome, screen.</summary>
-public class ListAuditQuery : PagedQuery, IRequest<PagedResult<AuditLogListItemDto>>
+public class ListAuditQuery : PagedQuery, IRequest<PagedResult<AuditLogListItemDto>>, IAuditFilterCriteria
 {
     /// <summary>Inclusive lower bound on createdDate (UTC).</summary>
     public DateTime? DateFrom { get; set; }

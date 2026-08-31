@@ -115,6 +115,21 @@ public class LookupController : ControllerBase
     public async Task<IActionResult> TypeUsage(string lookupType, CancellationToken ct)
         => Ok(ResponseViewModel<List<LookupTypeUsageDto>>.Ok(await _mediator.Send(new GetLookupTypeUsageQuery(lookupType), ct)));
 
+    /// <summary>
+    /// Create a NEW managed lookup type, seeded with one or more values (entered
+    /// manually or uploaded/bulk). Parks ONE pending Lookup Modification Request
+    /// (maker-checker); on approval the type becomes manageable and its values are
+    /// inserted. POST /api/v1/Lookup/Types.
+    /// </summary>
+    [HttpPost("Types")]
+    [MapToApiVersion("1.0")]
+    [RequiresPrivilege("LookupManagement.Manage")]
+    public async Task<IActionResult> CreateType([FromBody] SaveLookupTypeCommand cmd, CancellationToken ct)
+    {
+        var res = await _mediator.Send(cmd, ct);
+        return Ok(ResponseViewModel<LookupBulkResult>.Ok(res, "Submitted for approval"));
+    }
+
     // ── values ──
     [HttpGet("Values")]
     [MapToApiVersion("1.0")]

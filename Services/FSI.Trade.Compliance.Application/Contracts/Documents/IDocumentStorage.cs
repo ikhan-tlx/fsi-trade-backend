@@ -39,9 +39,15 @@ public interface IDocumentStorage
     /// <param name="uploadedBy">Attribution — typically the JWT user.</param>
     /// <param name="tenantId">Tenant the document belongs to.</param>
     /// <param name="subfolderHint">
-    /// Logical grouping within the provider, e.g. "flag-evidence".
-    /// Implementations append <c>/yyyy/MM/</c> so a single directory
-    /// never grows past a month's uploads.
+    /// Logical grouping within the provider. May be a multi-segment relative path
+    /// (e.g. <c>"Transaction/TXN-0001/FlagsEvidence"</c>); each segment is sanitised
+    /// independently for path-traversal safety.
+    /// </param>
+    /// <param name="appendDatePartition">
+    /// When true (default), the implementation appends <c>/yyyy/MM/</c> under the
+    /// subfolder so a single directory never grows past a month's uploads. Pass
+    /// false when the caller supplies an already-structured path (e.g. a
+    /// transaction-scoped folder) that should be used verbatim.
     /// </param>
     Task<Document> SaveAsync(
         Stream content,
@@ -50,6 +56,7 @@ public interface IDocumentStorage
         string uploadedBy,
         int tenantId,
         string subfolderHint,
+        bool appendDatePartition = true,
         CancellationToken ct = default);
 
     /// <summary>

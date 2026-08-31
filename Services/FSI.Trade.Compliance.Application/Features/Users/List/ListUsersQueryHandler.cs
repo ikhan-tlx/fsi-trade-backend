@@ -1,20 +1,31 @@
 using FSI.Trade.Compliance.Application.Common.Models;
+using FSI.Trade.Compliance.Application.Common.Options;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
 using FSI.Trade.Compliance.Application.Features.Users.Common;
 using FSI.Trade.Compliance.Domain.Entities;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace FSI.Trade.Compliance.Application.Features.Users.List;
 
 public class ListUsersQueryHandler : IRequestHandler<ListUsersQuery, PagedResult<UserListItemDto>>
 {
     private readonly IApplicationDbContext _db;
-    public ListUsersQueryHandler(IApplicationDbContext db) => _db = db;
+    private readonly IOptionsMonitor<PeriodicReviewOptions> _review;
+    public ListUsersQueryHandler(IApplicationDbContext db, IOptionsMonitor<PeriodicReviewOptions> review)
+    { _db = db; _review = review; }
 
     public async Task<PagedResult<UserListItemDto>> Handle(ListUsersQuery req, CancellationToken ct)
     {
         IQueryable<ApplicationUser> q = _db.Users.AsNoTracking();
+
+        // Hide the periodic-review SYSTEM principal from the Users management list
+        // (it is a non-interactive service identity, not a person). Excluded before
+        // count/paging so the total stays correct.
+        var svcId = _review.CurrentValue.ReviewerUserId;
+        if (!string.IsNullOrWhiteSpace(svcId))
+            q = q.Where(u => u.Id != svcId);
 
         if (!string.IsNullOrWhiteSpace(req.Filter))
         {

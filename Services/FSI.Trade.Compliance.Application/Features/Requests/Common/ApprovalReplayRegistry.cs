@@ -1,5 +1,6 @@
 using System.Text.Json;
 using FSI.Trade.Compliance.Application.Common.Exceptions;
+using FSI.Trade.Compliance.Application.Features.Configuration;
 using FSI.Trade.Compliance.Application.Features.AutoFlags;
 using FSI.Trade.Compliance.Application.Features.AutoFlags.Apply;
 using FSI.Trade.Compliance.Application.Features.CompanyBranches.Create;
@@ -54,6 +55,8 @@ public sealed class ApprovalReplayRegistry : IApprovalReplayRegistry
     public const string TypeReferenceType  = "0008";
     public const string TypeReferenceValue = "0009";
     public const string TypeReferenceBulk  = "0010";
+    // Configuration Management — an approval-gated setting change (Requires_Approval=1).
+    public const string TypeConfigChange   = "0011";
 
     // Entity action codes.
     public const string ActionCreate     = "0001";
@@ -101,6 +104,9 @@ public sealed class ApprovalReplayRegistry : IApprovalReplayRegistry
             (TypeReferenceValue, ActionUpdate) => true,
             (TypeReferenceValue, ActionDelete) => true,
             (TypeReferenceBulk,  ActionUpdate) => true,   // bulk value import into a type
+            // Configuration Management: an approval-gated setting change is parked
+            // (Pending_Value) and replayed (ApplyConfigChangeCommand) on approve.
+            (TypeConfigChange,   ActionUpdate) => true,
             _ => false,
         };
     }
@@ -130,6 +136,7 @@ public sealed class ApprovalReplayRegistry : IApprovalReplayRegistry
             (TypeReferenceValue, ActionUpdate) => "ReferenceLists.Manage",
             (TypeReferenceValue, ActionDelete) => "ReferenceLists.Manage",
             (TypeReferenceBulk,  ActionUpdate) => "ReferenceLists.Manage",
+            (TypeConfigChange,   ActionUpdate) => "Configuration.Manage",
             _ => throw new ConflictException("request_type_unsupported",
                     $"Maker/checker is not configured for request type '{type}' action '{action}'."),
         };
@@ -245,6 +252,15 @@ public sealed class ApprovalReplayRegistry : IApprovalReplayRegistry
                 var bulk = Deserialize<BulkUpsertReferenceValuesCommand>(entityJson);
                 if (long.TryParse(entityId, out var bulkTypeId)) bulk.typeId = bulkTypeId;
                 return bulk;
+
+            // ---- Configuration Management: apply the parked value on approve.
+            // ApplyConfigChangeCommand bypasses the Requires_Approval "park" branch
+            // so it sets the effective value + clears pending. Display-only extras
+            // (oldValue/displayName/dataType) in the payload are ignored on bind.
+            case (TypeConfigChange, ActionUpdate):
+                var cfg = Deserialize<ApplyConfigChangeCommand>(entityJson);
+                if (!string.IsNullOrWhiteSpace(entityId)) cfg.key = entityId!;
+                return cfg;
 
             default:
                 throw new ConflictException("request_type_unsupported",

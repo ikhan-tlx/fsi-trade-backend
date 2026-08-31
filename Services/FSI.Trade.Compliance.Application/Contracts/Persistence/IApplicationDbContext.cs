@@ -22,6 +22,7 @@ public interface IApplicationDbContext
     DbSet<UserRoleMapping>      UserRoleMappings       { get; }
     DbSet<PasswordChangeAudit>  PasswordChangeAudits   { get; }
     DbSet<Lookup>               Lookups                { get; }
+    DbSet<LookupTypeRegistration> LookupTypeRegistrations { get; }
     DbSet<AppConfiguration>     AppConfigurations      { get; }
     DbSet<KycCaseRequest>       KycCaseRequests        { get; }
     DbSet<CstmBrains>           CstmBrains             { get; }

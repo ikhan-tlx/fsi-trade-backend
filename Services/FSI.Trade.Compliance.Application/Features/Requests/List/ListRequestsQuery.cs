@@ -172,6 +172,9 @@ public class ListRequestsQueryHandler
                 "0008" => new[] { "name", "Name", "code", "Code" },
                 "0009" => new[] { "name", "Name", "code", "Code" },
                 "0010" => new[] { "typeName", "TypeName", "Name", "name" },
+                // Configuration change — the payload parks a display-only displayName
+                // (falls back to the raw config key) alongside the replay body.
+                "0011" => new[] { "displayName", "DisplayName", "key", "Key" },
                 _      => new[] { "Name", "name" },
             };
             foreach (var k in keys)

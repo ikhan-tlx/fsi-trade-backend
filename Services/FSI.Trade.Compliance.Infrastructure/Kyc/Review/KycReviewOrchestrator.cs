@@ -50,6 +50,13 @@ public class KycReviewOrchestrator : IKycReviewOrchestrator
             .Select(u => u.Id)
             .FirstOrDefaultAsync(ct) ?? configured;
 
+        var reviewerRoles = await GetRoleNamesAsync(reviewerId, ct);
+        _log.LogInformation(
+            "[PERIODIC-REVIEW] START customer={Cust} sourceTxn={Src} reviewerConfigured='{Cfg}' reviewerId={Rid} reviewerRoles=[{Roles}] reviewerResolved={Resolved}.",
+            customerCode, sourceTransactionId, configured, reviewerId,
+            string.Join(", ", reviewerRoles),
+            !string.Equals(reviewerId, configured, StringComparison.OrdinalIgnoreCase) || reviewerRoles.Count > 0);
+
         using (_ambient.Impersonate(reviewerId, ActorName, 1))
         {
             // 1. Build + create the clone (header + customer snapshot).
@@ -86,6 +93,10 @@ public class KycReviewOrchestrator : IKycReviewOrchestrator
                 return new ReviewRunOutcome(ReviewOutcome.Failed, newTxnId, null,
                     "New transaction has no workflow process attached.");
 
+            _log.LogInformation(
+                "[PERIODIC-REVIEW] created review txn {New} (processId={Pid}) for customer {Cust}.",
+                newTxnId, processId, customerCode);
+
             // 2. Copy the product payload (detail UDF + grids + snapshot udf) from source.
             try
             {
@@ -96,6 +107,10 @@ public class KycReviewOrchestrator : IKycReviewOrchestrator
                 _log.LogError(ex, "Periodic review: copy product data failed src {Src} -> new {New}.", sourceTransactionId, newTxnId);
                 return new ReviewRunOutcome(ReviewOutcome.Failed, newTxnId, null, "Copy failed: " + ex.Message);
             }
+
+            _log.LogInformation(
+                "[PERIODIC-REVIEW] product data copied src {Src} -> new {New}; driving workflow to finalisation.",
+                sourceTransactionId, newTxnId);
 
             // 3. Drive the workflow to finalisation as PERIODIC REVIEWER. Dispatching
             //    ExecuteWorkflowCommand via MediatR reuses the existing handler's
@@ -119,21 +134,48 @@ public class KycReviewOrchestrator : IKycReviewOrchestrator
         }
     }
 
-    /// <summary>Steps the KYC workflow forward as the reviewer until it finalises.</summary>
+    /// <summary>
+    /// Steps the KYC workflow forward as the reviewer until it finalises.
+    /// Emits a step-by-step trail under the <c>[PERIODIC-REVIEW DRIVE]</c> tag so
+    /// UAT can follow every transition (available commands → chosen command →
+    /// executed result / new state) and, on a halt, a full diagnostic of the
+    /// authorizer pool vs. the reviewer's roles — the usual root cause being that
+    /// the reviewer's role name does not match the scheme's authorizer actor value,
+    /// so it is never queued into the authorizer inbox and CheckRole denies the
+    /// authorize command. Logs land in <c>BackgroundService-*.log</c>.
+    /// </summary>
     private async Task<bool> DriveWorkflowAsync(Guid processId, string reviewerId, CancellationToken ct)
     {
+        var reviewerRoles = await GetRoleNamesAsync(reviewerId, ct);
+        _log.LogInformation(
+            "[PERIODIC-REVIEW DRIVE] START ProcessId={Pid} ReviewerId={Rid} ReviewerRoles=[{Roles}] Forward=[{Fwd}].",
+            processId, reviewerId, string.Join(", ", reviewerRoles), string.Join(" > ", ForwardCommands));
+
         for (var step = 0; step < 8; step++)
         {
             IReadOnlyList<WorkflowCommand> available;
             try { available = await _engine.GetAvailableCommandsAsync(processId, reviewerId, ct); }
-            catch (Exception ex) { _log.LogError(ex, "Periodic review: GetAvailableCommands failed for {Pid}.", processId); return false; }
+            catch (Exception ex)
+            {
+                _log.LogError(ex, "[PERIODIC-REVIEW DRIVE] step {Step} ProcessId={Pid}: GetAvailableCommands failed.", step, processId);
+                return false;
+            }
 
             var names = available.Select(c => c.Name).ToList();
             var next  = ForwardCommands.FirstOrDefault(f => names.Any(n => string.Equals(n, f, StringComparison.OrdinalIgnoreCase)));
+
+            _log.LogInformation(
+                "[PERIODIC-REVIEW DRIVE] step {Step} ProcessId={Pid}: available=[{Available}] -> chosen={Chosen}.",
+                step, processId, string.Join(", ", names), next ?? "(none)");
+
             if (next is null)
             {
-                _log.LogWarning("Periodic review {Pid}: no forward command available (have: {Cmds}).",
-                    processId, string.Join(", ", names));
+                // Halt: no forward command. Dump who owns the step so the cause is
+                // unambiguous on UAT (reviewer roles vs. the resolved pool + roles).
+                var diag = await BuildHaltDiagnosticsAsync(processId, reviewerId, reviewerRoles, ct);
+                _log.LogWarning(
+                    "[PERIODIC-REVIEW DRIVE] HALT ProcessId={Pid} step {Step}: no forward command available (have: [{Cmds}]). {Diag}",
+                    processId, step, string.Join(", ", names), diag);
                 return false;
             }
 
@@ -149,18 +191,94 @@ public class KycReviewOrchestrator : IKycReviewOrchestrator
             }
             catch (Exception ex)
             {
-                _log.LogError(ex, "Periodic review: command '{Cmd}' failed for {Pid}.", next, processId);
+                _log.LogError(ex, "[PERIODIC-REVIEW DRIVE] step {Step} ProcessId={Pid}: command '{Cmd}' threw.", step, processId, next);
                 return false;
             }
 
-            if (res.IsFinalised) return true;
+            _log.LogInformation(
+                "[PERIODIC-REVIEW DRIVE] step {Step} ProcessId={Pid}: executed '{Cmd}' -> WasExecuted={Ok} IsFinalised={Fin} State='{State}'.",
+                step, processId, next, res.WasExecuted, res.IsFinalised, res.CurrentState);
+
+            if (res.IsFinalised)
+            {
+                _log.LogInformation(
+                    "[PERIODIC-REVIEW DRIVE] COMPLETE ProcessId={Pid}: workflow finalised after {Steps} step(s).",
+                    processId, step + 1);
+                return true;
+            }
             if (!res.WasExecuted)
             {
-                _log.LogWarning("Periodic review: command '{Cmd}' not executed for {Pid} (state {State}).",
-                    next, processId, res.CurrentState);
+                var diag = await BuildHaltDiagnosticsAsync(processId, reviewerId, reviewerRoles, ct);
+                _log.LogWarning(
+                    "[PERIODIC-REVIEW DRIVE] HALT ProcessId={Pid} step {Step}: command '{Cmd}' reported not executed (state {State}). {Diag}",
+                    processId, step, next, res.CurrentState, diag);
                 return false;
             }
         }
+
+        _log.LogWarning("[PERIODIC-REVIEW DRIVE] HALT ProcessId={Pid}: exceeded 8 steps without finalising.", processId);
         return false;
+    }
+
+    /// <summary>Role names held by a user id (empty if the id maps to no roles).</summary>
+    private async Task<List<string>> GetRoleNamesAsync(string userId, CancellationToken ct) =>
+        await _db.UserRoleMappings.AsNoTracking()
+            .Join(_db.Roles.AsNoTracking(), urm => urm.RoleId, r => r.Id, (urm, r) => new { urm.UserId, r.Name })
+            .Where(x => x.UserId == userId)
+            .Select(x => x.Name)
+            .Distinct()
+            .ToListAsync(ct);
+
+    /// <summary>
+    /// Builds a one-line diagnostic explaining WHY the drive stalled: the current
+    /// workflow state, the reviewer's roles, and the authorizer pool (the
+    /// WorkflowInbox rows the synchronizer wrote for this process) with the roles
+    /// those pool members hold. When the reviewer is not in the pool, the scheme's
+    /// authorizer actor role name does not match any role the reviewer holds — the
+    /// fix is to align the reviewer's role mapping to the scheme's authorizer value.
+    /// </summary>
+    private async Task<string> BuildHaltDiagnosticsAsync(
+        Guid processId, string reviewerId, IReadOnlyCollection<string> reviewerRoles, CancellationToken ct)
+    {
+        try
+        {
+            var pos = await _db.WorkflowProcessInstances.AsNoTracking()
+                .Where(p => p.Id == processId)
+                .Select(p => new { p.StateName, p.ActivityName })
+                .FirstOrDefaultAsync(ct);
+
+            var poolIds = await _db.WorkflowInboxes.AsNoTracking()
+                .Where(i => i.ProcessId == processId)
+                .Select(i => i.IdentityId.ToString())
+                .ToListAsync(ct);
+
+            var reviewerInPool = poolIds.Any(id => string.Equals(id, reviewerId, StringComparison.OrdinalIgnoreCase));
+
+            var poolRoles = await _db.UserRoleMappings.AsNoTracking()
+                .Join(_db.Roles.AsNoTracking(), urm => urm.RoleId, r => r.Id, (urm, r) => new { urm.UserId, r.Name })
+                .Where(x => poolIds.Contains(x.UserId))
+                .Select(x => x.Name)
+                .Distinct()
+                .ToListAsync(ct);
+
+            var poolNames = await _db.Users.AsNoTracking()
+                .Where(u => poolIds.Contains(u.Id))
+                .Select(u => u.UserName)
+                .Take(10)
+                .ToListAsync(ct);
+
+            var verdict = reviewerInPool
+                ? "Reviewer IS in the authorizer pool but the authorize command was still denied — verify the reviewer holds the scheme's authorizer actor role name (CheckRole matches on role NAME)."
+                : "Reviewer is NOT in the authorizer pool: the scheme's authorizer actor role name does not match any role the reviewer holds, so the inbox synchronizer never queued the reviewer. Align the reviewer's TmX_User_Role_Mapping to the scheme's authorizer actor value (this env's scheme uses 'Authorizer', while the reviewer is seeded with 'Authorizer KYC').";
+
+            return $"State='{pos?.StateName}' Activity='{pos?.ActivityName}'. "
+                 + $"Reviewer roles=[{string.Join(", ", reviewerRoles)}] ReviewerInPool={reviewerInPool}. "
+                 + $"AuthorizerPool: {poolIds.Count} member(s) holdingRoles=[{string.Join(", ", poolRoles)}] sample=[{string.Join(", ", poolNames)}]. "
+                 + verdict;
+        }
+        catch (Exception ex)
+        {
+            return "halt diagnostics unavailable: " + ex.Message;
+        }
     }
 }

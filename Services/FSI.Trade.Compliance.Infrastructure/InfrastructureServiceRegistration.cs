@@ -91,6 +91,11 @@ public static class InfrastructureServiceRegistration
         services.AddScoped<FSI.Trade.Compliance.Application.Contracts.Audit.IAuditWriter,
                            FSI.Trade.Compliance.Infrastructure.Persistence.Auditing.AuditWriter>();
 
+        // Tamper-evidence: recompute + verify the audit hash chain (used by the export
+        // integrity statement and an on-demand integrity check).
+        services.AddScoped<FSI.Trade.Compliance.Application.Contracts.Audit.IAuditIntegrityVerifier,
+                           FSI.Trade.Compliance.Infrastructure.Persistence.Auditing.AuditIntegrityVerifier>();
+
         // Auto-flag rule engine (P1: reference-list / field / static archetypes).
         services.AddScoped<FSI.Trade.Compliance.Application.Contracts.Flags.IAutoFlagEvaluator,
                            FSI.Trade.Compliance.Infrastructure.Flags.AutoFlagEvaluator>();

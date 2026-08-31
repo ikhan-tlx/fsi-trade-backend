@@ -34,6 +34,10 @@ public class PublishSectionCommand : IRequest<PublishSectionResult>
     /// <summary>Product whose form-schema cache is bumped after the batch.</summary>
     public int productId { get; set; }
 
+    /// <summary>Tab (sub-type) the batch is scoped to. Required when the batch
+    /// INSERTS new rows (they need a Tab_Id); optional for pure edits.</summary>
+    public int? tabId { get; set; }
+
     /// <summary>The full ordered set of rows in the edited section.</summary>
     public List<PublishSectionItem> items { get; set; } = new();
 }
@@ -67,8 +71,37 @@ public class PublishSectionItem
     public bool?   isAmountField { get; set; }
 
     /// <summary>Requested new Field_Type_Lkp. Null = leave unchanged. Validated
-    /// against FieldTypeSafeMatrix.</summary>
+    /// against FieldTypeSafeMatrix. For an INSERT (<see cref="isNew"/>) this is the
+    /// created row's type and is REQUIRED.</summary>
     public int?    fieldTypeLkp { get; set; }
+
+    // ---- INSERT support (Add field / Add section) --------------------------
+    // An item with isNew=true creates a brand-new TmX_Tenant_Field_Setup row.
+    // Its tenantFieldSetupId is ignored; it is keyed within the batch by tempId
+    // (a client-generated id) so children can point at a not-yet-inserted parent.
+
+    /// <summary>True ⇒ this item is a new row to INSERT (not an edit).</summary>
+    public bool    isNew { get; set; }
+
+    /// <summary>Client-generated id for a new row, used only to link children to a
+    /// new parent within the same batch (see <see cref="parentTempId"/>).</summary>
+    public int?    tempId { get; set; }
+
+    /// <summary>Parent is another NEW row in this batch, referenced by its tempId
+    /// (e.g. a field under a brand-new heading). Resolved to a real id after insert.</summary>
+    public int?    parentTempId { get; set; }
+
+    /// <summary>Explicit Field_Name for a new row. Optional — the server generates
+    /// a unique, prefixed name from the label when blank, and always re-validates.</summary>
+    public string? fieldName { get; set; }
+
+    /// <summary>Field_Lookup_Type for a new dropdown (25) — a TmX_Lookup.Lookup_Type
+    /// string. Required when the new row is a dropdown.</summary>
+    public string? fieldLookupType { get; set; }
+
+    /// <summary>Optional Field_Table_Name override for a new row. When blank the
+    /// server inherits it from the parent table / section siblings.</summary>
+    public string? fieldTableName { get; set; }
 }
 
 /// <summary>Summary so the FE can confirm what landed.</summary>
@@ -79,4 +112,5 @@ public class PublishSectionResult
     public int reordered { get; set; }  // rows whose Field_Sequence changed
     public int retyped   { get; set; }  // rows whose Field_Type_Lkp changed
     public int moved     { get; set; }  // rows whose parent changed
+    public int inserted  { get; set; }  // brand-new rows created
 }

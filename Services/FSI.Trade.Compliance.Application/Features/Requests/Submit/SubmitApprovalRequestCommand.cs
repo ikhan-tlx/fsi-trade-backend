@@ -108,6 +108,7 @@ public class SubmitApprovalRequestCommandHandler : IRequestHandler<SubmitApprova
                 "0003" => "Role",
                 "0004" => "Branch",
                 "0005" => "Auto Flag",
+                "0011" => "Configuration",
                 _      => "Request",
             };
             var actionLabel = action switch

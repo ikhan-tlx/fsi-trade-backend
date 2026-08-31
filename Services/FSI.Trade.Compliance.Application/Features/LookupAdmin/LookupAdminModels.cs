@@ -95,13 +95,19 @@ public static class LookupAdminAllowList
 /// </summary>
 public static class LookupAdminGuard
 {
-    /// <summary>True if <paramref name="lookupType"/> is allow-listed AND referenced by at least one field.</summary>
-    public static Task<bool> IsManageableAsync(IApplicationDbContext db, string? lookupType, CancellationToken ct)
-        // Manageable ⇔ the type is on the allow-list. The allow-list is the single source of
-        // truth for what may be edited here; we no longer additionally require the type to be
-        // bound to a live field (that gate hid legitimately-managed catalogues like the HS
-        // lists, which are referenced only via groupLookupBy(...) expressions).
-        => Task.FromResult(LookupAdminAllowList.Contains(lookupType));
+    /// <summary>
+    /// True if <paramref name="lookupType"/> is manageable — i.e. on the compiled
+    /// allow-list (original curated types) OR registered as manageable in
+    /// <c>TmX_Lookup_Type</c> (admin-created types; auto-allowed on creation).
+    /// </summary>
+    public static async Task<bool> IsManageableAsync(IApplicationDbContext db, string? lookupType, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(lookupType)) return false;
+        if (LookupAdminAllowList.Contains(lookupType)) return true;
+        var lt = lookupType.Trim();
+        return await db.LookupTypeRegistrations.AsNoTracking()
+            .AnyAsync(r => r.LookupType == lt && r.IsManageable, ct);
+    }
 
     /// <summary>Throws 403 <c>lookup_type_not_manageable</c> unless the type is manageable.</summary>
     public static async Task EnsureManageableAsync(IApplicationDbContext db, string? lookupType, CancellationToken ct)

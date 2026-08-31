@@ -1,5 +1,6 @@
 using Asp.Versioning;
 using FSI.Trade.Compliance.Application.Common.Models;
+using FSI.Trade.Compliance.Application.Features.Audit.Export;
 using FSI.Trade.Compliance.Application.Features.Audit.List;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
@@ -22,5 +23,18 @@ public class AuditController : ControllerBase
     {
         var paged = await _mediator.Send(query, ct);
         return Ok(ResponseViewModel<PagedResult<AuditLogListItemDto>>.Ok(paged));
+    }
+
+    /// <summary>
+    /// Export the (filtered) audit trail as a downloadable report — Excel (xlsx) or
+    /// PDF. Uses the same filter/sort params as the list. Binary file response; the
+    /// export is itself recorded as an EXPORT audit event.
+    /// GET /api/v1/Audit/Export?format=xlsx|pdf&amp;filter=&amp;dateFrom=&amp;…
+    /// </summary>
+    [HttpGet("Export")]
+    public async Task<IActionResult> Export([FromQuery] ExportAuditTrailQuery query, CancellationToken ct)
+    {
+        var result = await _mediator.Send(query, ct);
+        return File(result.Content, result.ContentType, result.FileName);
     }
 }

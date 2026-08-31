@@ -16,8 +16,10 @@ public class PublishSectionCommandValidator : AbstractValidator<PublishSectionCo
 
         RuleForEach(x => x.items).ChildRules(item =>
         {
+            // Existing edits carry a real id; new inserts are keyed by tempId instead.
             item.RuleFor(i => i.tenantFieldSetupId)
-                .GreaterThan(0).WithMessage("tenantFieldSetupId must be a positive integer.");
+                .GreaterThan(0).When(i => !i.isNew)
+                .WithMessage("tenantFieldSetupId must be a positive integer.");
 
             item.RuleFor(i => i.order)
                 .GreaterThanOrEqualTo(0).WithMessage("order must be 0 or greater.");
@@ -31,12 +33,34 @@ public class PublishSectionCommandValidator : AbstractValidator<PublishSectionCo
                 .MaximumLength(UpdateFieldSetupCommandValidator.MaxPlaceholderLength)
                 .When(i => i.placeholder != null)
                 .WithMessage($"placeholder cannot exceed {UpdateFieldSetupCommandValidator.MaxPlaceholderLength} characters.");
+
+            // New-row (insert) rules.
+            item.RuleFor(i => i.tempId)
+                .NotNull().When(i => i.isNew)
+                .WithMessage("A new item requires a tempId.");
+            item.RuleFor(i => i.fieldTypeLkp)
+                .NotNull().When(i => i.isNew)
+                .WithMessage("A new item requires a fieldTypeLkp.");
+            item.RuleFor(i => i.fieldLabel)
+                .NotEmpty().When(i => i.isNew)
+                .WithMessage("A new item requires a label.");
         });
 
-        // Each row may appear at most once in a batch.
+        // A tab is required whenever the batch inserts new rows.
+        RuleFor(x => x.tabId)
+            .NotNull().When(x => x.items != null && x.items.Any(i => i.isNew))
+            .WithMessage("tabId is required to add new fields.");
+
+        // Existing rows may each appear at most once (by id); new rows at most once (by tempId).
         RuleFor(x => x.items)
-            .Must(i => i.Select(x => x.tenantFieldSetupId).Distinct().Count() == i.Count)
-            .WithMessage("Each field may appear at most once per publish.")
+            .Must(items =>
+            {
+                var edits = items.Where(i => !i.isNew).Select(i => i.tenantFieldSetupId).ToList();
+                var news  = items.Where(i => i.isNew).Select(i => i.tempId).ToList();
+                return edits.Distinct().Count() == edits.Count
+                    && news.Distinct().Count() == news.Count;
+            })
+            .WithMessage("Each field (or new item) may appear at most once per publish.")
             .When(x => x.items != null && x.items.Count > 0);
     }
 }

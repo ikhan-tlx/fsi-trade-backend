@@ -15,11 +15,15 @@ namespace FSI.Trade.Compliance.Application.Features.Requests.Submit;
 /// reject / etc.) and stamps the executing checker on the row
 /// (Last_Updated_By / Date).
 ///
-/// Scope note: this transitions the REQUEST's status only. Applying the
-/// approved Entity_Json to the underlying entity (auto-creating/updating the
-/// user/role/branch on approval) is a separate workflow step not yet wired —
-/// the FE renders the entity read-only and only sends the status decision.
-/// The command accepts the full FE body but acts on RequestId + the new status.
+/// Apply-on-approval: when the decision is APPROVE (0012) the handler applies
+/// the parked change BEFORE flipping the status — it rehydrates the maker's
+/// original write command from Entity_Json via <see cref="IApprovalReplayRegistry"/>
+/// (or the bespoke Lookup path) and re-dispatches it through the real write
+/// handler, so all that handler's validation + persistence runs and no apply
+/// logic is duplicated here. If the replay fails the request stays Pending with
+/// the error surfaced. REJECT (0013) requires a reason and is otherwise a no-op
+/// (the live entity was never touched). Self-approval is gated by
+/// <see cref="CanApproveOwn"/>.
 /// </summary>
 public class SubmitRequestCommand : IRequest<long>
 {
@@ -123,6 +127,25 @@ public class SubmitRequestCommandHandler : IRequestHandler<SubmitRequestCommand,
                     flag.Status          = "Draft";
                     flag.LastUpdatedBy   = checker;
                     flag.LastUpdatedDate = DateTime.UtcNow;
+                }
+            }
+        }
+        else if (decision == RejectCode && entity.RequestTypeCode == "0011")
+        {
+            // Configuration change (0011) rejected → clear the parked Pending_Value so
+            // the Config screen stops showing "awaiting approval". The effective value
+            // was never touched (dual control), so this is the only cleanup needed.
+            var def = await _db.ConfigurationDefinitions
+                .FirstOrDefaultAsync(d => d.ConfigurationKey == entity.EntityId, ct);
+            if (def is not null)
+            {
+                var val = await _db.ConfigurationValues.FirstOrDefaultAsync(v =>
+                    v.ConfigurationDefinitionId == def.ConfigurationDefinitionId
+                    && v.IsActive && v.BranchId == null && v.RoleId == null && v.Environment == null, ct);
+                if (val is not null)
+                {
+                    val.PendingValue = null; val.PendingBy = null; val.PendingDate = null;
+                    val.LastUpdatedBy = checker; val.LastUpdatedDate = DateTime.UtcNow;
                 }
             }
         }

@@ -52,9 +52,18 @@ internal static class AuditEnricher
     public static string ChainHash(AuditLog row, string? prevHash)
     {
         row.PrevHash = prevHash;
-        row.RowHash  = Sha256Hex((prevHash ?? "") + "|" + Canonical(row));
+        row.RowHash  = ComputeHash(row, prevHash);
         return row.RowHash;
     }
+
+    /// <summary>
+    /// Pure re-computation of a row's chained hash from a given prior hash and the
+    /// row's canonical content — does NOT mutate the row. Used by the integrity
+    /// verifier to recompute the chain and detect tampering (a stored Row_Hash that
+    /// no longer matches its recomputed value, or a broken Prev_Hash link).
+    /// </summary>
+    public static string ComputeHash(AuditLog row, string? prevHash)
+        => Sha256Hex((prevHash ?? "") + "|" + Canonical(row));
 
     /// <summary>Immutable content used as the hash input (excludes the hashes + identity PK).</summary>
     private static string Canonical(AuditLog a) => string.Join("|", new[]

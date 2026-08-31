@@ -2,6 +2,7 @@ using System.Text.Json;
 using FluentValidation.Results;
 using FSI.Trade.Compliance.Application.Common.Exceptions;
 using FSI.Trade.Compliance.Application.Common.Logging;
+using FSI.Trade.Compliance.Application.Common.Options;
 using FSI.Trade.Compliance.Application.Contracts.Identity;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
 using FSI.Trade.Compliance.Application.Contracts.Workflow;
@@ -11,6 +12,7 @@ using FSI.Trade.Compliance.Domain.Entities.Transaction;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace FSI.Trade.Compliance.Application.Features.Transactions.Create;
 
@@ -55,6 +57,7 @@ public class CreateTransactionCommandHandler
 
     private readonly FSI.Trade.Compliance.Application.Contracts.Integrations.IKycScreeningService _screening;
     private readonly FSI.Trade.Compliance.Application.Contracts.Configuration.IProviderTitleProvider _onboarding;
+    private readonly IOptionsMonitor<PeriodicReviewOptions> _review;
 
     public CreateTransactionCommandHandler(
         IApplicationDbContext         db,
@@ -64,7 +67,8 @@ public class CreateTransactionCommandHandler
         IMediator                     mediator,
         ILogger<CreateTransactionCommandHandler> log,
         FSI.Trade.Compliance.Application.Contracts.Integrations.IKycScreeningService screening,
-        FSI.Trade.Compliance.Application.Contracts.Configuration.IProviderTitleProvider onboarding)
+        FSI.Trade.Compliance.Application.Contracts.Configuration.IProviderTitleProvider onboarding,
+        IOptionsMonitor<PeriodicReviewOptions> review)
     {
         _db           = db;
         _current      = current;
@@ -74,6 +78,7 @@ public class CreateTransactionCommandHandler
         _log          = log;
         _screening    = screening;
         _onboarding   = onboarding;
+        _review       = review;
     }
 
     public async Task<TransactionDetailDto> Handle(CreateTransactionCommand req, CancellationToken ct)
@@ -91,21 +96,38 @@ public class CreateTransactionCommandHandler
         //    just validate. Effective-date check on the user-branch mapping mirrors
         //    legacy intent (only count an active assignment).
         var now = DateTime.UtcNow;
-        var branch = await _db.CompanyBranchUserMappings.AsNoTracking()
-            .Where(m => m.UserId             == userId
-                     && m.CompanyBranchId    == req.companyBranchId
-                     && m.ActiveFlag
-                     && m.EffectiveStartDate <= now
-                     && m.EffectiveEndDate   >= now)
-            .Select(m => new { m.CompanyBranchId })
-            .FirstOrDefaultAsync(ct);
 
-        if (branch is null)
-            throw new ValidationException(new[]
-            {
-                new ValidationFailure("companyBranchId",
-                    $"User {userId} is not actively mapped to companyBranchId {req.companyBranchId}.")
-            });
+        // Option A — the periodic-review SYSTEM principal is not a branch member
+        // (by design it has no company/branch association). It creates the review
+        // under the source transaction's branch, so we skip the membership
+        // rejection for it but still resolve/validate the branch below.
+        var ro = _review.CurrentValue;
+        var isServicePrincipal = ro.SystemActorBypass
+            && !string.IsNullOrWhiteSpace(ro.ReviewerUserId)
+            && string.Equals(userId, ro.ReviewerUserId.Trim(), StringComparison.OrdinalIgnoreCase);
+
+        if (!isServicePrincipal)
+        {
+            var branch = await _db.CompanyBranchUserMappings.AsNoTracking()
+                .Where(m => m.UserId             == userId
+                         && m.CompanyBranchId    == req.companyBranchId
+                         && m.ActiveFlag
+                         && m.EffectiveStartDate <= now
+                         && m.EffectiveEndDate   >= now)
+                .Select(m => new { m.CompanyBranchId })
+                .FirstOrDefaultAsync(ct);
+
+            if (branch is null)
+                throw new ValidationException(new[]
+                {
+                    new ValidationFailure("companyBranchId",
+                        $"User {userId} is not actively mapped to companyBranchId {req.companyBranchId}.")
+                });
+        }
+        else
+        {
+            wf.Step("Service principal (periodic review) — branch-membership check bypassed (Option A).");
+        }
 
         // Branch code drives the transaction-number prefix (legacy format
         // "{BranchCode}{8-digit-seq}" e.g. "TLX00000123"). Pulled from the

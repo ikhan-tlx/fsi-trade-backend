@@ -9,12 +9,15 @@
 2. Case module executes on the FSI workflow engine.
 3. Persistence for the workflow engine: drop-in on existing tables (separate plan).
 4. Single consolidated master doc (this document).
-5. Modes: **binary — Fccm | Internal (CMS)** — admin selects exactly one. *(Hybrid dropped per FSI review 2026-07-15; migration overlap is handled by in-flight continuity + shadow scoring, not a routed mode — §5/§19.)*
+5. Modes: **binary — Oracle FCCM | TMX CMS** (`OracleFccm` | `TmxCms`) — admin selects exactly one. *(Hybrid dropped per FSI review 2026-07-15; migration overlap is handled by in-flight continuity + shadow scoring, not a routed mode — §5/§19.)*
 6. Provider switching = **configuration + restart** with startup validation (no live toggle).
 7. Workflow hierarchy: **configurable default** — 3 analyst + 3 authorizer levels shipped as an editable scheme, exactly like today's transaction Analyst/Authorizer schemes.
 8. Every onboarding/review produces a **Customer Risk Scorecard** (1 customer → many scorecards) with previous-assessment comparison.
 9. Application must clear **all audit gates** (§17).
 10. Same repository, logically independent module; dedicated **`CMS`** DB schema (renames the earlier `CaseManagement` schema naming).
+11. *(Review 2026-07-16)* **Licensing de-prioritized** — `Enabled` + `Provider` config gates suffice for now; the license-file gate moves to a later phase behind the same interface.
+12. *(Review 2026-07-16)* **Conditional configuration & privileges** — selecting a provider surfaces only that provider's settings (UI + backend binding/validation) and only the relevant privilege groups in Role Management.
+13. *(Review 2026-07-16)* **Structured data layer in CMS** — customer registry + typed transaction/trade snapshot tables (Oracle-style structured columns) for rule execution, reporting and audit, populated via mapping profiles; `Case_Source` dropped from `CMS.Case` (era lineage lives on the dbo ledger); scorecard gets a queryable per-component breakdown table and drops the BRAINS field.
 
 ---
 
@@ -128,7 +131,7 @@ Same repository; logically independent module; extraction-ready (contracts-only 
 |                       v                                                         |
 |   PROVIDER ROUTER  (mode from config; in-flight continuity by Case_Source)      |
 |        |                                   |                                    |
-|        v  Mode=Fccm                        v  Mode=Internal                     |
+|        v  Mode=Fccm                        v  Mode=TmxCms                     |
 |   +-------------------------+       +---------------------------------------+  |
 |   | ORACLE FCCM PROVIDER    |       | INTERNAL CMS PROVIDER                 |  |
 |   | (existing services      |       |  Case Engine (lifecycle/number/events)|  |
@@ -160,28 +163,54 @@ Same repository; logically independent module; extraction-ready (contracts-only 
 `ICaseManagementProvider` port (SubmitKycCase / SubmitTradeCase (owns CA-NOHIT) / GetProgress / GetRiskAssessment / ApplyExternalDecision / Retry / Repoll / Refresh) with two implementations:
 
 - **`OracleFccmProvider`** — relocation of the proven `FccmKycCaseService`/`FccmTradeCaseService`/`FccmOracleReader`/poller; zero behaviour change; callback endpoint feeds `ApplyExternalDecisionAsync`.
-- **`InternalCmsProvider`** — Scoring Engine + Case Engine + CaseWF; decisions arrive from CaseWF command post-hooks.
+- **`TmxCmsProvider`** — Scoring Engine + Case Engine + CaseWF; decisions arrive from CaseWF command post-hooks.
 
 Shared, provider-agnostic: finalise hook + guards, `dbo.KycCaseRequest` ledger (stays in dbo — pre-existing shared history; `Case_Source` column added), generalised `CaseProgressWorker` (poller → provider-neutral), `RiskReconciler` (BRAINS reconciliation with `SourceLabel`), review scheduling, Risk Assessment tab, resubmit/ops endpoints, `ICaseDecisionApplier` (single implementation of transaction-status/remark/review-schedule effects — called by FCCM callback **and** CaseWF closures).
 
-**Router**: `Mode` (binary: `Fccm` | `Internal`) picks the provider for **new** cases; **in-flight cases always continue on the provider that created them** (`Case_Source` keyed) — after a switch to Internal, pre-switch FCCM cases keep polling/receiving callbacks until they drain; nothing is orphaned. Dual-write is structurally impossible (one provider per submission).
+**Router**: `Mode` (binary: `OracleFccm` | `TmxCms`) picks the provider for **new** cases; **in-flight cases always continue on the provider that created them** (`Case_Source` keyed) — after a switch to TMX CMS, pre-switch FCCM cases keep polling/receiving callbacks until they drain; nothing is orphaned. Dual-write is structurally impossible (one provider per submission).
 
 **Generic controller (per FSI review)**: the API surface is a single provider-agnostic **`CaseManagementController`** (`/api/v1/CaseManagement/*`, §15). Onboarding/trade hooks and the FE always call the generic routes; the decision to invoke external CMS (FCCM) or Internal happens **only inside the router from configuration** — no caller ever knows which provider ran.
 
 ---
 
 <a id="s6"></a>
-## 6. Configuration management
+## 6. Configuration management — built on the existing DB-managed Configuration Management (observed 2026-08)
 
-Follows existing options-class conventions (`CaseManagementOptions` bound from `CaseManagement:`), deploy-time config + restart (Decision 6), startup **fail-fast validation** per mode:
+The application now has a first-class **Configuration Management system** (migrations `2026_07_036` → `2026_08_060`): DB-backed categories + typed settings (`Boolean/Integer/Decimal/String/Enum/Json/TimeSpan/Secret/LogModule`), the `/admin/configuration` screen (`features/configuration/`), per-setting maker-checker approval (`requiresApproval` → config change requests), history/rollback, sensitive-value reveal, `appliesOnRestart` flags, per-category **Verify chips** (`Verify_Kind` → `POST Configuration/Verify/FccmConnection|Url|OnboardingCall|ProviderTest` via `IConfigurationProbe`), and section sub-headers (`2026_08_058`). Case Management configuration lives **inside this system** — not in a parallel mechanism.
+
+### 6.1 Category restructure (per FSI direction — generic, not vendor-labelled)
+
+The current `'fccm' — "FCCM / Integration" — "Oracle FCCM case handoff"` category is **renamed/generalised to `case-management` — "Case Management"**, and becomes provider-driven:
+
+| Section (within the category) | Settings | Visible when |
+|---|---|---|
+| **Provider** | `CaseManagement.Enabled` (Boolean) · **`CaseManagement.Provider`** (Enum: `OracleFccm` \| `TmxCms`; `requiresApproval=1`, `appliesOnRestart=1` per Decision 6) · `CaseManagement.Reconciliation.Enabled` (Boolean) | always |
+| **Oracle FCCM** | The existing keys, relocated under this section unchanged: `Integration.FccmOracleConnection` (Secret), `Integration.FccmOnboardingUrl`, `Integration.TradeCaseDefaults.Jurisdiction/CaseType`, `Integration.PollingInterval`, `Integration.CaseIdTimeout`, `Integration.HttpTimeout`, `Integration.FccmActionCodeStatusMap` (Json), onboarding credentials/toggles | `Provider = OracleFccm` |
+| **TMX CMS** | `Cms.CaseNumberPrefix` · `Cms.Correlation.Enabled` · `Cms.Correlation.EvaluateOnEventAttach` · `Cms.Scheme.KYC_ONBOARDING` / `Cms.Scheme.TBML_SURV` (Enum from deployed schemes) · `Cms.Sla.Enabled` · cache TTLs | `Provider = TmxCms` |
+
+### 6.2 Conditional visibility mechanism
+
+Additive column **`Provider_Scope`** on the config-settings table (`NULL` = always visible, `'Fccm'`, `'Internal'`): the bundle endpoint (`GET Configuration`) filters settings by the currently-selected `CaseManagement.Provider`, so the admin screen **shows only the relevant options for the selected provider** — the FE already renders the bundle dynamically, so no FE structural change beyond re-fetch-on-provider-save (settings list invalidation already exists). Switching the provider value immediately re-shapes the category; irrelevant settings are absent, not greyed. Backend consistency: the same scope drives which options classes get bound/validated (`CmsFccmOptions` vs `TmxCmsOptions`) — a handler can never read the inactive provider's settings.
+
+### 6.3 Verify chips per provider
+
+`Verify_Kind` becomes provider-aware for this category: `Provider=OracleFccm` surfaces the existing **Test FCCM connection** + **Test onboarding call** probes; `Provider=TmxCms` surfaces a new **`Verify/CmsReadiness`** probe (`IConfigurationProbe` impl: score map non-empty, Active risk model exists per jurisdiction/customer type, CaseWF schemes deployed, case-generation policy seeded) — the same fail-fast checks the startup validation runs, exposed as a one-click chip.
+
+### 6.4 What stays in appsettings
+
+Only bootstrap infrastructure that must exist before the DB is reachable (connection strings, log directory) — consistent with how the config system already splits responsibilities. Everything behavioural above is DB-managed with approval + history (AG4/AG6 evidence comes free from the existing history/rollback machinery).
+
+**Migration**: `2026_MM_xxx_CaseManagementConfigCategory.sql` — idempotent: rename category row (`fccm` → `case-management`, title "Case Management"), add `Provider_Scope` column, tag existing FCCM keys `'Fccm'`, seed Provider/Enabled/Internal settings with sections + help text (following the `2026_08_053` help-text conventions).
+
+Reference shape of the effective configuration (as bound into options after the DB bridge):
 
 ```jsonc
 "CaseManagement": {
   "Enabled": true,
-  "Provider": "Fccm",                          // "Fccm" | "Internal"  (binary — one provider active)
+  "Provider": "Fccm",                          // "OracleFccm" | "TmxCms"  (binary — one provider active)
   "Reconciliation": { "Enabled": true },       // BRAINS reconciliation toggle — §10.3 defines the off-flow
   "License": { "FilePath": "license.lic" },
-  "Internal": {
+  "TmxCms": {
     "CaseNumberPrefix": "TMX-CA",
     "Correlation": { "Enabled": true, "EvaluateOnEventAttach": false },
     "Scheme":   { "KYC_ONBOARDING": "CaseWF_KYC", "TBML_SURV": "CaseWF_TBML" },   // workflow config
@@ -194,14 +223,18 @@ Follows existing options-class conventions (`CaseManagementOptions` bound from `
 }
 ```
 
-Behaviour matrix (validated at startup): `Enabled=false` → no case creation, flows unaffected, UI hidden, scorecards still generated if licensed; `Fccm` → Oracle conn + URL required (Production); `Internal` → non-empty score map + Active risk model + CaseWF schemes deployed; all modes → license must cover the selection; `Reconciliation.Enabled=true` additionally requires a working BRAINS config. Rule/threshold/mapping/correlation **content** is data (DB tables + JSON profiles) maintained through admin screens with maker-checker — *which* rules exist is never appsettings.
+Behaviour matrix (validated at startup): `Enabled=false` → no case creation, flows unaffected, UI hidden, scorecards still generated if enabled; `Fccm` → Oracle conn + URL required (Production); `TmxCms` → non-empty score map + Active risk model + CaseWF schemes deployed; `Reconciliation.Enabled=true` additionally requires a working BRAINS config. Rule/threshold/mapping/correlation **content** is data (DB tables + JSON profiles) maintained through admin screens with maker-checker — *which* rules exist is never appsettings.
+
+**Conditional configuration summary**: provider sections are mutually exclusive end-to-end — the admin screen shows only the selected provider's settings (`Provider_Scope` filter, §6.2), startup binds/validates only the active provider's options class, and DI registers only that class — UI and backend consistent by construction, with the existing config-management approval/history covering every change.
 
 ---
 
 <a id="s7"></a>
-## 7. Licensing
+## 7. Licensing — **de-prioritized (FSI review 2026-07-16)**
 
-Rides the platform licensing design (`MODULARISATION_PLAN.md`) — no parallel mechanism. HMAC-SHA256-signed license file: `modules.CaseManagement = { enabled, features: ["FccmProvider","InternalProvider","RiskScorecard","CorrelationEngine","SlaManagement","AuditPack", …future premium] }`. `CaseManagementLicenseGate` validates at startup; consulted by router (mode must be licensed), endpoint mapping (unlicensed ⇒ 404), FE bootstrap (module hidden via app-init payload). **Expiry = read-only** (view/export allowed; no new cases/decisions; external FCCM decisions still land — never a stuck compliance record). Signing key held by FSI release engineering; absent file = unlicensed, not crash.
+Deferred to a later phase: for now `CaseManagement:Enabled` + `Provider` are the only gates (module visibility, endpoint mapping, FE tile). The design below is retained so the deferral costs nothing — `ICaseManagementLicenseGate` ships as an interface with a `ConfigOnlyLicenseGate` default implementation (reads `Enabled`), and the signed-license implementation slots in later without touching consumers.
+
+Rides the platform licensing design (`MODULARISATION_PLAN.md`) — no parallel mechanism. HMAC-SHA256-signed license file: `modules.CaseManagement = { enabled, features: ["FccmProvider","TmxCmsProvider","RiskScorecard","CorrelationEngine","SlaManagement","AuditPack", …future premium] }`. `CaseManagementLicenseGate` validates at startup; consulted by router (mode must be licensed), endpoint mapping (unlicensed ⇒ 404), FE bootstrap (module hidden via app-init payload). **Expiry = read-only** (view/export allowed; no new cases/decisions; external FCCM decisions still land — never a stuck compliance record). Signing key held by FSI release engineering; absent file = unlicensed, not crash.
 
 ---
 
@@ -215,11 +248,12 @@ Rides the platform licensing design (`MODULARISATION_PLAN.md`) — no parallel m
 | Group | Tables |
 |---|---|
 | Case core | `Case`, `Case_Sequence`, `Case_Event`, `Case_Party`, `Case_Note`, `Case_Attachment` (bridge to `TmX_Document`), `Case_Link`, `Case_Decision`, `Case_Status_History`, `Case_Audit` |
+| **Structured data layer** (§8.5) | `Customer` (registry — one row per customer, updated on reassessment), `Case_Customer_Snapshot` (frozen facts at assessment/case time), `Trade_Detail`, `Trade_Party` (drawee/nego/beneficiary etc.), `Transaction_Map` (TMX transaction ↔ CMS trade rows) |
 | Risk model (config) | `Risk_Model` (jurisdiction × customer_type × model_type × version, Draft/Active/Retired), `Risk_Parameter`, `Risk_Param_Weight`, `Risk_Param_Score_Map`, `Risk_Rule`, `Accelerated_ReReview_Rule`, `Risk_Band_Config`, `Risk_Recommendation_Config`, `Case_Generation_Policy` (§10.4) |
 | Scoring (history) | `Risk_Scorecard` (immutable, versioned per customer), `Rule_Execution_Log`, `Algorithm_Execution_Log` |
 | Correlation | `Correlation_Rule`, (links live in `Case_Link` w/ rule provenance) |
 | Assignment/SLA | `Queue_Config`, `Sla_Config`, `Sla_Breach_Log` |
-| Mapping (§13) | `Mapping_Profile` (registry/versioning of JSON profiles: entity/field/API/status/risk/workflow/queue/case-type) |
+| Mapping (§13) | **`Field_Mapping`** (dynamic-field ↔ typed-column bridge for Customer + Trade, per product/tab/customer-type — §8.5), `Mapping_Profile` (JSON profiles for API/status/risk/workflow/queue/case-type kinds) |
 | Notifications | `Notification_Rule`, `Notification_Log` |
 | Ops | `Api_Call_Log` (external integration calls incl. FCCM exchanges — supplements existing per-row payload logs), `Workflow_Execution_Log` (case-scoped projection of engine history for the audit pack) |
 
@@ -257,9 +291,13 @@ CMS.Case
   Case_Id            BIGINT IDENTITY PK
   Case_Number        NVARCHAR(20)  UNIQUE            -- 'TMX-CA' + Case_Sequence
   Case_Type          NVARCHAR(20)                    -- KYC_ONBOARDING | TBML_SURV
-  Case_Source        NVARCHAR(10)                    -- TMX | FCCM (era lineage)
+  -- (Case_Source REMOVED per FSI review: CMS.Case rows exist only when Internal is the
+  --  provider, so the column carried no information here. Era lineage lives where both
+  --  providers actually write — dbo.KycCaseRequest.Case_Source — which is what the
+  --  mixed-era Risk Assessment history and drain-monitoring read.)
   Transaction_Id     BIGINT        (idx, value key)
-  Customer_Code      NVARCHAR(50)  (idx)
+  Customer_Id        BIGINT        FK -> CMS.Customer (registry, §8.5)
+  Customer_Code      NVARCHAR(50)  (idx, denormalised for search)
   Scorecard_Id       BIGINT NULL   FK->Risk_Scorecard (KYC cases)
   Priority           NVARCHAR(10)                    -- from reconciled band
   Status_Lkp         INT                             -- CASE_STATUS lookup
@@ -318,28 +356,119 @@ CMS.Risk_Rule                                         -- RULE-BASED scoring (sep
   Outcome (Force_Band|Force_Score|Not_Recommended|Accelerate_ReReview)
   Outcome_Value NVARCHAR(30) · Stop_On_Match BIT · Reason_Template · Active_Flag · audit cols
 
-CMS.Risk_Band_Config                                  -- thresholds
-  Band_Config_Id PK · Model_Id FK · Band_Key (1|2|3) · Label (Low|Medium|High)
-  Score_From DECIMAL(5,2) · Score_To DECIMAL(5,2)
+CMS.Risk_Band_Config                 -- THE LINK between risk score and risk category:
+  Band_Config_Id PK · Model_Id FK    --   configurable, per model version
+  Band_Key (1|2|3) · Label (Low|Medium|High)
+  Score_From DECIMAL(5,2)            -- INCLUSIVE lower bound
+  Score_To   DECIMAL(5,2)            -- EXCLUSIVE upper bound (highest band: inclusive)
+  audit cols
+  -- Seeded example:  LOW [0.00–40.00) · MEDIUM [40.00–70.00) · HIGH [70.00–100.00]
+  -- Boundary rule pinned to avoid the 40-in-both-bands ambiguity: a score of exactly
+  --   40.00 is MEDIUM, 70.00 is HIGH. Validator enforces: bands contiguous, non-
+  --   overlapping, gap-free, covering 0–100, exactly one band per score.
 ```
+
+The score→category link is maintained at **both** ends: config-time — this table defines the mapping, admin-edited (Thresholds screen, §9), maker-checker'd and versioned with the model; assessment-time — every scorecard stores the continuous `Effective_Score` **and** the derived `Effective_Band` **and** the `Model_Id + Model_Version` used, so the exact range table that produced any historical categorization is reproducible (AG8), and re-banding after a threshold change never rewrites history — new ranges apply only to new assessments.
 
 **Linkage worked example (Country of Residence)**: `Risk_Parameter('CountryOfResidence', Lookup_Type='Country')` ← `Risk_Param_Weight(Model 7, 'CountryOfResidence', Weight=10)` ← `Risk_Param_Score_Map('CountryOfResidence', NULL, 'AF', 10 / 'PK', 8 / …)`. At runtime the Algorithm Engine resolves the customer's value (`AF`) via the parameter's `Source_Binding`, looks up its score on the reference sheet (model override first, else global sheet) → `10`, multiplies by the model weight → contribution `10 × 10`, aggregates `Σ(wᵢsᵢ)/Σwᵢ`, and records `value/score/weight/contribution` in `Algorithm_Execution_Log` + the scorecard's `Param_Scores_Json`. `Code_Value` entries are picked from the parameter's configured `TmX_Lookup` type in the admin screen — never free-typed, never hardcoded.
 
 ```text
 CMS.Risk_Scorecard (immutable; 1 customer -> many rows)
-  Scorecard_Id BIGINT PK · Customer_Code (idx) · Version INT (per customer)
+  Scorecard_Id BIGINT PK · Customer_Id FK -> CMS.Customer · Version INT (per customer)
   Trigger (Onboarding|PeriodicReview|Refresh|Override) · Transaction_Id · Request_Id
   Provider_Source (FCCM|TMX) · Model_Id · Model_Version · Jurisdiction_Cd · Customer_Type
   Algorithm_Score DECIMAL(5,2) · Algorithm_Band
-  Rule_Based_Score DECIMAL(5,2) NULL · Rule_Based_Band NULL · Rule_Hits_Json
+  Rule_Based_Score DECIMAL(5,2) NULL · Rule_Based_Band NULL
   Superseded_By_Rule BIT · Effective_Score DECIMAL(5,2) · Effective_Band (=Risk_Category_Key)
   Override_Score NULL · Override_By/At/Reason
-  Brains_Band NULL · Reconciled_Band · Prevails · Reconciliation_Status (Done|Disabled|Pending)
-  Rcmnd_To_Onbrd · Inputs_Json · Param_Scores_Json · Created_At/By
-  UQ (Customer_Code, Version) · idx (Customer_Code, Version DESC)
+  Reconciled_Band · Reconciliation_Status (Done|Disabled|Pending)
+  -- (BRAINS band REMOVED per FSI review: the comparison source already lives in
+  --  Cstm_Brains (FCCM_Score/Brains_Score/Final_Score/Display per transaction);
+  --  the scorecard stores only the reconciliation OUTCOME it owns.)
+  Case_Generated BIT · Policy_Verdict_Json (which §10.4 criteria evaluated/triggered)
+  Rcmnd_To_Onbrd · Inputs_Json · Generated_At · Generated_By
+  UQ (Customer_Id, Version) · idx (Customer_Id, Version DESC)
+
+CMS.Risk_Scorecard_Detail            -- QUERYABLE per-component breakdown (per FSI review):
+  Detail_Id BIGINT PK                -- the audit answer to "how was 40 calculated?"
+  Scorecard_Id FK -> Risk_Scorecard  -- e.g. for final 40 on 2026-07-16:
+  Component_Type (AlgorithmParameter | Rule | Override | Reconciliation)
+  Component_Code NVARCHAR(50)        --   'CountryOfResidence'   'RULE_HSCODE'   ...
+  Component_Label NVARCHAR(200)      --   'Country of Residence' 'HS Code Rule'
+  Raw_Value NVARCHAR(200)            --   'AF'                   '2844.20'
+  Score DECIMAL(5,2)                 --   10                     10
+  Weight DECIMAL(7,2) NULL           --   10 (algorithm rows only)
+  Contribution DECIMAL(7,2)          --   20                     10
+  Sequence INT · Created_At          -- rows sum/compose to Effective_Score, timestamped
 ```
+The JSON blobs (`Inputs_Json`, rule-hit detail) remain for full-fidelity replay, but the **detail rows are the reportable breakdown** — `SELECT` produces exactly the "Algorithm = 20, Country Rule = 10, HS Code Rule = 10 → Final 40, generated 2026-07-16" justification without JSON parsing.
 
 Indexing: queue composite `(Status_Lkp, Tier, Priority, Opened_At)`, `Customer_Code`, `Transaction_Id`; remaining tables (notes, attachments, status history, audit, SLA, notifications, mapping registry, execution logs) follow the same column conventions — full DDL lands in the numbered migrations at M0/M1.
+
+### 8.5 Structured data layer (per FSI review — Oracle-style typed columns for rules, reporting, audit)
+
+**Why**: TMX holds customer data only as **per-transaction snapshots** (`TmX_Customer_Master` is misnamed) and transaction facts inside **UDF JSON**. Oracle CMS executes rules against structured customer/transaction columns — and the Internal CMS should too: deterministic indexed rule execution (no JSON parsing per evaluation), straightforward reporting/search, and frozen auditable facts. The known drawback — duplication/sync — is contained because every row is written at a **single controlled event** and is then immutable (snapshots) or updated only by the next controlled event (registry). Population is always through **mapping profiles** (§13 Entity/Field kinds — UDF path → typed column), never hardcoded.
+
+```text
+CMS.Customer                          -- REGISTRY: one row per customer (FSI lifecycle note:
+  Customer_Id BIGINT PK               --  onboarding CREATES it; every reassessment UPDATES
+  Customer_Code NVARCHAR(50) UNIQUE   --  the SAME row — never a duplicate customer)
+  Customer_Name · Customer_Type (IND|LE|FI) · Jurisdiction_Cd · Country_Of_Residence
+  Country_Of_Incorporation · Industry · Legal_Structure · National_Id · Tax_Id
+  Current_Risk_Band · Current_Scorecard_Id FK · Onboarded_At · Last_Reassessed_At
+  Next_Review_Date · Status (Active|Exited) · audit cols
+
+CMS.Case_Customer_Snapshot            -- frozen customer facts AS-AT assessment/case creation
+  Snapshot_Id PK · Case_Id FK NULL · Scorecard_Id FK NULL · Customer_Id FK
+  (same fact columns as registry) · Captured_At
+
+CMS.Trade_Detail                      -- typed trade facts per TBML case (Oracle LC_TRN_DET
+  Trade_Detail_Id PK · Case_Id FK     --  parity, internal + typed): populated at case
+  Transaction_Id (value key)          --  creation from UDF via mapping profile
+  Instrument_Type · LC_Reference · Amount DECIMAL(18,2) · Currency · Tenor_Days
+  Drawee_Name/Bank · Negotiating_Bank · Issuing_Bank · Advising_Bank
+  Port_Of_Loading · Port_Of_Discharge · Country_Of_Origin · Shipment_Mode
+  Goods_Description · Incoterm · Payment_Term · Value_Date · audit cols
+
+CMS.Trade_Party                       -- one row per party (drawee, beneficiary, applicant,
+  Party_Id PK · Trade_Detail_Id FK    --  negotiating/issuing/advising bank, agent ...)
+  Party_Role · Name · Country · Bank_Code NULL · Account NULL · Identifier NULL
+
+CMS.Trade_Goods                       -- line items (HS code, qty, value) for goods rules
+  Goods_Id PK · Trade_Detail_Id FK · HS_Code · Description · Quantity · Unit · Line_Amount
+
+CMS.Transaction_Map                   -- explicit TMX ↔ CMS mapping (FSI ask): which TMX
+  Map_Id PK · Transaction_Id          --  transaction produced which CMS trade rows / case /
+  Trade_Detail_Id NULL · Case_Id NULL --  scorecard — the join spine for rule execution,
+  Scorecard_Id NULL · Mapped_At       --  reporting and reconciliation across the boundary
+```
+
+**Field mapping table (per FSI clarification — the bridge between TMX dynamic fields and CMS typed columns, both directions, for Trade AND Customer):**
+
+TMX stores facts in dynamic UDF fields whose names differ per product/sub-product (`ILF_PortLoadingCtry` vs `ICR_PortLoadingCtry`) and per KYC section (`KycParam34`, grids like `TmxKYCSPOR`). The typed CMS columns are populated through an **admin-managed mapping table**, not code:
+
+```text
+CMS.Field_Mapping                      -- one row per (target column ← source dynamic field)
+  Mapping_Id INT PK
+  Target_Entity  (Customer | Case_Customer_Snapshot | Trade_Detail | Trade_Party | Trade_Goods)
+  Target_Column  NVARCHAR(60)          -- 'Port_Of_Loading' · 'Country_Of_Residence' · 'Drawee_Name'
+  Product_Id INT NULL                  -- scope: NULL = all products
+  Tab_Id INT NULL                      -- sub-product scope (UDF names differ per sub-product)
+  Customer_Type NVARCHAR(4) NULL       -- Customer mappings can differ per IND | LE | FI
+  Source_Kind    (udf.detail | udf.customer | udf.grid | snapshot.column | transaction.column | context)
+  Source_Path    NVARCHAR(200)         -- 'ILF_PortLoadingCtry' · 'KycParam34' · 'TmxHsCodeList[]'
+  Transform      NVARCHAR(200) NULL    -- lookupHidden('Country') | cast(decimal) | dateFormat | valueMap
+  Grid_Strategy  NVARCHAR(20) NULL     -- First | MaxScore | AllRows (grid -> Trade_Goods line items)
+  Is_Required BIT · Active_Flag · Version + maker-checker audit cols
+  UQ (Target_Entity, Target_Column, ISNULL(Product_Id,0), ISNULL(Tab_Id,0), ISNULL(Customer_Type,''))
+```
+
+- **TMX → CMS (populate)**: at each controlled event (onboarding/reassessment → `Customer` + snapshot; case creation → `Trade_Detail`/`Trade_Party`/`Trade_Goods`) the `EntityMaterializer` selects the mapping rows for the transaction's (product, tab) / customer type, resolves each `Source_Path` from the UDF/snapshot, applies the transform, and writes the typed column. `AllRows` grid strategy fans a repeating grid into `Trade_Goods` line items.
+- **CMS → TMX (vice versa / traceability)**: the same rows answer the reverse question — for any typed column value, the UI/audit can show *which dynamic field it came from* (drill-back tooltip on case/customer screens, and the provenance is recorded per materialization via `Transaction_Map` + the mapping version used). Physical write-back into TMX UDF is deliberately **not** performed (single-direction data flow keeps the transaction the source of truth); if a future flow needs it, the same table already carries the correspondence.
+- **Admin surface**: the "Mappings" configuration screen (§16) edits these rows with maker-checker; seeded defaults are generated from the existing onboarding mapping profiles + the `productSummary` field back-trace already in the BE. Mapping changes are versioned (AG4) and apply to **new** materializations only — existing snapshots stay frozen as captured.
+- Same mechanism serves **Customer** (KYC Section-A `KycParam*`/grids → registry columns, per customer type) and **Trade** (per sub-product UDF codes → trade columns) — one table, one materializer, no hardcoded field names anywhere.
+
+Rule/correlation/case-generation engines evaluate against these typed tables first (registry + snapshot + trade rows), falling back to the raw UDF resolver only for fields a bank hasn't mapped to columns. **Customer lifecycle (FSI note)**: onboarding creates the `CMS.Customer` row; each periodic review/reassessment updates the same row and appends a new scorecard version (never a duplicate customer); when the §10.4 policy fires, the case is created **against that onboarding/assessment** (`Case.Customer_Id` + `Case.Scorecard_Id`), with the as-at snapshot preserving what the facts were at decision time.
 
 ### 8.4 Migration planning
 
@@ -356,7 +485,7 @@ Admin module (privileges `RiskConfig.Manage/Override`, all writes maker-checker 
 - **Algorithm Builder**: per model (jurisdiction × customer type × model type): parameter list with **weights** (Oracle grid parity: Parameter | Weight | Comments), add/remove parameters from the registry, normalisation preview (Σ weights), copy-model (Oracle "Copy") for new versions.
 - **Parameter Management**: registry (code, label, source binding via mapping profile key, data type, multi-value strategy MaxScore/Sum/Any).
 - **Weightage Management**: inside Algorithm Builder; jurisdiction/customer-type scoped.
-- **Threshold Management**: band ranges (`Risk_Band_Config` score-from/to per model — Oracle "Risk Assessment Category" parity), recommendation thresholds, SLA thresholds.
+- **Threshold Management — the band-range tuning screen** (Oracle "Risk Assessment Category" parity): an editable grid per model — one row per category with `Score_From` / `Score_To` inputs (LOW 0–40 · MEDIUM 40–70 · HIGH 70–100 seeded) plus a visual range bar. Live validation as the admin types: contiguous, non-overlapping, gap-free, 0–100 coverage, boundary convention (from-inclusive/to-exclusive) shown inline; adjacent bounds auto-snap (raising LOW's `To` to 45 moves MEDIUM's `From` to 45). Changes are drafted against a model version and go through maker-checker publish — tuning ranges never re-bands historical scorecards (new assessments only). An impact preview shows how the last N assessments *would* re-band under the drafted ranges before publishing (decision-support only). Also here: recommendation thresholds (`Rcmnd_To_Onbrd` per band).
 - **Lookup Management — the Country-Risk example**: `Country Risk Weight = 10` is expressed as parameter `CountryOfResidence` (weight 10 in the model) whose **value scores come from the configurable score-map/lookup** (`Risk_Param_Score_Map`: `AF=90, DZ=75, …`) — sourced from `TmX_Lookup`-backed pick lists, never hardcoded. Reusable parameter library: the same parameter + score map is referenced by multiple models and by rule predicates (single definition, dynamic execution).
 
 Dynamic execution: engines read Active model config at run time (TTL cache + invalidation on approval) — new rules/weights/thresholds require **no deployment**.
@@ -419,7 +548,7 @@ CMS.Case_Generation_Policy
 
 ### 10.6 Calibration & import (updated by live finding)
 
-The admin-UI grids are empty in this environment (§1) ⇒ **export the model from the FCCM database**: `FCC_OB_RISK_PRMS_CODE_SCRE_MAP` (score maps — proven populated), the weights/parameter tables behind the Algorithm screens, `Risk Assessment Category` ranges, rule/accelerated-rule tables (DBA-assisted export at Phase 0). Fallback: reverse-calibration from historical `KycCaseRequest` pairs. Shadow scoring in Fccm mode (compute-and-log TMX result beside every live FCCM result) produces the sign-off evidence; compliance approves the Active model before Internal-mode go-live.
+The admin-UI grids are empty in this environment (§1) ⇒ **export the model from the FCCM database**: `FCC_OB_RISK_PRMS_CODE_SCRE_MAP` (score maps — proven populated), the weights/parameter tables behind the Algorithm screens, `Risk Assessment Category` ranges, rule/accelerated-rule tables (DBA-assisted export at Phase 0). Fallback: reverse-calibration from historical `KycCaseRequest` pairs. Shadow scoring in Fccm mode (compute-and-log TMX result beside every live FCCM result) produces the sign-off evidence; compliance approves the Active model before TMX CMS go-live.
 
 ---
 
@@ -453,8 +582,7 @@ Generalises the proven onboarding mapping-profile mechanism (JSON profiles, `ext
 
 | Mapping kind | Content | Replaces/parity |
 |---|---|---|
-| Entity | TMX entity → case/party/event shapes | FCCM staging column maps |
-| Field | source path (snapshot/UDF/context) → target field + transforms | `onboarding.v1/v2/legacy` profiles (absorbed as first registry entries) |
+| Entity + Field | **Realised as the `CMS.Field_Mapping` table (§8.5)** — dynamic UDF field ↔ typed CMS column (Customer, snapshots, Trade_Detail/Party/Goods), scoped per product/tab/customer-type, with transforms + grid strategies, bidirectional traceability | FCCM staging column maps; `onboarding.v1/v2/legacy` profiles seed the defaults |
 | API | provider endpoint templates, auth style, header/format toggles | `IncludeCustomerName`-style env differences |
 | Status | provider action codes ↔ TMX statuses (`FccmActionCodeStatusMap` → data) + CaseWF command ↔ case status | `Command_Application_Status_Mapping` idiom |
 | Risk | external risk vocabularies ↔ band keys (FCCM 1/2/3, BRAINS 0-3) | hardcoded classifiers |
@@ -496,7 +624,7 @@ Profiles are versioned, maker-checker-approved, cached w/ invalidation; unknown-
 
 **Design seed**: the approved look is the **"CMS Unified Compliance Workspace" prototype** at `D:\ICBC - Latest\New theme\index.html` (src in `New theme/src/`): module-switcher chip (`CMS | switch`), global search, Case queue with status tabs + SLA time-left bars + periodic re-review dates + saved views/export, and the fullscreen KYC case detail (KYC Onboarding / Re-review Comparison / Events / Notes / Parties tabs; actions incl. Close-as-cleared, **Close — File SAR/STR**, Escalate, Reassign, Request info, Add evidence; per-parameter old-vs-new score comparison). The designer-agent variations (UX brief) refine within this language.
 
-**Module switcher (per FSI review)**: when `Provider = Internal` (and the license covers it), the post-login **module picker** gains a **"Case Management (CMS)"** module tile alongside Trade Management, and the in-app switcher chip toggles between them (prototype behaviour). When `Provider = Fccm` or the module is unlicensed/disabled, the tile is absent (app-init payload flag, same mechanism as privilege-gated nav). The Risk Assessment tab on transactions remains available in both modes.
+**Module switcher (per FSI review)**: when `Provider = TmxCms` (and the license covers it), the post-login **module picker** gains a **"Case Management (CMS)"** module tile alongside Trade Management, and the in-app switcher chip toggles between them (prototype behaviour). When `Provider = Fccm` or the module is unlicensed/disabled, the tile is absent (app-init payload flag, same mechanism as privilege-gated nav). The Risk Assessment tab on transactions remains available in both modes.
 
 **Navigation / menu structure (CMS module)** — expected menus (per FSI suggestion, aligned to the prototype shell + Oracle's KYC admin tree):
 
@@ -509,7 +637,8 @@ Profiles are versioned, maker-checker-approved, cached w/ invalidation; unknown-
 | Configuration | **Rule Management** | Risk rules (rule builder), accelerated re-review rules, case-generation policy | `RiskConfig.Manage` |
 | Configuration | **Risk Scores & Weightage** | Algorithm models (parameters + weights per jurisdiction/customer type), score-map reference sheets (lookup-backed), **risk category mapping** (band ranges + recommendation thresholds) | `RiskConfig.Manage` |
 | Configuration | **Correlation Rules** | Match-context rules, actions, lookbacks | `RiskConfig.Manage` |
-| Configuration | **Workflow & Queues** | CaseWF scheme mapping per case type, queue routing, SLA thresholds | `Workflow.Manage` |
+| Configuration | **Workflow & Queues** | CaseWF scheme mapping per case type, queue routing | `Workflow.Manage` |
+| Configuration | **SLA Management** *(own screen — FSI confirmed)* | Case SLA thresholds per case type/priority/tier, aging states, auto-escalation bindings, breach log view. Note: a transaction-level `'sla'` config category already exists (`2026_07_045`: scanner on/off, default window, at-risk %) — the CMS SLA screen governs **case** SLAs (`CMS.Sla_Config`) and coexists with it; the global scanner settings stay where they are | `RiskConfig.Manage` |
 | Configuration | **Mappings** | Entity/field/API/status/risk/queue/case-type mapping profiles | `RiskConfig.Manage` |
 | Configuration | **Notifications** | Notification rules + log | `RiskConfig.Manage` |
 | Insights | **Reports** | Case register, aging/SLA, dispositions, scorecard movement | `Reports.View` |
@@ -517,12 +646,32 @@ Profiles are versioned, maker-checker-approved, cached w/ invalidation; unknown-
 
 (Trade module navigation is untouched; User/Role/Tab-visibility/Field-config/Manual-red-flags stay in the existing Administration area.)
 
+**Roles Configuration alignment (per FSI review)**: the existing Role Management screen builds its privilege matrix live from `GET /Privilege/Entities` grouped by module. CMS privileges (`Cases.View/Operate/Authorize`, `RiskConfig.Manage/Override`, plus **tab-level privileges** for the case workspace — `Cases.Tab.Onboarding/Comparison/Events/Notes/Parties/Audit`, mirroring the Tab Visibility concept) are seeded into the catalogue but **surfaced conditionally**: the privilege-entities endpoint filters the CMS group out when `Provider ≠ TmxCms` (or module disabled), so Role Management neither displays nor assigns them; the FE nav/route guards read the same source. Enforcement stays two-layered and consistent by construction — `[RequiresPrivilege]` on every CMS endpoint is always active regardless of presentation, and disabled-module endpoints 404 anyway, so a stale grant can never open a hidden surface. Roles `Case Analyst L1–3` / `Case Authorizer L1–3` are seeded with the module and appear in Role Management only under TMX CMS mode.
+
+**Configuration & admin screen inventory (all planned — consolidated view; each is maker-checker'd, versioned, privilege-gated, follows the Field-Config/Auto-Flags admin idioms, ships in M2 unless noted):**
+
+| # | Screen | Controls | Backing tables | Detail |
+|---|---|---|---|---|
+| 1 | **Case Management category** in the existing `/admin/configuration` | Provider selector (`OracleFccm`\|`TmxCms`), enabled/reconciliation toggles, provider-scoped settings, Verify chips (FCCM connection/onboarding · CMS readiness) | `TmX_Config_Category/Setting` (+`Provider_Scope`) | §6 — M0 |
+| 2 | **Risk Models / Algorithm Builder** | Model list (jurisdiction × customer type × model type × version, Draft/Active/Retired), parameter+weight grid (Oracle parity: Parameter · Weight · Comments), Copy-model, activate/publish | `Risk_Model`, `Risk_Param_Weight` | §9 |
+| 3 | **Parameter Library** | Parameter registry: code/label/data type, source binding (mapping key), `Lookup_Type`, multi-value strategy | `Risk_Parameter` | §9 |
+| 4 | **Score Maps (reference sheets)** | Per-parameter value→score rows (AF=10, PK=8…), values picked from the bound `TmX_Lookup` type, global sheet + per-model overrides, import view from FCCM export | `Risk_Param_Score_Map` | §9 |
+| 5 | **Rule Management** | Risk-rule builder (predicate composer on parameters, outcome, priority, stop-on-match), accelerated re-review rules, **case-generation policy** rows (band/flag-count/severity/expression criteria), dry-run test panel | `Risk_Rule`, `Accelerated_ReReview_Rule`, `Case_Generation_Policy` | §9, §10.4 |
+| 6 | **Thresholds (band-range tuning)** | Score_From/To grid + range bar, live contiguity validation, auto-snap, impact preview, recommendation thresholds | `Risk_Band_Config`, `Risk_Recommendation_Config` | §9 (detailed) |
+| 7 | **Correlation Rules** | Match-context builder (customer/counterparty/txn-ref/HS/flags…), case-type scoping, lookback, closed-inclusion, action, priority | `Correlation_Rule` | §12 |
+| 8 | **SLA Management** *(own screen)* | Case SLA thresholds per type/priority/tier, aging states, escalation bindings, breach log view | `Sla_Config`, `Sla_Breach_Log` | §16 note (coexists with global `'sla'` config category) |
+| 9 | **Workflow & Queues** | Case-type → CaseWF scheme mapping, queue routing per tier/role (scheme *editing* stays in the workflow designer) | `Queue_Config`, scheme mapping | §11 |
+| 10 | **Mappings** | `Field_Mapping` editor (target entity/column, product/tab/customer-type scope, source UDF path, transform, grid strategy) + JSON profile registry (API/status/risk kinds) | `Field_Mapping`, `Mapping_Profile` | §8.5, §13 |
+| 11 | **Notifications** | Event→recipient→template rules + delivery log | `Notification_Rule`, `Notification_Log` | §14 |
+
 Per the UX brief + designer variations outcome: **Queue page** (`/cases`), **Case detail / investigation workspace** (`/cases/:caseNumber`) with events/evidence, dual-score risk panel, scorecard + comparison, related cases, recommendation card, notes/audit, decision dialog family (Recommend/Approve/Reject/Escalate + self-approval block state); **Admin screens**: Rule Builder, Algorithm Builder (parameters/weights), Thresholds, Score-map/Lookup manager, Correlation rules, SLA config, Mapping profiles — following the Field-Config/Auto-Flags admin idioms; **Scorecard comparison** view; license/mode gating from app-init. All server-driven, privilege-gated, no localStorage state.
 
 ---
 
 <a id="s17"></a>
 ## 17. Audit & traceability — all audit gates (AG1–AG12)
+
+**Direct answer to the FSI review question (decision/workflow history vs case audit)**: yes — workflow transition history is maintained by the workflow engine (OptimaJet today, byte-compatible under the FSI engine) in `WorkflowProcessTransitionHistory`. But the case audit trail is **deliberately not dependent on that alone**: the CMS schema keeps its own complete, case-scoped record from creation onward — `Case_Audit` (every non-transition action: notes, links, priority, reassignment, attachments), `Case_Status_History` (every status change with actor/time), `Case_Decision` (every recommend/approve/reject/send-back with disposition + remarks), and `Workflow_Execution_Log` (a case-scoped **projection/copy** of the engine's transitions). So the full lifecycle — created → correlated → assigned/claimed → investigated → escalated → recommended → decided → closed — is answerable entirely from `[CMS].*` tables, independent of the shared workflow tables (which also matters for future extraction). The engine history remains the workflow-mechanics source of truth; the CMS copy exists so the case's audit story is self-contained.
 
 The twelve gates from the superseded doc carry forward verbatim as **go-live exit criteria**, extended with the request's explicit logs: **rule triggered** (`Rule_Execution_Log` per scorecard: rule, predicate, matched values, outcome), **flag generated** (auto-flag `Match_Proof`, already live), **algorithm executed** (`Algorithm_Execution_Log`: per-parameter value/score/weight/contribution), **risk score calculation** (scorecard `Inputs_Json` + model version ⇒ re-derivable), **user actions** (case audit + notes + decisions), **workflow transitions** (engine history + `Workflow_Execution_Log` projection), **assignment changes** (claim/reassign audited), **status history** (`Case_Status_History`), **configuration changes** (maker-checker `TmX_Request` + model/profile versions + who/when — Oracle "History" parity), **mapping changes** (profile versions), **API calls** (`Api_Call_Log` + existing request/response payload capture + module Serilog files), **external integrations** (FCCM exchange logs already on the ledger). Gates recap: AG1 immutable trail · AG2 decision explainability · AG3 segregation of duties (incl. no-self-approval guard) · AG4 change control/versioning · AG5 access/authn (callback secret enforced) · AG6 config integrity (fail-fast, no silent stubs) · AG7 retention/immutability · AG8 reproducibility/lineage · AG9 migration evidence · AG10 log governance · AG11 one-query audit pack (case→events→scorecard→decisions→history export) · AG12 regulatory extracts. **Internal-audit walkthrough of all gates in UAT is a Phase-M4 exit criterion.**
 
@@ -544,7 +693,7 @@ Provider Router ── reads CaseManagement:Provider ──> insert ledger row (
    |     CaseProgressWorker polls FCC_OB_RA: CASE_ID -> CaseCreated                |
    |                                RISK_SCORE + RISK_CATEGORY_KEY -> RiskAssessed |
    |                                                                               |
-   |── Mode = Internal ─────────────────────────────────────────────────────────┐ |
+   |── Mode = TmxCms ─────────────────────────────────────────────────────────┐ |
    |     Scoring Engine: ALGORITHM pass (always)  +  RULE pass (always)          | |
    |        -> supersession (HigherWins) -> band -> recommendation               | |
    |     Case_Generation_Policy gate (§10.4): triggered (High/PEP/NotRec/rule)?  | |
@@ -561,7 +710,7 @@ Decision:  Fccm = callback {caseID, actionCode}   |   Internal = CaseWF ApproveC
            + CustomerReviewSchedule + CMS.Case_Decision row
 ```
 
-### 18.2 TBML case + parallel approval (Internal mode) — Case_Events ARE the raised flags
+### 18.2 TBML case + parallel approval (TMX CMS mode) — Case_Events ARE the raised flags
 
 ```text
 Trade finalise, redflagsCount > 0        (0 flags -> CA-NOHIT branch: status 3059, no case)
@@ -595,11 +744,11 @@ Precondition: FSI workflow engine ≥ Phase 5 (CaseWF portability note: schemes 
 
 | Phase | Scope | Exit criteria | Effort |
 |---|---|---|---|
-| **M0 — Foundations & fixes** | `CMS` schema + `CmsDbContext`; options + fail-fast validation; license gate + file format; provider port + **Oracle provider relocation** (zero behaviour change); callback secret enforced; send-back branch restored; Fccm-mode scorecard writes (start reading `RISK_SCORE`); **FCCM DB model export** (score maps, weights, ranges, rules) + calibration report | Fccm mode regression green with module structure in place; calibration signed off; audit fixes live | **2.5 wk** |
-| **M1 — Internal CMS core** | Scoring Engine (models/rules/algorithm/bands/override/recommendation + execution logs); Case Engine (case core tables, numbering, events); CaseWF schemes (3+3 + parallel approval) + roles/privileges; correlation engine + default rule; decision applier unification; provider router (binary); `CaseProgressWorker` generalisation | Internal-mode KYC + TBML E2E green on dev DB (incl. CA-NOHIT, dual-score scorecard, dual-control closure, segregation guard); Fccm regression green | **3.5 wk** |
+| **M0 — Foundations & fixes** | `CMS` schema + `CmsDbContext` (incl. structured-data-layer tables §8.5); split provider options + fail-fast validation (conditional binding §6); `ConfigOnlyLicenseGate` (license file deferred per Decision 11); provider port + **Oracle provider relocation** (zero behaviour change); callback secret enforced; send-back branch restored; Fccm-mode scorecard writes incl. breakdown rows (start reading `RISK_SCORE`); **FCCM DB model export** (score maps, weights, ranges, rules) + calibration report | Fccm mode regression green with module structure in place; calibration signed off; audit fixes live | **2.5 wk** |
+| **M1 — TMX CMS core** | Scoring Engine (models/rules/algorithm/bands/override/recommendation + execution logs); Case Engine (case core tables, numbering, events); CaseWF schemes (3+3 + parallel approval) + roles/privileges; correlation engine + default rule; decision applier unification; provider router (binary); `CaseProgressWorker` generalisation | TMX-CMS-mode KYC + TBML E2E green on dev DB (incl. CA-NOHIT, dual-score scorecard, dual-control closure, segregation guard); Fccm regression green | **3.5 wk** |
 | **M2 — Admin & UI** | Rule/Algorithm/Threshold/Score-map/Correlation/SLA/Mapping admin screens (maker-checker); Cases FE module (queue + workspace + decision dialogs per chosen design option); scorecard comparison UI; notifications rules (log-only until Slice 8); search; dashboard widgets; audit-pack export | Investigator + authorizer journeys fully in-UI; **AG1–AG12 walkthrough passed in UAT** | **3.5–4 wk** |
-| **M3 — Parallel-run evidence (shadow, binary modes)** | Production stays `Provider=Fccm` while the Internal engines run in **shadow**: every live assessment is also scored by the Internal Scoring Engine (compute-and-log only — no internal case created, no dual-write) with a weekly FCCM-vs-TMX band diff report; UAT runs full `Provider=Internal` E2E in parallel | ≥4 weeks shadow with zero unexplained band diffs; UAT Internal-mode sign-off; compliance approves the Active model | **calendar 4–6 wk** |
-| **M4 — Switch & Oracle retirement** | Production config flips to `Provider=Internal` (restart); **in-flight FCCM cases continue by `Case_Source` continuity** (poller + callback stay alive for them) until the ledger drains to zero; batch risk-level file obligation re-homed if TMX inherits it (§21 A5); then decommission Oracle connectivity config; FCCM-era records remain readable forever | 30 days Internal-only stable; ledger shows zero in-flight FCCM cases; retirement checklist signed; license/audit evidence archived | **0.5 wk + bake** |
+| **M3 — Parallel-run evidence (shadow, binary modes)** | Production stays `Provider=Fccm` while the TMX CMS engines run in **shadow**: every live assessment is also scored by the TMX CMS Scoring Engine (compute-and-log only — no CMS case created, no dual-write) with a weekly FCCM-vs-TMX band diff report; UAT runs full `Provider=TmxCms` E2E in parallel | ≥4 weeks shadow with zero unexplained band diffs; UAT TMX-CMS-mode sign-off; compliance approves the Active model | **calendar 4–6 wk** |
+| **M4 — Switch & Oracle retirement** | Production config flips to `Provider=TmxCms` (restart); **in-flight FCCM cases continue by `Case_Source` continuity** (poller + callback stay alive for them) until the ledger drains to zero; batch risk-level file obligation re-homed if TMX inherits it (§21 A5); then decommission Oracle connectivity config; FCCM-era records remain readable forever | 30 days TMX-CMS-only stable; ledger shows zero in-flight FCCM cases; retirement checklist signed; license/audit evidence archived | **0.5 wk + bake** |
 | Rollback (any point) | Config flips back to `Fccm` (+restart); in-flight continuity by `Case_Source` in both directions (TMX-era cases stay readable/decidable in TMX; new cases go back to FCCM); schema is additive; FCCM path untouched until M4 completes | Rehearsed in UAT during M3 | — |
 
 **Data migration**: none required for cutover (drop-in ledger + additive schema). Optional: historical scorecard backfill from `KycCaseRequest`/`Cstm_Brains`; open-FCCM-case import is **not** planned (they drain naturally via `Case_Source` continuity after the switch). **Testing approach**: unit (engines, esp. scoring truth tables + supersession), integration (provider router, decision parity FCCM-callback vs CaseWF byte-identical effects), scoring shadow diffs, E2E per mode, UAT playbooks (extend the existing KYC validation-log method), FE build/lint gates, audit walkthrough.

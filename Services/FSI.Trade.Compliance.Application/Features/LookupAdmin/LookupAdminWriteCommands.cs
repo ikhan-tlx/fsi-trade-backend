@@ -332,6 +332,79 @@ public class BulkSubmitLookupValuesCommandHandler : IRequestHandler<BulkSubmitLo
     }
 }
 
+// ═══════════════ Create a NEW lookup type (+ seed values) → enqueue ══════════
+/// <summary>
+/// Create a brand-new managed lookup type from Lookup Management, seeded with one
+/// or more values (entered manually OR uploaded/bulk — same row shape as the value
+/// bulk import). The type name must not already exist (compiled allow-list, the
+/// TmX_Lookup_Type registry, or any TmX_Lookup row). Parks ONE pending Lookup
+/// Modification Request (Operation "createType"); on approval the type is registered
+/// as manageable (auto-allow) and its seed values inserted.
+/// </summary>
+public class SaveLookupTypeCommand : IRequest<LookupBulkResult>
+{
+    public string lookupType { get; set; } = "";
+    public List<LookupBulkRow> rows { get; set; } = new();
+}
+
+public class SaveLookupTypeCommandHandler : IRequestHandler<SaveLookupTypeCommand, LookupBulkResult>
+{
+    private readonly IApplicationDbContext _db;
+    private readonly ICurrentUserService   _current;
+    public SaveLookupTypeCommandHandler(IApplicationDbContext db, ICurrentUserService current)
+    { _db = db; _current = current; }
+
+    public async Task<LookupBulkResult> Handle(SaveLookupTypeCommand req, CancellationToken ct)
+    {
+        var lt = (req.lookupType ?? "").Trim();
+        if (lt.Length == 0)
+            throw new ValidationException("lookup_type_required", "A lookup type name is required.");
+        if (!System.Text.RegularExpressions.Regex.IsMatch(lt, "^[A-Za-z0-9_]{2,100}$"))
+            throw new ValidationException("lookup_type_invalid",
+                "The type name must be 2–100 characters — letters, digits and underscore only (no spaces).");
+
+        // Must not already exist anywhere.
+        if (LookupAdminAllowList.Contains(lt)
+            || await _db.LookupTypeRegistrations.AsNoTracking().AnyAsync(r => r.LookupType == lt, ct)
+            || await _db.Lookups.AsNoTracking().AnyAsync(l => l.LookupType == lt, ct))
+            throw new ConflictException("lookup_type_exists", $"The lookup type '{lt}' already exists.");
+
+        if (req.rows is null || req.rows.Count == 0)
+            throw new ValidationException("rows", "Add at least one value (manually or via upload) for the new type.");
+
+        // Validate + de-dupe the seed rows (mirrors the value bulk import).
+        var result = new LookupBulkResult { total = req.rows.Count };
+        var seen   = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var valid  = new List<LookupBulkRowIntent>();
+        foreach (var row in req.rows)
+        {
+            var rn   = row.rowNumber;
+            var code = (row.code ?? "").Trim();
+            if (code.Length == 0)
+            { result.rows.Add(new LookupBulkRowResult { rowNumber = rn, code = code, status = "error", message = "Code is required." }); result.errors++; continue; }
+            if (!seen.Add(code))
+            { result.rows.Add(new LookupBulkRowResult { rowNumber = rn, code = code, status = "skipped", message = "Duplicate code within the file — first occurrence wins." }); result.skipped++; continue; }
+            var label = string.IsNullOrWhiteSpace(row.label) ? code : row.label!.Trim();
+            valid.Add(new LookupBulkRowIntent { Code = code, Label = label, Description = row.description?.Trim(), IsActive = row.active ?? true });
+            result.create++;
+            result.rows.Add(new LookupBulkRowResult { rowNumber = rn, code = code, status = "create", message = "New value will be created." });
+        }
+        if (valid.Count == 0)
+            throw new ValidationException("rows", "No valid rows — every value row was rejected. Fix and retry.");
+
+        var intent = new LookupChangeIntent
+        {
+            Operation  = "createType",
+            LookupType = lt,
+            Rows       = valid,
+            Name       = $"New lookup type: {lt} ({valid.Count} value{(valid.Count == 1 ? "" : "s")})",
+        };
+        result.requestId = await LookupValueValidator.EnqueueAsync(_db, _current, intent, LookupRequestCodes.EntityStatus_Create, ct);
+        result.rows.Sort((a, b) => a.rowNumber.CompareTo(b.rowNumber));
+        return result;
+    }
+}
+
 // ═══════════════ Apply on approval (called by SubmitRequestCommand) ══════════
 /// <summary>
 /// Applies an approved Lookup Modification Request to <c>TmX_Lookup</c>. Invoked
@@ -467,6 +540,52 @@ public class ApplyLookupChangeCommandHandler : IRequestHandler<ApplyLookupChange
                 }
                 await _db.SaveChangesAsync(ct);
                 return applied;
+            }
+            case "createtype":
+            {
+                var lt = intent.LookupType.Trim();
+                // Stale/idempotency guard — the type must still not exist.
+                if (LookupAdminAllowList.Contains(lt)
+                    || await _db.LookupTypeRegistrations.AsNoTracking().AnyAsync(r => r.LookupType == lt, ct)
+                    || await _db.Lookups.AsNoTracking().AnyAsync(l => l.LookupType == lt, ct))
+                    throw new ConflictException("lookup_type_exists", $"The lookup type '{lt}' already exists.");
+
+                // Register the type as manageable (auto-allow) …
+                _db.LookupTypeRegistrations.Add(new LookupTypeRegistration
+                {
+                    LookupType   = lt,
+                    IsManageable = true,
+                    IsSystem     = false,
+                    CreatedBy    = who,
+                    CreatedDate  = DateTime.UtcNow,
+                });
+
+                // … and insert its seed values.
+                var newRows = intent.Rows ?? new List<LookupBulkRowIntent>();
+                var created = 0;
+                foreach (var r in newRows)
+                {
+                    var code = (r.Code ?? "").Trim();
+                    if (code.Length == 0) continue;
+                    var label = string.IsNullOrWhiteSpace(r.Label) ? code : r.Label!.Trim();
+                    _db.Lookups.Add(new Lookup
+                    {
+                        LookupType     = lt,
+                        LookupName     = label,
+                        VisibleValue   = label,
+                        HiddenValue    = code,
+                        Description    = r.Description?.Trim(),
+                        IsActive       = r.IsActive,
+                        ActiveFlag     = true,
+                        UserEditable   = true,
+                        CreatedBy      = who,
+                        LastUpdatedBy  = who,
+                        LocaleId       = 1,
+                    });
+                    created++;
+                }
+                await _db.SaveChangesAsync(ct);
+                return created;
             }
             default:
                 throw new ConflictException("lookup_request_operation_invalid", $"Unknown lookup operation '{intent.Operation}'.");

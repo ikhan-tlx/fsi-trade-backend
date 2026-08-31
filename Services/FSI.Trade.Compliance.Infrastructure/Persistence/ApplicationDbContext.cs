@@ -25,6 +25,7 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public DbSet<UserRoleMapping>      UserRoleMappings       => Set<UserRoleMapping>();
     public DbSet<PasswordChangeAudit>  PasswordChangeAudits   => Set<PasswordChangeAudit>();
     public DbSet<Lookup>               Lookups                => Set<Lookup>();
+    public DbSet<LookupTypeRegistration> LookupTypeRegistrations => Set<LookupTypeRegistration>();
     public DbSet<AppConfiguration>     AppConfigurations      => Set<AppConfiguration>();
     public DbSet<KycCaseRequest>       KycCaseRequests        => Set<KycCaseRequest>();
     public DbSet<CstmBrains>           CstmBrains             => Set<CstmBrains>();

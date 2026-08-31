@@ -26,6 +26,13 @@ public class UploadDocumentCommand : IRequest<UploadDocumentResult>
     /// the flag row, not the bridge).
     /// </summary>
     public int?     TransactionId     { get; init; }
+
+    /// <summary>
+    /// When true AND <see cref="TransactionId"/> is set, the file is stored under
+    /// <c>Transaction/&lt;TransactionNumber&gt;/FlagsEvidence/</c> (vs the general
+    /// <c>Transaction/&lt;TransactionNumber&gt;/</c> for ordinary transaction docs).
+    /// </summary>
+    public bool     IsFlagEvidence    { get; init; }
 }
 
 public class UploadDocumentResult

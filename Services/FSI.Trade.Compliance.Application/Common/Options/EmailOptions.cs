@@ -1,12 +1,14 @@
 namespace FSI.Trade.Compliance.Application.Common.Options;
 
 /// <summary>
-/// SMTP email delivery tunables. Bound from the <c>Email</c> section in
-/// appsettings.json via <c>IOptionsMonitor</c> so credentials/host edits
-/// hot-reload without a restart. OFF by default (<see cref="Enabled"/> = false):
-/// until an operator supplies SMTP creds and flips it on, the notification email
-/// channel is a no-op and there is zero behaviour change. Only notifications at or
-/// above <see cref="MinSeverity"/> are emailed.
+/// SMTP email delivery tunables. Bound from the <c>Email</c> section via
+/// <c>IOptionsMonitor</c>; the operational values are managed in Configuration
+/// Management (Email / SMTP) and hot-reload via the DB→IConfiguration bridge.
+/// The SMTP <b>password</b> is NOT here — it is the sensitive, encrypted
+/// <c>Email.Password</c> config key, read at point of use via
+/// <c>ISecretConfigReader</c>. OFF by default (<see cref="Enabled"/> = false) and
+/// a no-op until an operator sets Host + Username + the encrypted password and
+/// enables it. Only notifications at or above <see cref="MinSeverity"/> are emailed.
 /// </summary>
 public class EmailOptions
 {
@@ -14,23 +16,12 @@ public class EmailOptions
 
     public bool   Enabled     { get; set; } = false;
 
-    /// <summary>
-    /// Delivery transport: <c>"Smtp"</c> (default — send over the network via Host/Port/creds)
-    /// or <c>"PickupDirectory"</c> (write a <c>.eml</c> file to <see cref="PickupDirectory"/> with
-    /// no SMTP server, no credentials and no network). Case-insensitive.
-    /// </summary>
-    public string DeliveryMode { get; set; } = "Smtp";
-
-    /// <summary>
-    /// Folder that receives generated <c>.eml</c> files when <see cref="DeliveryMode"/> is
-    /// <c>"PickupDirectory"</c>. Created automatically if missing. Ignored in Smtp mode.
-    /// </summary>
-    public string PickupDirectory { get; set; } = "";
-
     public string Host        { get; set; } = "";
     public int    Port        { get; set; } = 25;
     public string Username    { get; set; } = "";
-    public string Password    { get; set; } = "";
+    // NOTE: the SMTP password is NOT here — it's a sensitive Configuration
+    // Management key (Email.Password), stored encrypted and read at point of use
+    // via ISecretConfigReader (sensitive keys are not bridged into IConfiguration).
     public string From        { get; set; } = "";
     public bool   UseSsl      { get; set; } = true;
 

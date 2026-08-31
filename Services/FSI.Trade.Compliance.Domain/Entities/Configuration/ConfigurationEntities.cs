@@ -27,8 +27,15 @@ public class ConfigurationDefinition
     /// <summary>Canonical key = dotted appsettings path (drives the IOptions bridge).</summary>
     public string  ConfigurationKey { get; set; } = default!;
     public string  DisplayName      { get; set; } = default!;
+    /// <summary>Short one-line summary shown under the setting name on the screen.</summary>
     public string? Description       { get; set; }
+    /// <summary>Long-form "what this actually does" detail shown in the (i) info
+    /// popover — describes the real runtime effect / consumer.</summary>
+    public string? HelpDetail        { get; set; }
     public string  CategoryKey      { get; set; } = default!;
+    /// <summary>Optional sub-group heading within a category (e.g. FCCM →
+    /// "Oracle connection" / "Case defaults"). NULL = no sub-header.</summary>
+    public string? Section           { get; set; }
     /// <summary>Boolean|Integer|Decimal|String|Text|Enum|Json|TimeSpan|DateTime|Secret|LogModule.</summary>
     public string  DataType         { get; set; } = default!;
     public string? DefaultValue     { get; set; }
