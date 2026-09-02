@@ -206,13 +206,30 @@ public class PublishSectionCommandHandler
             var tenantId = template?.TenantId ?? 1;
             var localeId = template?.LocaleId  ?? 1;
 
-            // Existing names in (Product, Tab) → uniqueness + prefix (subproduct convention).
-            var existingNames = await _db.TenantFieldSetups.AsNoTracking()
+            // Field_Name UNIQUENESS is enforced across the WHOLE product, while the
+            // generated prefix still follows the (Product, Tab) sub-product convention.
+            //
+            // Bug this guards against: two field sections added separately under different
+            // sub-products of the same product were each name-checked ONLY within their own
+            // tab, so both could be minted with the same auto-generated Field_Name (e.g.
+            // "ELCAF_Quantity" under both Export LC Amendment and Export Collections — the
+            // tab's most-common prefix, not the tab's own code). The auto-flag operand
+            // catalogue and rule evaluation identify a field by Field_Name across the
+            // product, so the duplicate surfaced as ONE field appearing under two
+            // sub-products in the "Choose a field" picker. Deduping the generated/explicit
+            // name against every Field_Name in the product (not just this tab) makes a fresh
+            // field product-unique (a collision gets a numeric suffix), while `prefix` stays
+            // tab-derived so the sub-product naming convention is preserved.
+            var tabNames = await _db.TenantFieldSetups.AsNoTracking()
                 .Where(f => f.ProductId == req.productId && f.TabId == tabId && f.FieldName != null)
                 .Select(f => f.FieldName!)
                 .ToListAsync(ct);
-            var taken  = new HashSet<string>(existingNames, StringComparer.OrdinalIgnoreCase);
-            var prefix = DerivePrefix(existingNames);
+            var productNames = await _db.TenantFieldSetups.AsNoTracking()
+                .Where(f => f.ProductId == req.productId && f.FieldName != null)
+                .Select(f => f.FieldName!)
+                .ToListAsync(ct);
+            var taken  = new HashSet<string>(productNames, StringComparer.OrdinalIgnoreCase);
+            var prefix = DerivePrefix(tabNames);
 
             // The section's FLAT value-table (e.g. "TmxTransactionDetail[]") = the most common
             // non-null Field_Table_Name among existing DATA fields in this (Product, Tab). We must
@@ -453,14 +470,24 @@ public class PublishSectionCommandHandler
     /// numeric suffix, ≤50 chars. Uniqueness is checked against <paramref name="taken"/>.</summary>
     private static string BuildFieldName(string? explicitName, string? label, int lkp, string prefix, HashSet<string> taken)
     {
-        string baseName;
+        // An author-CHOSEN Field_Name must be product-wide unique — this is a hard
+        // primitive, not a best-effort. A collision with any existing name in the product
+        // (any sub-product; active or inactive) is REJECTED so the maker picks another;
+        // we never silently rename a name the author typed. Auto-GENERATED names (below)
+        // are made unique with a numeric suffix instead, since the author didn't choose them.
         if (!string.IsNullOrWhiteSpace(explicitName) && NameRx.IsMatch(explicitName.Trim()))
-            baseName = explicitName.Trim();
-        else
         {
-            var core = lkp == 4 ? "SubText" : PascalSlug(label);   // SubText rows carry no stored value
-            baseName = $"{prefix}_{core}";
+            var chosen = explicitName.Trim();
+            if (chosen.Length > 50) chosen = chosen[..50];
+            if (taken.Contains(chosen))
+                throw new ConflictException("field_name_duplicate",
+                    $"Field name '{chosen}' is already used in this product. Field names must be unique " +
+                    "across all sub-products — choose a different name.");
+            return chosen;
         }
+
+        var core = lkp == 4 ? "SubText" : PascalSlug(label);       // SubText rows carry no stored value
+        var baseName = $"{prefix}_{core}";
         if (baseName.Length > 50) baseName = baseName[..50];
 
         var name = baseName; var i = 2;

@@ -186,6 +186,86 @@ public class PublishSectionHandlerTests
     }
 
     [Fact]
+    public async Task NewField_NameCollidingWithAnotherSubProduct_IsMintedUnique()
+    {
+        await using var db = TestSupport.NewDb();
+        // Tab 10 (sub-product A): an existing field already named "ABC_Quantity".
+        db.TenantFieldSetups.Add(new TenantFieldSetup
+        {
+            TenantFieldSetupId = 1, ProductId = 100, TabId = 10,
+            FieldName = "ABC_Quantity", FieldLabel = "Quantity", FieldTypeLkp = 3,
+            FieldSequence = 10, IsActive = true, CreatedBy = "seed", CreatedDate = DateTime.UtcNow,
+        });
+        // Tab 20 (sub-product B): its most-common existing prefix is "ABC".
+        db.TenantFieldSetups.Add(new TenantFieldSetup
+        {
+            TenantFieldSetupId = 2, ProductId = 100, TabId = 20,
+            FieldName = "ABC_Amount", FieldLabel = "Amount", FieldTypeLkp = 3,
+            FieldSequence = 10, IsActive = true, CreatedBy = "seed", CreatedDate = DateTime.UtcNow,
+        });
+        await db.SaveChangesAsync();
+
+        // Add a NEW "Quantity" field under tab 20 → the generator would mint "ABC_Quantity"
+        // (tab-20 prefix + label), which already exists under tab 10. With product-wide
+        // uniqueness it must be suffixed instead of duplicated across the two sub-products.
+        var result = await Handler(db).Handle(new PublishSectionCommand
+        {
+            productId = 100,
+            tabId = 20,
+            items = new()
+            {
+                new PublishSectionItem { isNew = true, tempId = 1, order = 0, fieldTypeLkp = 3, fieldLabel = "Quantity" },
+            }
+        }, default);
+
+        Assert.Equal(1, result.inserted);
+        var names = await db.TenantFieldSetups.AsNoTracking()
+            .Where(f => f.ProductId == 100).Select(f => f.FieldName).ToListAsync();
+        // Exactly one "ABC_Quantity" survives (the tab-10 original) — the new one is distinct.
+        Assert.Equal(1, names.Count(n => n == "ABC_Quantity"));
+        var created = await db.TenantFieldSetups.AsNoTracking()
+            .SingleAsync(f => f.TabId == 20 && f.FieldLabel == "Quantity");
+        Assert.NotEqual("ABC_Quantity", created.FieldName);
+        Assert.StartsWith("ABC_Quantity", created.FieldName); // e.g. "ABC_Quantity_2"
+    }
+
+    [Fact]
+    public async Task NewField_ExplicitNameDuplicateInAnotherSubProduct_IsRejected()
+    {
+        await using var db = TestSupport.NewDb();
+        // Tab 10 already owns "DUP_Name".
+        db.TenantFieldSetups.Add(new TenantFieldSetup
+        {
+            TenantFieldSetupId = 1, ProductId = 100, TabId = 10,
+            FieldName = "DUP_Name", FieldLabel = "Existing", FieldTypeLkp = 3,
+            FieldSequence = 10, IsActive = true, CreatedBy = "seed", CreatedDate = DateTime.UtcNow,
+        });
+        // Tab 20 has a field so the tab/template resolves.
+        db.TenantFieldSetups.Add(new TenantFieldSetup
+        {
+            TenantFieldSetupId = 2, ProductId = 100, TabId = 20,
+            FieldName = "ABC_Foo", FieldLabel = "Foo", FieldTypeLkp = 3,
+            FieldSequence = 10, IsActive = true, CreatedBy = "seed", CreatedDate = DateTime.UtcNow,
+        });
+        await db.SaveChangesAsync();
+
+        // Add a NEW field under tab 20 with an EXPLICIT name that already exists in tab 10.
+        // Field_Name uniqueness is a hard primitive → this must be rejected (409), not renamed.
+        var ex = await Assert.ThrowsAsync<ConflictException>(() => Handler(db).Handle(new PublishSectionCommand
+        {
+            productId = 100, tabId = 20,
+            items = new()
+            {
+                new PublishSectionItem { isNew = true, tempId = 1, order = 0, fieldTypeLkp = 3,
+                    fieldLabel = "Whatever", fieldName = "DUP_Name" },
+            }
+        }, default));
+        Assert.Equal("field_name_duplicate", ex.Code);
+        // The original is untouched and no second row was created.
+        Assert.Equal(2, await db.TenantFieldSetups.CountAsync());
+    }
+
+    [Fact]
     public async Task LabelAndVisible_AreApplied()
     {
         await using var db = TestSupport.NewDb();
