@@ -110,6 +110,25 @@ public class PublishSectionCommandHandler
                 touched = true;
             }
 
+            // Visible on the form (Visibility column "1"/"0"). This is the render-time
+            // show/hide the transaction form honours — distinct from Is_Active (which
+            // removes the field from the schema entirely). A formula-driven visibility
+            // (tf-expression) is platform-managed and cannot be toggled here.
+            if (item.isVisible.HasValue)
+            {
+                if (FieldTypeSafeMatrix.IsFormula(e.Visibility))
+                    throw new ConflictException(
+                        "field_has_conditional_rule",
+                        $"Field '{e.FieldName}' has a conditional Visibility rule and cannot be " +
+                        "toggled here. Contact the platform team.");
+                var nextVis = item.isVisible.Value ? "1" : "0";
+                if (!string.Equals(e.Visibility, nextVis, StringComparison.OrdinalIgnoreCase))
+                {
+                    e.Visibility = nextVis;
+                    touched = true;
+                }
+            }
+
             // Required — only over a literal/empty rule; a formula is platform-managed.
             if (item.isMandatory.HasValue)
             {
@@ -131,17 +150,23 @@ public class PublishSectionCommandHandler
             if (item.fieldTypeLkp.HasValue && item.fieldTypeLkp.Value != (e.FieldTypeLkp ?? 0))
             {
                 var target = item.fieldTypeLkp.Value;
+                // A Dropdown ↔ Searchable Dropdown toggle is a pure render-mode change: it
+                // KEEPS the lookup binding and does NOT touch the field's formula
+                // (mandatory / visibility / disabled). So it is exempt from BOTH the
+                // drop-the-binding guard AND the formula-managed guard below — only the
+                // input control changes (plain select vs type-to-filter).
+                var isDropdownToggle = FieldTypeSafeMatrix.IsDropdownSearchableToggle(e.FieldTypeLkp, target);
                 if (!FieldTypeSafeMatrix.IsSafeConversion(e.FieldTypeLkp, target))
                     throw new ConflictException(
                         "unsafe_type_change",
                         $"Field '{e.FieldName}' cannot be converted to type {target} — only " +
                         "platform-safe conversions (e.g. Text ↔ Long text) are allowed here.");
-                if (!string.IsNullOrWhiteSpace(e.FieldLookupType))
+                if (!isDropdownToggle && !string.IsNullOrWhiteSpace(e.FieldLookupType))
                     throw new ConflictException(
                         "unsafe_type_change",
                         $"Field '{e.FieldName}' is bound to the '{e.FieldLookupType}' lookup; " +
                         "changing its type would drop the binding.");
-                if (FieldTypeSafeMatrix.IsPlatformManaged(e.IsMandatory, e.Visibility, e.IsDisabled))
+                if (!isDropdownToggle && FieldTypeSafeMatrix.IsPlatformManaged(e.IsMandatory, e.Visibility, e.IsDisabled))
                     throw new ConflictException(
                         "unsafe_type_change",
                         $"Field '{e.FieldName}' is formula-managed; its type is controlled by the platform.");
@@ -281,9 +306,9 @@ public class PublishSectionCommandHandler
                     parentId = pid;
                 }
 
-                // Dropdown must bind to an existing lookup type.
+                // Dropdown / Searchable Dropdown must bind to an existing lookup type.
                 string? lookupType = null;
-                if (lkp == 25)
+                if (lkp == 25 || lkp == 65)
                 {
                     lookupType = item.fieldLookupType?.Trim();
                     if (string.IsNullOrWhiteSpace(lookupType))
@@ -334,6 +359,8 @@ public class PublishSectionCommandHandler
                     FieldLookupType          = lookupType,
                     Placeholder              = string.IsNullOrWhiteSpace(item.placeholder) ? null : item.placeholder!.Trim(),
                     IsActive                 = item.isActive ?? true,
+                    // Shown on the form unless the batch explicitly created it hidden.
+                    Visibility               = (item.isVisible is false) ? "0" : "1",
                     IsMandatory              = isStructural ? null : ((item.isMandatory ?? false) ? "true" : "false"),
                     LocaleId                 = localeId,
                     LocaleLabel              = label,
@@ -421,7 +448,7 @@ public class PublishSectionCommandHandler
 
     /// <summary>Types an admin may ADD here: Header 30, SubText 4, Text 3, Long text 24,
     /// Amount/number 64, Date 26, Dropdown 25, and a new Table root 27 (with its columns).</summary>
-    private static bool IsAllowedNewType(int lkp) => lkp is 30 or 4 or 3 or 24 or 64 or 26 or 25 or 27;
+    private static bool IsAllowedNewType(int lkp) => lkp is 30 or 4 or 3 or 24 or 64 or 26 or 25 or 65 or 27;
 
     /// <summary>Generate a unique grid value-array key for a NEW table (convention
     /// <c>Tmx&lt;Label&gt;[]</c>, matching existing grids like <c>TmxBeneficiaryDetail[]</c>).

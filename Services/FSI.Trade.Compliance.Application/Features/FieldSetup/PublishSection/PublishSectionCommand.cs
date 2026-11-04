@@ -65,6 +65,13 @@ public class PublishSectionItem
     public bool?   isActive    { get; set; }
     public bool?   isMandatory { get; set; }
 
+    /// <summary>Form visibility (the <c>Visibility</c> column). Null = leave unchanged.
+    /// True ⇒ "1" (shown on the form), false ⇒ "0" (hidden on the form, but still an
+    /// active field in the schema — distinct from <see cref="isActive"/>). A field whose
+    /// Visibility is a formula (tf-expression) is platform-managed and the toggle is
+    /// rejected (409 <c>field_has_conditional_rule</c>), mirroring <see cref="isMandatory"/>.</summary>
+    public bool?   isVisible   { get; set; }
+
     /// <summary>"Auto-resolved amount field" radio (Is_Amount_Field). Null = leave
     /// unchanged. At most one item per sub-product should be true; the handler enforces
     /// mutual exclusivity per (Product, Tab) and rejects non-numeric fields (409).</summary>

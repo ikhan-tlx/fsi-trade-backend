@@ -26,10 +26,12 @@ namespace FSI.Trade.Compliance.Application.Features.FieldSetup.Common;
 /// </summary>
 public static class FieldTypeSafeMatrix
 {
-    public const int Date     = 2;
-    public const int Text     = 3;
-    public const int Textarea = 4;   // rendered as "Long text"
-    public const int Number   = 55;
+    public const int Date               = 2;
+    public const int Text               = 3;
+    public const int Textarea           = 4;   // rendered as "Long text"
+    public const int Number             = 55;
+    public const int Dropdown           = 25;  // single-select, lookup-bound
+    public const int SearchableDropdown = 65;  // type-to-filter, same lookup binding
 
     // The scalar "free-entry" family: Text, Long text, Number, Date. All four
     // persist a plain scalar value in the field's UDF_Data JSON (no lookup
@@ -42,15 +44,31 @@ public static class FieldTypeSafeMatrix
     // fields remain platform-managed and are intentionally absent.
     private static readonly int[] ScalarFamily = { Text, Textarea, Number, Date };
 
+    // Dropdown ↔ Searchable Dropdown: same storage class AND same lookup binding —
+    // switching only changes the input control (plain select vs type-to-filter). This
+    // pair is DELIBERATELY exempt from the "lookup-bound fields can't be retyped" guard
+    // in PublishSection, because the binding is intentionally RETAINED (see
+    // IsDropdownSearchableToggle + the handler).
+    private static readonly int[] DropdownFamily = { Dropdown, SearchableDropdown };
+
     // currentLkp -> the set of lkp codes it may convert to (incl. itself).
     private static readonly IReadOnlyDictionary<int, HashSet<int>> _safe =
         new Dictionary<int, HashSet<int>>
         {
-            [Text]     = new HashSet<int>(ScalarFamily),
-            [Textarea] = new HashSet<int>(ScalarFamily),
-            [Number]   = new HashSet<int>(ScalarFamily),
-            [Date]     = new HashSet<int>(ScalarFamily),
+            [Text]               = new HashSet<int>(ScalarFamily),
+            [Textarea]           = new HashSet<int>(ScalarFamily),
+            [Number]             = new HashSet<int>(ScalarFamily),
+            [Date]               = new HashSet<int>(ScalarFamily),
+            [Dropdown]           = new HashSet<int>(DropdownFamily),
+            [SearchableDropdown] = new HashSet<int>(DropdownFamily),
         };
+
+    /// <summary>True when the change is purely a Dropdown ↔ Searchable Dropdown toggle
+    /// (both lookup-bound select controls). Used to exempt this pair from the
+    /// drop-the-binding guard, since the lookup binding is kept.</summary>
+    public static bool IsDropdownSearchableToggle(int? currentLkp, int targetLkp)
+        => currentLkp is Dropdown or SearchableDropdown
+        && targetLkp is Dropdown or SearchableDropdown;
 
     /// <summary>True when a field of this type can be retyped at all through
     /// the admin page (i.e. it has more than one safe target).</summary>

@@ -6,9 +6,12 @@
 |---|---|---|---|
 | 1 | [`ECM_MASTER_PLAN.md`](ECM_MASTER_PLAN.md) | **THE plan**: live-instance analysis, current-system analysis, 32-feature FCCM comparison matrix, architecture & engines, provider abstraction (binary `OracleFccm`/`TmxCms` behind a generic CaseManagement controller), configuration, licensing, `CMS` schema + ERD, rule/algorithm builders, scoring + Customer Risk Scorecard, CaseWF (3+3, parallel approval), correlation, mapping, audit gates AG1–AG12, sequence diagrams, migration M0–M4 (parallel run + Oracle retirement + rollback), risks/assumptions/recommendations/future enhancements | ✅ Active — awaiting approval (M0 start + A1–A8 owners) |
 | 2 | [`../WORKFLOW_ENGINE_REPLACEMENT_PLAN.md`](../WORKFLOW_ENGINE_REPLACEMENT_PLAN.md) | Foundation dependency: FSI-owned workflow engine that `CaseWF` executes on (its own initiative, kept in `docs/`) | Plan, awaiting approval |
-| 3 | [`CASE_MANAGEMENT_UX_DESIGN_BRIEF.md`](CASE_MANAGEMENT_UX_DESIGN_BRIEF.md) | Designer-agent brief: Queue + Investigation Workspace + decision-dialog variations (Option A/B standalones) | Handed to designer agent |
+| 3 | [`CASE_MANAGEMENT_UX_DESIGN_BRIEF.md`](CASE_MANAGEMENT_UX_DESIGN_BRIEF.md) | Designer-agent brief: Queue + Investigation Workspace + decision-dialog **variations** (Option A/B standalones) | Handed to designer agent |
+| 3a | [`CMS_DESIGNER_NOTES.md`](CMS_DESIGNER_NOTES.md) | **Complete designer notes — all screens & workflows** (baseline design system, navigation, 7 operations screens/components, 11 configuration screens, integration deltas, states, 5 end-to-end journeys, deliverables checklist). Locks the baseline after the brief's A/B decision | Ready for designer agent |
 | 4 | [`FCCM_ANALYSIS_AND_DUAL_MODE_ARCHITECTURE.md`](FCCM_ANALYSIS_AND_DUAL_MODE_ARCHITECTURE.md) | History — absorbed into #1 | ⛔ Superseded 2026-07-15 |
 | 5 | [`CASE_MANAGEMENT_MODULE_PLAN.md`](CASE_MANAGEMENT_MODULE_PLAN.md) | History — absorbed into #1 (schema renamed `CaseManagement`→`CMS`) | ⛔ Superseded 2026-07-15 |
+
+| 6 | `D:\ICBC - Latest\Design Html\CMS v2 (standalone).html` | **CMS v2 interactive mockup** implementing the designer notes in the deployed "CMS Unified" theme (observed live at icbc.khan-waqas.workers.dev, 2026-10-27): full v2 sidebar, Dashboard, Queue (tiers/claim/FCCM-era/SLA), Case Workspace (dual-score panel, recommendation, states incl. self-approval block), decision dialogs, Onboarding assessments, Scorecard comparison, and all 9 new config screens + provider-conditional config category; light/dark; demo-state controls | Mockup, for review |
 
 ## Notes
 

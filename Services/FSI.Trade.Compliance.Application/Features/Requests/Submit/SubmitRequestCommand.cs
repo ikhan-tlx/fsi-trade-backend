@@ -3,6 +3,7 @@ using FSI.Trade.Compliance.Application.Contracts.Identity;
 using FSI.Trade.Compliance.Application.Contracts.Notifications;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
 using FSI.Trade.Compliance.Application.Features.LookupAdmin;
+using FSI.Trade.Compliance.Application.Features.Lookups.Caching;
 using FSI.Trade.Compliance.Application.Features.Requests.Common;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
@@ -41,22 +42,25 @@ public class SubmitRequestCommand : IRequest<long>
 
 public class SubmitRequestCommandHandler : IRequestHandler<SubmitRequestCommand, long>
 {
-    private readonly IApplicationDbContext   _db;
-    private readonly ICurrentUserService     _current;
-    private readonly IMediator               _mediator;
-    private readonly IApprovalReplayRegistry _registry;
-    private readonly INotificationService    _notifications;
+    private readonly IApplicationDbContext       _db;
+    private readonly ICurrentUserService         _current;
+    private readonly IMediator                   _mediator;
+    private readonly IApprovalReplayRegistry     _registry;
+    private readonly INotificationService        _notifications;
+    private readonly ILookupCatalogueCacheSignal _lookupCache;
 
     public SubmitRequestCommandHandler(
         IApplicationDbContext db, ICurrentUserService current,
         IMediator mediator, IApprovalReplayRegistry registry,
-        INotificationService notifications)
+        INotificationService notifications,
+        ILookupCatalogueCacheSignal lookupCache)
     {
         _db            = db;
         _current       = current;
         _mediator      = mediator;
         _registry      = registry;
         _notifications = notifications;
+        _lookupCache   = lookupCache;
     }
 
     public async Task<long> Handle(SubmitRequestCommand req, CancellationToken ct)
@@ -96,6 +100,13 @@ public class SubmitRequestCommandHandler : IRequestHandler<SubmitRequestCommand,
             {
                 // Lookup Modification Requests keep their bespoke apply command.
                 await _mediator.Send(new ApplyLookupChangeCommand(entity.EntityJson), ct);
+
+                // The live lookup data just changed — drop the cached v2 grouped
+                // catalogue so the new/edited values appear on the very next form
+                // load instead of waiting on its 30-day TTL or an app restart.
+                // Runs only after a successful apply (a failed apply throws above
+                // and leaves the request pending), so we never evict needlessly.
+                _lookupCache.Invalidate();
             }
             else if (!string.IsNullOrWhiteSpace(entity.CommandKey))
             {

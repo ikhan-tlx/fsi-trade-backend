@@ -121,6 +121,20 @@ public class TransactionFlagDto
     public string?   analystNotes        { get; set; }
     public string?   setBy               { get; set; }
     public DateTime? setDate             { get; set; }
+
+    // ---- auto-flag match evidence (what triggered this flag) ----
+    /// <summary>"Auto" (raised by the rule engine) or "Manual" (analyst-set).</summary>
+    public string?   source              { get; set; }
+    /// <summary>Raw match evidence as stored, e.g. "ILF_AppCountry=IR" for a
+    /// per-match auto flag, or a " · "-joined summary for an aggregate flag.</summary>
+    public string?   matchedValue        { get; set; }
+    /// <summary>The field that triggered the flag — its human label where it can be
+    /// resolved (e.g. "Applicant country"), else the field code. Null for aggregates
+    /// / manual flags.</summary>
+    public string?   matchedField        { get; set; }
+    /// <summary>The matched value on that field (e.g. "IR"). Null for aggregates /
+    /// manual flags.</summary>
+    public string?   matchedFieldValue   { get; set; }
 }
 
 public class CustomerDto

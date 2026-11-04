@@ -38,7 +38,10 @@ public class ListProductTabsQueryHandler
         // version segment — invalidated by FieldSetup admin edits via
         // FormSchemaCacheVersion.Bump (Slice 12 §A).
         var version    = FormSchemaCacheVersion.Get(req.ProductId);
-        var cacheKey   = $"Products::Tabs::v2::{req.ProductId}::ver={version}::{cultureKey}";
+        // DB-derived stamp — see FormSchemaStamp: a raw-SQL activate/deactivate of
+        // a sub-product invalidates the tab list too, so the selector stays in sync.
+        var stamp      = await FormSchemaStamp.ComputeAsync(_db, req.ProductId, ct);
+        var cacheKey   = $"Products::Tabs::v2::{req.ProductId}::ver={version}::db={stamp}::{cultureKey}";
 
         if (_cache.TryGetValue<ProductTabsDto>(cacheKey, out var hit) && hit is not null)
             return hit;

@@ -8,6 +8,7 @@ using FSI.Trade.Compliance.Application.Features.Users.Holidays;
 using FSI.Trade.Compliance.Application.Features.Users.List;
 using FSI.Trade.Compliance.Application.Features.Users.Lock;
 using FSI.Trade.Compliance.Application.Features.Users.ResetPassword;
+using FSI.Trade.Compliance.Application.Features.Users.ResetTwoFactor;
 using FSI.Trade.Compliance.Application.Features.Users.SetActive;
 using FSI.Trade.Compliance.Application.Features.Users.Unlock;
 using FSI.Trade.Compliance.Application.Features.Users.Update;
@@ -144,6 +145,15 @@ public class UserController : ControllerBase
         body.userId = id;
         await _mediator.Send(body, ct);
         return Ok(ResponseViewModel<object>.Ok(new { userId = id, mustChangePassword = true }));
+    }
+
+    // ---------- Admin 2FA reset (lost device — user must re-enrol next login) ----------
+    [HttpPost("{id}/Reset2fa")]
+    [RequiresPrivilege("Users.UnlockUser")]
+    public async Task<IActionResult> Reset2fa(string id, CancellationToken ct)
+    {
+        await _mediator.Send(new ResetUserTwoFactorCommand(id), ct);
+        return Ok(ResponseViewModel<object>.Ok(new { userId = id, twoFactorEnabled = false }));
     }
 
     // ----------------------------------------------------------------

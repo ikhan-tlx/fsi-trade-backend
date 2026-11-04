@@ -1,4 +1,3 @@
-using FSI.Trade.Compliance.Infrastructure.Integrations.Brains;
 using FSI.Trade.Compliance.Infrastructure.Integrations.Fccm;
 using Xunit;
 
@@ -83,17 +82,7 @@ public class CstmBrainsReconciliationTests
         Assert.Contains("\"RiskScore\":\"Low - BRAINS\"", result);
     }
 
-    // ---- BRAINS mapper now understands the legacy "{code}|{name}" STATUS ----
-    [Fact]
-    public void RiskBand_PipeDelimited_TakesCode()
-        => Assert.Equal("Medium", BrainsResponseMapper.RiskBand("2|ACME Corp"));
-
-    [Fact]
-    public void ToKycResult_PipeDelimited_FillsNameFromSecondSegment()
-    {
-        var result = BrainsResponseMapper.ToKycResult(new BrainsKycResponse { Status = "1|John Doe", TransOk = "0" });
-        Assert.NotNull(result);
-        Assert.Equal("High", result!.RiskScore);
-        Assert.Equal("John Doe", result.CustomerName);
-    }
+    // NOTE: the BRAINS-mapper tests (RiskBand / ToKycResult over BrainsKycResponse)
+    // were removed with the BRAINS integration; FccmCaseIdPoller.Reconcile +
+    // SetRiskScoreJson above remain the live reconciliation surface.
 }

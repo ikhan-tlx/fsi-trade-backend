@@ -1,16 +1,24 @@
 using FSI.Trade.Compliance.Application.Common.Exceptions;
+using FSI.Trade.Compliance.Application.Common.Options;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
 using FSI.Trade.Compliance.Application.Features.Users.Common;
 using FSI.Trade.Compliance.Application.Features.Users.List;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace FSI.Trade.Compliance.Application.Features.Users.Get;
 
 public class GetUserQueryHandler : IRequestHandler<GetUserQuery, UserDetailDto>
 {
     private readonly IApplicationDbContext _db;
-    public GetUserQueryHandler(IApplicationDbContext db) => _db = db;
+    private readonly IOptionsSnapshot<TwoFactorOptions> _twoFactor;
+
+    public GetUserQueryHandler(IApplicationDbContext db, IOptionsSnapshot<TwoFactorOptions> twoFactor)
+    {
+        _db        = db;
+        _twoFactor = twoFactor;
+    }
 
     public async Task<UserDetailDto> Handle(GetUserQuery req, CancellationToken ct)
     {
@@ -90,6 +98,7 @@ public class GetUserQueryHandler : IRequestHandler<GetUserQuery, UserDetailDto>
             deactivatedAt       = u.DeactivatedAt,
             deactivatedBy       = u.DeactivatedBy,
             twoFactorEnabled    = u.TwoFactorEnabled,
+            twoFactorEnforced   = _twoFactor.Value.Enabled,
             firstPasswordChange = u.FirstPasswordChange,
             mustChangePassword  = u.MustChangePassword,
             passwordExpiryDate  = u.PasswordExpiryDate,

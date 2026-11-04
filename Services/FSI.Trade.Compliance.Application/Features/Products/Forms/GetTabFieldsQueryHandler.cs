@@ -43,8 +43,12 @@ public class GetTabFieldsQueryHandler
         // version segment — invalidated by FieldSetup admin edits via
         // FormSchemaCacheVersion.Bump (Slice 12 §A).
         var version    = FormSchemaCacheVersion.Get(req.ProductId);
+        // DB-derived stamp — see FormSchemaStamp: keeps this (the live product
+        // form's field source) invalidating in lock-step with FormDefinition even
+        // when a change arrives via raw SQL that never calls Bump().
+        var stamp      = await FormSchemaStamp.ComputeAsync(_db, req.ProductId, ct);
         // v3 — added dynamic fieldTypeName (resolved from the 'field' lookup).
-        var cacheKey   = $"Products::TabFields::v3::{req.ProductId}::{req.TabId}::ver={version}::{cultureKey}";
+        var cacheKey   = $"Products::TabFields::v3::{req.ProductId}::{req.TabId}::ver={version}::db={stamp}::{cultureKey}";
 
         if (_cache.TryGetValue<TabFieldsDto>(cacheKey, out var hit) && hit is not null)
             return hit;
@@ -80,7 +84,13 @@ public class GetTabFieldsQueryHandler
                        && f.FieldName     != null
                        && EF.Functions.Like(f.FieldName, "%MRL%")
                        && f.FieldTableName == "TmxTransactionDetail[]"))
+            // Deterministic order: Field_Sequence is NOT unique on many legacy
+            // tabs, so ordering by it alone leaves tied fields in an arbitrary
+            // (engine-dependent) order that differs between the preview and the
+            // live form. Tie-break on the stable PK so every surface — and the
+            // reference query — renders the same sequence.
             .OrderBy(f => f.FieldSequence)
+            .ThenBy(f => f.TenantFieldSetupId)
             .ToListAsync(ct))
             .Select(f => ToFieldDto(f, typeNameByCode))
             .ToList();

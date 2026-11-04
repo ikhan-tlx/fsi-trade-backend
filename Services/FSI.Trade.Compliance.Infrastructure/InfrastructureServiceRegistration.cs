@@ -1,3 +1,4 @@
+using FSI.Trade.Compliance.Application.Common.Identity;
 using FSI.Trade.Compliance.Application.Common.Options;
 using FSI.Trade.Compliance.Application.Contracts.Documents;
 using FSI.Trade.Compliance.Application.Contracts.Identity;
@@ -143,6 +144,8 @@ public static class InfrastructureServiceRegistration
         services.AddScoped<IUserAuthenticationService,  UserAuthenticationService>();
         services.AddScoped<ITwoFactorVerifier,          TotpTwoFactorVerifier>();
         services.AddScoped<ITwoFactorSecretGenerator,   TotpSecretGenerator>();
+        services.AddScoped<IEmailOtpService,            EmailOtpService>();
+        services.AddScoped<ITwoFactorLoginEnforcer,     TwoFactorLoginEnforcer>();
 
         // Misc per-request
         services.AddScoped<ICurrentUserService,         CurrentUserService>();

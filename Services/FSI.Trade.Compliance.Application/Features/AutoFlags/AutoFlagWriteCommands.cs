@@ -346,6 +346,8 @@ public class SubmitAutoFlagCommandHandler : IRequestHandler<SubmitAutoFlagComman
         "In"                 => "in",
         "NotIn"              => "not in",
         "Contains"           => "contains",
+        "IsEmpty"            => "is empty",
+        "IsNotEmpty"         => "is not empty",
         "DateBefore"         => "is before",
         "DateAfter"          => "is after",
         "WithinDays"         => "within (days)",

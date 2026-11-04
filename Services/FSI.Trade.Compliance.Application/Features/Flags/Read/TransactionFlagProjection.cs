@@ -103,11 +103,43 @@ public static class TransactionFlagProjection
                 ? n
                 : key;
 
+        // 2c) Auto-flag match evidence. Matched_Value is "field=value" for a
+        //     per-match flag (one row per triggering field), or a " · "-joined
+        //     summary for an aggregate flag. Split it and resolve the field code
+        //     to its human label so the FE card can show WHICH field triggered the
+        //     flag, not a raw code.
+        static (string? field, string? value) SplitMatch(string? mv)
+        {
+            if (string.IsNullOrWhiteSpace(mv)) return (null, null);
+            var i = mv.IndexOf('=');
+            if (i <= 0) return (null, mv.Trim());          // aggregate summary / no field key
+            return (mv[..i].Trim(), mv[(i + 1)..].Trim());
+        }
+
+        var matchFieldCodes = setRows
+            .Select(r => SplitMatch(r.tf.MatchedValue).field)
+            .Where(f => !string.IsNullOrWhiteSpace(f))
+            .Select(f => f!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var fieldLabels = matchFieldCodes.Count == 0
+            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            : (await db.TenantFieldSetups.AsNoTracking()
+                .Where(f => f.FieldName != null && f.FieldLabel != null
+                         && matchFieldCodes.Contains(f.FieldName))
+                .Select(f => new { f.FieldName, f.FieldLabel })
+                .ToListAsync(ct))
+                .GroupBy(f => f.FieldName!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.First().FieldLabel!, StringComparer.OrdinalIgnoreCase);
+
         return setRows
             .OrderBy(r => r.c.FlagName)
             .Select(r =>
             {
                 scopeByFlag.TryGetValue(r.tf.FlagId, out var s);
+                var (mField, mValue) = SplitMatch(r.tf.MatchedValue);
+                var mLabel = mField != null && fieldLabels.TryGetValue(mField, out var lbl)
+                    ? lbl : mField;
                 return new TransactionFlagDto
                 {
                     flagScopeId        = s?.FlagScopeId ?? 0,
@@ -131,7 +163,12 @@ public static class TransactionFlagProjection
                     evidenceFileName   = r.evidenceFileName,
                     analystNotes       = r.tf.AnalystNotes,
                     setBy              = ResolveSetBy(r.tf.SetBy),
-                    setDate            = r.tf.SetDate
+                    setDate            = r.tf.SetDate,
+
+                    source             = r.tf.Source,
+                    matchedValue       = r.tf.MatchedValue,
+                    matchedField       = mLabel,
+                    matchedFieldValue  = mValue
                 };
             })
             .ToList();

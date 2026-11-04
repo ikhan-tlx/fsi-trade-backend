@@ -426,6 +426,20 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
         }
         var leftShown = leftCandidates.FirstOrDefault() ?? "∅";
 
+        // IsEmpty / IsNotEmpty — presence operators with NO right operand. A field is
+        // EMPTY when it has no usable value: ResolveCandidates already drops a missing
+        // field, a null, "", and whitespace-only values, so leftCandidates.Count == 0
+        // covers BOTH empty AND null (and absent). Evaluated here, before the
+        // right-operand switch, because there is nothing on the right to read.
+        if (op is "IsEmpty" or "IsNotEmpty")
+        {
+            var empty = leftCandidates.Count == 0;
+            var okEmpty = op == "IsEmpty" ? empty : !empty;
+            var detEmpty = $"{field} {(op == "IsEmpty" ? "is empty" : "is not empty")}";
+            var matchedEmpty = okEmpty && op == "IsNotEmpty" ? new List<string> { $"{field}={leftShown}" } : none;
+            return (okEmpty, detEmpty, leftCandidates, matchedEmpty);
+        }
+
         switch ((r.RightOperandType ?? "").Trim())
         {
             case "ReferenceList":
@@ -611,6 +625,21 @@ public sealed class AutoFlagEvaluator : IAutoFlagEvaluator
 
     private async Task<IReadOnlyDictionary<string, List<string>>> LoadUdfAsync(int transactionId, CancellationToken ct)
     {
+        // Prefer the IN-FLIGHT detail from the ChangeTracker (Local) so that on the
+        // transaction-save path — where the handler writes the detail and only commits
+        // AFTER this evaluation — we see the UDF the user just submitted. This covers
+        // BOTH a modified existing detail AND a brand-new detail being INSERTED on the
+        // first save (an Added entity that a DB query cannot see yet). A plain DB read
+        // (even a tracking query) returned the PREVIOUS committed value — or nothing for
+        // a new row — leaving the engine "one save behind": UAT saw no/too-few flags on
+        // the first save and the rest only after a second edit+save.
+        var inFlight = _db.TransactionDetails.Local
+            .FirstOrDefault(d => d.TransactionId == transactionId);
+        if (inFlight is not null)
+            return FlattenUdf(inFlight.UdfData);
+
+        // Not part of this unit of work (worker / dry-run, which run AFTER commit):
+        // read the committed row.
         var json = await _db.TransactionDetails.AsNoTracking()
             .Where(d => d.TransactionId == transactionId)
             .Select(d => d.UdfData)

@@ -31,6 +31,10 @@ public class UserDetailDto
     public DateTime? deactivatedAt      { get; set; }
     public string?   deactivatedBy      { get; set; }
     public bool      twoFactorEnabled   { get; set; }
+    /// <summary>True when 2FA is enforced org-wide (TwoFactor.Enabled). While enforced,
+    /// a user can't self-disable their 2FA — only an admin "Reset 2FA" clears it. The FE
+    /// uses this to hide the self-service "Turn off" affordance on the profile page.</summary>
+    public bool      twoFactorEnforced  { get; set; }
     public bool      firstPasswordChange{ get; set; }
     public bool      mustChangePassword { get; set; }
     public DateTime? passwordExpiryDate { get; set; }

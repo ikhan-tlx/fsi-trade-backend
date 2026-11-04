@@ -30,6 +30,7 @@ public interface IApplicationDbContext
     DbSet<CustomerReviewHistory>  CustomerReviewHistories { get; }
     DbSet<CustomerInsightDaily>   CustomerInsightDailies  { get; }
     DbSet<UserDevice>           UserDevices          { get; }
+    DbSet<UserOtp>              UserOtps             { get; }
     DbSet<LoginAuditEntry>      LoginAudit           { get; }
 
     // Product master — read-mostly; workflow product-mapping endpoint

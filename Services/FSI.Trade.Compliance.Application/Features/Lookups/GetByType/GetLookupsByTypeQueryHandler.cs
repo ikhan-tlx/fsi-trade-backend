@@ -1,4 +1,3 @@
-using FSI.Trade.Compliance.Application.Contracts.Identity;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
 using FSI.Trade.Compliance.Application.Features.Lookups.GetByCulture;
 using MediatR;
@@ -10,12 +9,10 @@ public class GetLookupsByTypeQueryHandler
     : IRequestHandler<GetLookupsByTypeQuery, IReadOnlyList<LookupItemDto>>
 {
     private readonly IApplicationDbContext _db;
-    private readonly ICurrentUserService   _current;
 
-    public GetLookupsByTypeQueryHandler(IApplicationDbContext db, ICurrentUserService current)
+    public GetLookupsByTypeQueryHandler(IApplicationDbContext db)
     {
-        _db      = db;
-        _current = current;
+        _db = db;
     }
 
     public async Task<IReadOnlyList<LookupItemDto>> Handle(GetLookupsByTypeQuery req, CancellationToken ct)
@@ -23,16 +20,18 @@ public class GetLookupsByTypeQueryHandler
         if (string.IsNullOrWhiteSpace(req.Type))
             return Array.Empty<LookupItemDto>();
 
-        var tenantId     = _current.TenantId ?? 1;
         var lookupType   = req.Type.Trim();
         var cultureLower = (req.Culture ?? "en").Trim().ToLowerInvariant();
 
-        // Culture match mirrors GetLookupsByCultureQueryHandler: string-prefix
-        // against LocaleLabel with a fallback to culture-agnostic (null) rows.
+        // Tenant-agnostic by design: the lookup catalogue is shared reference data
+        // (values live under the platform tenant) and the grouped v2 catalogue is
+        // already tenant-agnostic, so filtering single-type reads by the caller's
+        // tenant only hid rows (e.g. values stored under tenant 1 were invisible to
+        // a tenant-245 caller). Culture match mirrors GetLookupsByCultureQueryHandler:
+        // string-prefix against LocaleLabel with a fallback to culture-agnostic (null) rows.
         return await _db.Lookups
             .AsNoTracking()
-            .Where(l => l.TenantId   == tenantId
-                     && l.LookupType == lookupType
+            .Where(l => l.LookupType == lookupType
                      && (l.LocaleLabel == null
                       || l.LocaleLabel.ToLower().StartsWith(cultureLower)))
             .OrderBy(l => l.SortOrder)

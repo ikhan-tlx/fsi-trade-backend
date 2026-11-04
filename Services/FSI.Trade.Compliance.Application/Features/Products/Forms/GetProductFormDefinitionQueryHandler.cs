@@ -79,8 +79,13 @@ public class GetProductFormDefinitionQueryHandler
         // admin field edit calls Bump() and the next read computes a
         // new key, naturally evicting the previous entry (Slice 12 §A).
         var version    = FormSchemaCacheVersion.Get(req.ProductId);
+        // DB-derived stamp so a RAW-SQL change (migration / DBA script) that never
+        // calls Bump() — e.g. the 2026_08_066 sub-product deactivation — still
+        // invalidates this cache on the next read (kept the preview in sync with
+        // the live product form). See FormSchemaStamp.
+        var stamp      = await FormSchemaStamp.ComputeAsync(_db, req.ProductId, ct);
         // v6 — added dynamic fieldTypeName (resolved from the 'field' lookup).
-        var cacheKey   = $"Products::FormDefinition::v6::{req.ProductId}::ver={version}::{cultureKey}";
+        var cacheKey   = $"Products::FormDefinition::v6::{req.ProductId}::ver={version}::db={stamp}::{cultureKey}";
 
         if (_cache.TryGetValue<ProductFormDefinitionDto>(cacheKey, out var hit) && hit is not null)
             return hit;
@@ -122,7 +127,10 @@ public class GetProductFormDefinitionQueryHandler
                        && f.FieldName     != null
                        && EF.Functions.Like(f.FieldName, "%MRL%")
                        && f.FieldTableName == "TmxTransactionDetail[]"))
+            // Deterministic order — Field_Sequence isn't unique per tab; tie-break
+            // on the stable PK so preview, live form and the reference query agree.
             .OrderBy(f => f.FieldSequence)
+            .ThenBy(f => f.TenantFieldSetupId)
             .ToListAsync(ct);
 
         // 3b. Field-type display names — resolved dynamically from

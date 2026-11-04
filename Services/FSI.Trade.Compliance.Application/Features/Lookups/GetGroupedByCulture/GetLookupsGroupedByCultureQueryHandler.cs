@@ -1,5 +1,6 @@
 using FSI.Trade.Compliance.Application.Contracts.Identity;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
+using FSI.Trade.Compliance.Application.Features.Lookups.Caching;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
@@ -38,18 +39,21 @@ public class GetLookupsGroupedByCultureQueryHandler
     /// <summary>30-day TTL — "monthly" per FSI direction (2026-05-29).</summary>
     private static readonly TimeSpan CacheTtl = TimeSpan.FromDays(30);
 
-    private readonly IApplicationDbContext _db;
-    private readonly ICurrentUserService   _current;
-    private readonly IMemoryCache          _cache;
+    private readonly IApplicationDbContext        _db;
+    private readonly ICurrentUserService          _current;
+    private readonly IMemoryCache                 _cache;
+    private readonly ILookupCatalogueCacheSignal  _cacheSignal;
 
     public GetLookupsGroupedByCultureQueryHandler(
-        IApplicationDbContext db,
-        ICurrentUserService   current,
-        IMemoryCache          cache)
+        IApplicationDbContext       db,
+        ICurrentUserService         current,
+        IMemoryCache                cache,
+        ILookupCatalogueCacheSignal cacheSignal)
     {
-        _db      = db;
-        _current = current;
-        _cache   = cache;
+        _db          = db;
+        _current     = current;
+        _cache       = cache;
+        _cacheSignal = cacheSignal;
     }
 
     public async Task<LookupCatalogueDto> Handle(GetLookupsGroupedByCultureQuery req, CancellationToken ct)
@@ -127,13 +131,19 @@ public class GetLookupsGroupedByCultureQueryHandler
             lookups = grouped
         };
 
-        _cache.Set(cacheKey, result, new MemoryCacheEntryOptions
+        var entryOptions = new MemoryCacheEntryOptions
         {
             AbsoluteExpirationRelativeToNow = CacheTtl,
             // Reference-data working set — keep the entry through
             // memory-pressure evictions unless it actually expires.
             Priority = CacheItemPriority.High
-        });
+        };
+        // Bind the entry to the shared invalidation token so an approved lookup
+        // change (any tenant/culture) drops every cached catalogue entry at once —
+        // see ILookupCatalogueCacheSignal. Without this the entry would linger for
+        // the full 30-day TTL and new lookups would never appear on forms.
+        entryOptions.AddExpirationToken(_cacheSignal.Token);
+        _cache.Set(cacheKey, result, entryOptions);
 
         return result;
     }

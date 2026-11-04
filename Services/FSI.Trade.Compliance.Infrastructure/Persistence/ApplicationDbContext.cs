@@ -33,6 +33,7 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public DbSet<CustomerReviewHistory>  CustomerReviewHistories => Set<CustomerReviewHistory>();
     public DbSet<CustomerInsightDaily>   CustomerInsightDailies  => Set<CustomerInsightDaily>();
     public DbSet<UserDevice>           UserDevices          => Set<UserDevice>();
+    public DbSet<UserOtp>              UserOtps             => Set<UserOtp>();
     public DbSet<LoginAuditEntry>      LoginAudit           => Set<LoginAuditEntry>();
     public DbSet<Product>              Products             => Set<Product>();
 

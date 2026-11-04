@@ -16,7 +16,7 @@ public class LoginCommandHandler : IRequestHandler<LoginCommand, AuthResponse>
     private readonly IRoleQueryService          _roles;
     private readonly IJwtTokenService           _jwt;
     private readonly IRefreshTokenStore         _refresh;
-    private readonly ITwoFactorVerifier         _otp;
+    private readonly ITwoFactorLoginEnforcer    _tfaEnforcer;
     private readonly IDeviceService             _devices;
     private readonly ICurrentDeviceService      _currentDevice;
     private readonly ILoginAuditService         _audit;
@@ -29,7 +29,7 @@ public class LoginCommandHandler : IRequestHandler<LoginCommand, AuthResponse>
         IRoleQueryService              roles,
         IJwtTokenService               jwt,
         IRefreshTokenStore             refresh,
-        ITwoFactorVerifier             otp,
+        ITwoFactorLoginEnforcer        tfaEnforcer,
         IDeviceService                 devices,
         ICurrentDeviceService          currentDevice,
         ILoginAuditService             audit,
@@ -41,7 +41,7 @@ public class LoginCommandHandler : IRequestHandler<LoginCommand, AuthResponse>
         _roles         = roles;
         _jwt           = jwt;
         _refresh       = refresh;
-        _otp           = otp;
+        _tfaEnforcer   = tfaEnforcer;
         _devices       = devices;
         _currentDevice = currentDevice;
         _audit         = audit;
@@ -117,14 +117,25 @@ public class LoginCommandHandler : IRequestHandler<LoginCommand, AuthResponse>
             catch (AuthenticationException) { await AuditFail(user.Id, req.username, LoginAuditResult.PasswordExpired, null, req, ct); throw; }
         }
 
+        // Second factor (config-gated, method chosen by TwoFactor.Method). The
+        // enforcer returns a CHALLENGE (Success=0, with a Code and — for TOTP setup —
+        // a ProvisioningUri) that we return verbatim: no access token is issued, so
+        // the app stays locked until the factor is set up + verified. It returns null
+        // once the factor is satisfied, or throws on a hard verify failure.
         if (_twoFactor.Enabled)
         {
-            try { AuthGuards.VerifyTwoFactor(user, req.otp, _otp); }
+            AuthResponse? challenge;
+            try { challenge = await _tfaEnforcer.EnforceAsync(user, req.otp, ct); }
             catch (AuthenticationException ex)
             {
                 var result = ex.Code == "otp_required" ? LoginAuditResult.OtpRequired : LoginAuditResult.OtpInvalid;
                 await AuditFail(user.Id, req.username, result, ex.Code, req, ct);
                 throw;
+            }
+            if (challenge is not null)
+            {
+                await AuditFail(user.Id, req.username, LoginAuditResult.OtpRequired, challenge.Code, req, ct);
+                return challenge;
             }
         }
 
