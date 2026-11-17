@@ -1,6 +1,7 @@
 using FSI.Trade.Compliance.Application.Common.Exceptions;
 using FSI.Trade.Compliance.Application.Contracts.Identity;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
+using FSI.Trade.Compliance.Application.Features.CompanyBranches.Common;
 using FSI.Trade.Compliance.Domain.Entities;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
@@ -8,10 +9,12 @@ using Microsoft.EntityFrameworkCore;
 namespace FSI.Trade.Compliance.Application.Features.CompanyBranches.Create;
 
 /// <summary>
-/// Creates a company-branch row. Slice 14 (direct CRUD — no maker/checker
-/// approval workflow yet; that's a later increment). Fields mirror the FE
-/// BranchFormValues; child mappings (products, role-email, address,
-/// parameters) are NOT persisted here yet.
+/// Creates a company-branch row (replayed on maker-checker approval of a Branch
+/// request). Fields mirror the FE BranchFormValues; the branch→product
+/// entitlement mappings are persisted (<see cref="TmxBranchProductsMapping"/> →
+/// <c>TmX_Branch_Products_Mapping</c>) so the wizard's branch-first product step
+/// shows this branch's products. Other child mappings (role-email, address,
+/// parameters) are not persisted here yet.
 /// </summary>
 public class CreateCompanyBranchCommand : IRequest<int>
 {
@@ -23,6 +26,8 @@ public class CreateCompanyBranchCommand : IRequest<int>
     public string?   Status             { get; set; }
     public DateTime? EffectiveStartDate { get; set; }
     public DateTime? EffectiveEndDate   { get; set; }
+    /// <summary>Products this branch may transact (FE field name preserved for JSON binding).</summary>
+    public List<BranchProductItemDto>? TmxBranchProductsMapping { get; set; }
 }
 
 public class CreateCompanyBranchCommandHandler : IRequestHandler<CreateCompanyBranchCommand, int>
@@ -62,6 +67,10 @@ public class CreateCompanyBranchCommandHandler : IRequestHandler<CreateCompanyBr
 
         _db.CompanyBranches.Add(branch);
         await _db.SaveChangesAsync(ct);
+
+        // Persist the branch's product entitlements (branch → product).
+        await BranchProductSync.ApplyAsync(_db, branch.CompanyBranchId, branch.TenantId, req.TmxBranchProductsMapping, ct);
+
         return branch.CompanyBranchId;
     }
 }

@@ -12,7 +12,14 @@ public interface IKycReviewOrchestrator
     Task<ReviewRunOutcome> RunAsync(string customerCode, int sourceTransactionId, CancellationToken ct = default);
 }
 
-public record ReviewRunOutcome(string Status, int? NewTransactionId, long? KycRequestId, string? Remark);
+public record ReviewRunOutcome(string Status, int? NewTransactionId, long? KycRequestId, string? Remark)
+{
+    /// <summary>
+    /// Human transaction number of the newly-created review KYC (when Completed),
+    /// so the FE can redirect the initiator straight into it. Null otherwise.
+    /// </summary>
+    public string? NewTransactionNumber { get; init; }
+}
 
 public static class ReviewOutcome
 {

@@ -20,19 +20,26 @@ public class DashboardSummaryDto
 {
     public string                     range              { get; set; } = "30d";
     public DateTime                   asOf               { get; set; }
-    public DashboardKpisDto           kpis               { get; set; } = new();
-    public ExposureTrendDto?          exposureTrend      { get; set; }       // Phase 2
-    public RiskMixDto                 riskMix            { get; set; } = new();
-    public List<InstrumentTypeDto>    instrumentsByType  { get; set; } = new();
-    public List<CountryExposureDto>   countryExposure    { get; set; } = new();   // Phase 2 → empty
+    public DashboardKpisDto           kpis                { get; set; } = new();
+    public ExposureTrendDto?          exposureTrend       { get; set; }       // Phase 2
+    public RiskMixDto                 riskMix             { get; set; } = new();
+    public List<InstrumentTypeDto>    instrumentsByType   { get; set; } = new();
+    public List<InstrumentStatusDto>  instrumentsByStatus { get; set; } = new();  // open instruments grouped by workflow status
+    public List<CountryExposureDto>   countryExposure     { get; set; } = new();   // Phase 2 → empty
 }
 
 public class DashboardKpisDto
 {
     public KpiActiveCustomersDto   activeCustomers   { get; set; } = new();
     public KpiActiveInstrumentsDto activeInstruments { get; set; } = new();
+    public KpiNewInstrumentsDto    newInstruments    { get; set; } = new();   // created within the range
     public KpiTradeExposureDto     tradeExposureUsd  { get; set; } = new();   // Phase 2 → null value
     public KpiHighRiskDto          highRiskCustomers { get; set; } = new();
+}
+
+public class KpiNewInstrumentsDto
+{
+    public int value { get; set; }   // instruments created within the resolved range
 }
 
 public class KpiActiveCustomersDto
@@ -88,6 +95,12 @@ public class InstrumentTypeDto
     public string type        { get; set; } = "";
     public int    count       { get; set; }
     public long?  exposureUsd { get; set; }   // null in Phase 1
+}
+
+public class InstrumentStatusDto
+{
+    public string status { get; set; } = "";   // APPLICATION_STATUS visible value (workflow stage)
+    public int    count  { get; set; }
 }
 
 public class CountryExposureDto

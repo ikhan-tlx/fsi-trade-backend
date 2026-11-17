@@ -17,7 +17,7 @@ public class GetCompanyBranchByIdQueryHandler
 
     public async Task<CompanyBranchListItemDto> Handle(GetCompanyBranchByIdQuery req, CancellationToken ct)
     {
-        return await _db.CompanyBranches.AsNoTracking()
+        var dto = await _db.CompanyBranches.AsNoTracking()
             .Where(b => b.CompanyBranchId == req.Id)
             .Select(b => new CompanyBranchListItemDto
             {
@@ -35,5 +35,14 @@ public class GetCompanyBranchByIdQueryHandler
             })
             .FirstOrDefaultAsync(ct)
             ?? throw new NotFoundException("branch_not_found", $"Branch {req.Id} not found.");
+
+        // The branch's current (active) product entitlements, so the edit form pre-selects
+        // them. Mirrors the inbound TmxBranchProductsMapping shape the FE posts back.
+        dto.tmxBranchProductsMapping = await _db.BranchProductMappings.AsNoTracking()
+            .Where(m => m.CompanyBranchId == req.Id && m.ActiveFlag == true)
+            .Select(m => new Common.BranchProductItemDto { LoanProductId = m.ProductId, ProductId = m.ProductId })
+            .ToListAsync(ct);
+
+        return dto;
     }
 }

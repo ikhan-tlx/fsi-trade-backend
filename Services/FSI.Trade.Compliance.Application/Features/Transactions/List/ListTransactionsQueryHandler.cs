@@ -109,8 +109,24 @@ public class ListTransactionsQueryHandler
 
         if (!string.IsNullOrWhiteSpace(req.Status))
         {
-            var s = req.Status.Trim();
-            q = q.Where(t => t.Status != null && EF.Functions.Like(t.Status, $"%{s}%"));
+            // The FE sends one or more selected status labels (comma-separated for a
+            // multi-select). One value → LIKE (tolerant of partials); several →
+            // exact IN (case-insensitive under the default collation).
+            var statuses = req.Status
+                .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(x => x.Trim())
+                .Where(x => x.Length > 0)
+                .ToArray();
+
+            if (statuses.Length == 1)
+            {
+                var s = statuses[0];
+                q = q.Where(t => t.Status != null && EF.Functions.Like(t.Status, $"%{s}%"));
+            }
+            else if (statuses.Length > 1)
+            {
+                q = q.Where(t => t.Status != null && statuses.Contains(t.Status));
+            }
         }
 
         if (req.Mine == true)
@@ -224,6 +240,20 @@ public class ListTransactionsQueryHandler
                     .OrderByDescending(x => x.Rank)
                     .First());
 
+        // Transaction origin (how it was initiated) — only non-Normal origins are
+        // interesting, e.g. "KYC Review". TmX_Transaction.Transaction_Origin_Lkp →
+        // TRANSACTION_ORIGIN lookup. Not on the view, so a batched secondary read.
+        var origins = await (
+                from t in _db.Transactions.AsNoTracking()
+                where ids.Contains(t.TransactionId) && t.TransactionOriginLkp != null
+                join l in _db.Lookups.AsNoTracking() on t.TransactionOriginLkp.Value equals l.Id
+                where l.LookupType == "TRANSACTION_ORIGIN"
+                select new { t.TransactionId, l.VisibleValue, l.HiddenValue })
+            .ToListAsync(ct);
+        var originMap = origins
+            .GroupBy(x => x.TransactionId)
+            .ToDictionary(g => g.Key, g => g.First());
+
         foreach (var item in items)
         {
             if (subMap.TryGetValue(item.transactionId, out var name))
@@ -234,6 +264,10 @@ public class ListTransactionsQueryHandler
                 item.severity     = sev.Name;
                 item.severityRank = sev.Rank;
             }
+            // Only surface a non-"Normal" origin (keeps normal rows unbadged).
+            if (originMap.TryGetValue(item.transactionId, out var o)
+                && !string.Equals(o.HiddenValue, "NORMAL", StringComparison.OrdinalIgnoreCase))
+                item.transactionOrigin = o.VisibleValue;
         }
     }
 

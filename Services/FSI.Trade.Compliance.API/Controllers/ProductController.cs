@@ -2,6 +2,7 @@ using Asp.Versioning;
 using FSI.Trade.Compliance.API.Filters;
 using FSI.Trade.Compliance.Application.Common.Models;
 using FSI.Trade.Compliance.Application.Features.Products.ActiveLov;
+using FSI.Trade.Compliance.Application.Features.Products.AllActiveLov;
 using FSI.Trade.Compliance.Application.Features.Products.Create;
 using FSI.Trade.Compliance.Application.Features.Products.Forms;
 using FSI.Trade.Compliance.Application.Features.Products.GetById;
@@ -154,6 +155,18 @@ public class ProductController : ControllerBase
     {
         var rows = await _mediator.Send(new ListProductsQuery(), ct);
         return Ok(ResponseViewModel<IReadOnlyList<ProductListItemDto>>.Ok(rows));
+    }
+
+    /// <summary>
+    /// ALL active products (unscoped) — the assignable-product picker on the Branch
+    /// Configuration form. Separate from <c>/list</c> (user/branch-scoped) because the
+    /// branch admin must be able to grant any product to a branch.
+    /// </summary>
+    [HttpGet("GetAllActiveProducts")]
+    public async Task<IActionResult> GetAllActiveProducts(CancellationToken ct)
+    {
+        var rows = await _mediator.Send(new ListAllActiveProductsQuery(), ct);
+        return Ok(ResponseViewModel<IReadOnlyList<ActiveProductLovDto>>.Ok(rows));
     }
 
     /// <summary>

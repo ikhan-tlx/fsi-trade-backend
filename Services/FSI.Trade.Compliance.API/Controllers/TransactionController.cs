@@ -72,6 +72,21 @@ public class TransactionController : ControllerBase
     }
 
     /// <summary>
+    /// Read a transaction by its human-friendly <c>TransactionNumber</c> rather than the
+    /// surrogate PK, so the FE routes on the number without exposing the key. Same response
+    /// shape and the same per-user branch-access gate as <see cref="GetById"/>. The
+    /// static <c>ByNumber</c> segment out-ranks the <c>{id:int}</c> route, and the
+    /// non-numeric number can't be confused with the int route anyway.
+    /// </summary>
+    [HttpGet("ByNumber/{number}")]
+    [RequiresPrivilege("Transactions.View")]
+    public async Task<IActionResult> GetByNumber(string number, CancellationToken ct)
+    {
+        var detail = await _mediator.Send(new GetTransactionByNumberQuery(number), ct);
+        return Ok(ResponseViewModel<TransactionDetailDto>.Ok(detail));
+    }
+
+    /// <summary>
     /// Creates a new transaction and kicks off its workflow synchronously
     /// (Slice 6 Step 3). Mirrors legacy <c>POST /Transaction/Create</c> —
     /// minimal payload, workflow attached when the product has a scheme code.

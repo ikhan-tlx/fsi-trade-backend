@@ -9,6 +9,8 @@ using FSI.Trade.Compliance.Application.Features.CompanyBranches.GetById;
 using FSI.Trade.Compliance.Application.Features.CompanyBranches.List;
 using FSI.Trade.Compliance.Application.Features.CompanyBranches.Lov;
 using FSI.Trade.Compliance.Application.Features.CompanyBranches.Update;
+using FSI.Trade.Compliance.Application.Features.Products.ByBranch;
+using FSI.Trade.Compliance.Application.Features.Products.List;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -115,6 +117,17 @@ public class CompanyBranchController : ControllerBase
     {
         var rows = await _mediator.Send(new ListBranchLovQuery(), ct);
         return Ok(ResponseViewModel<IReadOnlyList<BranchLovItemDto>>.Ok(rows));
+    }
+
+    /// <summary>
+    /// Products a given branch is entitled to transact (branch → product). Backs the
+    /// wizard's branch-first product step; the branch must belong to the caller.
+    /// </summary>
+    [HttpGet("{branchId:int}/products")]
+    public async Task<IActionResult> ProductsByBranch(int branchId, CancellationToken ct)
+    {
+        var rows = await _mediator.Send(new ListProductsByBranchQuery(branchId), ct);
+        return Ok(ResponseViewModel<IReadOnlyList<ProductListItemDto>>.Ok(rows));
     }
 
     /// <summary>

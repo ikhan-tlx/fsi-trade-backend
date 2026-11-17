@@ -376,6 +376,7 @@ The score→category link is maintained at **both** ends: config-time — this t
 CMS.Risk_Scorecard (immutable; 1 customer -> many rows)
   Scorecard_Id BIGINT PK · Customer_Id FK -> CMS.Customer · Version INT (per customer)
   Trigger (Onboarding|PeriodicReview|Refresh|Override) · Transaction_Id · Request_Id
+  Snapshot_Id FK -> Case_Customer_Snapshot   -- the exact facts version this score was computed from
   Provider_Source (FCCM|TMX) · Model_Id · Model_Version · Jurisdiction_Cd · Customer_Type
   Algorithm_Score DECIMAL(5,2) · Algorithm_Band
   Rule_Based_Score DECIMAL(5,2) NULL · Rule_Based_Band NULL
@@ -410,17 +411,36 @@ Indexing: queue composite `(Status_Lkp, Tier, Priority, Opened_At)`, `Customer_C
 **Why**: TMX holds customer data only as **per-transaction snapshots** (`TmX_Customer_Master` is misnamed) and transaction facts inside **UDF JSON**. Oracle CMS executes rules against structured customer/transaction columns — and the Internal CMS should too: deterministic indexed rule execution (no JSON parsing per evaluation), straightforward reporting/search, and frozen auditable facts. The known drawback — duplication/sync — is contained because every row is written at a **single controlled event** and is then immutable (snapshots) or updated only by the next controlled event (registry). Population is always through **mapping profiles** (§13 Entity/Field kinds — UDF path → typed column), never hardcoded.
 
 ```text
-CMS.Customer                          -- REGISTRY: one row per customer (FSI lifecycle note:
-  Customer_Id BIGINT PK               --  onboarding CREATES it; every reassessment UPDATES
-  Customer_Code NVARCHAR(50) UNIQUE   --  the SAME row — never a duplicate customer)
-  Customer_Name · Customer_Type (IND|LE|FI) · Jurisdiction_Cd · Country_Of_Residence
-  Country_Of_Incorporation · Industry · Legal_Structure · National_Id · Tax_Id
-  Current_Risk_Band · Current_Scorecard_Id FK · Onboarded_At · Last_Reassessed_At
-  Next_Review_Date · Status (Active|Exited) · audit cols
+CMS.Customer                          -- REGISTRY: one row per customer, MINIMUM details only
+  Customer_Id BIGINT PK               --  (FSI direction 2026-11-04). Onboarding CREATES it;
+  Customer_Code NVARCHAR(50) UNIQUE   --  reassessment never duplicates it.
+  Customer_Name · Customer_Type (IND|LE|FI) · Status (Active|Exited)
+  Current_Risk_Band                   -- denormalised for grids only (derivable)
+  Onboarded_At · Last_Reassessed_At · Next_Review_Date · audit cols
+  -- NO snapshot/scorecard pointers here (FSI 2026-11-04): the relation is
+  -- Customer 1 -> N Case_Customer_Snapshot, and the current one is the
+  -- snapshot row whose Is_Active flag is set. The scorecard hangs off the
+  -- snapshot, so the registry needs no scorecard reference either.
 
-CMS.Case_Customer_Snapshot            -- frozen customer facts AS-AT assessment/case creation
-  Snapshot_Id PK · Case_Id FK NULL · Scorecard_Id FK NULL · Customer_Id FK
-  (same fact columns as registry) · Captured_At
+CMS.Case_Customer_Snapshot            -- the FULL customer profile, versioned per assessment
+  Snapshot_Id PK · Customer_Id FK (1 customer -> N snapshots)
+  Is_Active BIT                       -- the CURRENT snapshot; what 360/display screens show.
+                                      -- Guarded by a filtered unique index:
+                                      --   UNIQUE (Customer_Id) WHERE Is_Active = 1
+                                      -- so two active snapshots are impossible; the switch
+                                      -- (clear old flag, set new) runs in one transaction.
+  Source_Transaction_Id BIGINT        -- provenance: which TMX transaction fed this snapshot
+  Source_Customer_Master_Id BIGINT    -- the exact dbo.TmX_Customer_Master row it was built
+                                      --   from (value keys, no cross-schema FK)
+  Jurisdiction_Cd · Country_Of_Residence · Country_Of_Incorporation · Industry
+  Legal_Structure · National_Id · Tax_Id · (further profile fields via Field_Mapping)
+  Captured_At
+  -- Lifecycle: each assessment captures a NEW snapshot from the TMX dynamic fields,
+  -- scores it, then flips the Is_Active flag to it. Old snapshots stay immutable
+  -- (never edited, never re-activated). Scorecards pin their snapshot
+  -- (Risk_Scorecard.Snapshot_Id — 1 snapshot can carry several scorecard versions:
+  -- Refresh/Override re-score the SAME facts); cases pin their scorecard.
+  -- "Current scorecard" is therefore derived: newest scorecard of the active snapshot.
 
 CMS.Trade_Detail                      -- typed trade facts per TBML case (Oracle LC_TRN_DET
   Trade_Detail_Id PK · Case_Id FK     --  parity, internal + typed): populated at case
@@ -468,7 +488,27 @@ CMS.Field_Mapping                      -- one row per (target column ← source 
 - **Admin surface**: the "Mappings" configuration screen (§16) edits these rows with maker-checker; seeded defaults are generated from the existing onboarding mapping profiles + the `productSummary` field back-trace already in the BE. Mapping changes are versioned (AG4) and apply to **new** materializations only — existing snapshots stay frozen as captured.
 - Same mechanism serves **Customer** (KYC Section-A `KycParam*`/grids → registry columns, per customer type) and **Trade** (per sub-product UDF codes → trade columns) — one table, one materializer, no hardcoded field names anywhere.
 
-Rule/correlation/case-generation engines evaluate against these typed tables first (registry + snapshot + trade rows), falling back to the raw UDF resolver only for fields a bank hasn't mapped to columns. **Customer lifecycle (FSI note)**: onboarding creates the `CMS.Customer` row; each periodic review/reassessment updates the same row and appends a new scorecard version (never a duplicate customer); when the §10.4 policy fires, the case is created **against that onboarding/assessment** (`Case.Customer_Id` + `Case.Scorecard_Id`), with the as-at snapshot preserving what the facts were at decision time.
+### Hybrid storage for matching attributes (FSI decision 2026-11-04)
+
+Hard columns are kept only for the **stable core** (customer code/name/type, transaction id/number, product/tab, branch, bank, amount, currency, value date, jurisdiction + the common instrument facts on `Trade_Detail`). Everything extensible — vessel, UBO/director, drawee, ports, and whatever compliance needs next — lives in a **keyed attribute store**, so adding a new matching attribute is administration, never a schema change or a developer task:
+
+```text
+CMS.Attribute_Def                      -- the attribute registry (created from the screen)
+  Attribute_Code PK (e.g. 'VESSEL', 'UBO_NAME') · Label · Data_Type
+  Normalization (trim|upper|lookupHidden('<type>')) · Active_Flag · audit cols
+
+CMS.Matching_Attribute                 -- one row per (owner, attribute, value)
+  Attr_Id PK · Owner_Type (Snapshot|Case) · Owner_Id
+  Attribute_Code FK -> Attribute_Def
+  Value_Normalized NVARCHAR(200)       -- matched on; normalized ONCE at write time
+  Value_Display NVARCHAR(400)          -- shown on screen
+  Source_Field NVARCHAR(100)           -- provenance (which UDF code fed it)
+  idx (Attribute_Code, Value_Normalized)   <- the one index all correlation matching uses
+```
+
+`Field_Mapping` rows gain a `Target_Kind` (`Column` | `Attribute`): a mapping can fill a typed column **or** an attribute row. The **admin flow for a new attribute is three steps on existing screens, no release**: (1) register the attribute on the Mappings screen (Attributes tab) — code, label, normalization; (2) add mapping rows per product/sub-product pointing their UDF field at it; (3) the attribute immediately appears in the correlation rule builder's context dropdown. One honest caveat, stated to admins on the screen: a new attribute matches **from then on** — snapshots/cases created before the mapping existed carry no value for it (an optional backfill job over historical UDF data is a phase-2 item).
+
+Rule/correlation/case-generation engines evaluate against the typed core columns and the `Matching_Attribute` index; the raw UDF resolver remains only as a last-resort fallback for truly unmapped ad-hoc fields (accepted as slow). **Customer lifecycle (FSI note)**: onboarding creates the `CMS.Customer` row; each periodic review/reassessment updates the same row and appends a new scorecard version (never a duplicate customer); when the §10.4 policy fires, the case is created **against that onboarding/assessment** (`Case.Customer_Id` + `Case.Scorecard_Id`), with the as-at snapshot preserving what the facts were at decision time.
 
 ### 8.4 Migration planning
 
@@ -661,7 +701,7 @@ Profiles are versioned, maker-checker-approved, cached w/ invalidation; unknown-
 | 7 | **Correlation Rules** | Match-context builder (customer/counterparty/txn-ref/HS/flags…), case-type scoping, lookback, closed-inclusion, action, priority | `Correlation_Rule` | §12 |
 | 8 | **SLA Management** *(own screen)* | Case SLA thresholds per type/priority/tier, aging states, escalation bindings, breach log view | `Sla_Config`, `Sla_Breach_Log` | §16 note (coexists with global `'sla'` config category) |
 | 9 | **Workflow & Queues** | Case-type → CaseWF scheme mapping, queue routing per tier/role (scheme *editing* stays in the workflow designer) | `Queue_Config`, scheme mapping | §11 |
-| 10 | **Mappings** | `Field_Mapping` editor (target entity/column, product/tab/customer-type scope, source UDF path, transform, grid strategy) + JSON profile registry (API/status/risk kinds) | `Field_Mapping`, `Mapping_Profile` | §8.5, §13 |
+| 10 | **Mappings** (incl. **Matching Attributes** tab) | `Field_Mapping` editor (target = typed column **or attribute**, product/tab/customer-type scope, source UDF path, transform, grid strategy) + **attribute registry** (add a new matching attribute: code, label, normalization → map per product → immediately usable in correlation rules; per-product coverage view) + JSON profile registry (API/status/risk kinds) | `Field_Mapping`, `Attribute_Def`, `Matching_Attribute`, `Mapping_Profile` | §8.5, §13 |
 | 11 | **Notifications** | Event→recipient→template rules + delivery log | `Notification_Rule`, `Notification_Log` | §14 |
 
 Per the UX brief + designer variations outcome: **Queue page** (`/cases`), **Case detail / investigation workspace** (`/cases/:caseNumber`) with events/evidence, dual-score risk panel, scorecard + comparison, related cases, recommendation card, notes/audit, decision dialog family (Recommend/Approve/Reject/Escalate + self-approval block state); **Admin screens**: Rule Builder, Algorithm Builder (parameters/weights), Thresholds, Score-map/Lookup manager, Correlation rules, SLA config, Mapping profiles — following the Field-Config/Auto-Flags admin idioms; **Scorecard comparison** view; license/mode gating from app-init. All server-driven, privilege-gated, no localStorage state.

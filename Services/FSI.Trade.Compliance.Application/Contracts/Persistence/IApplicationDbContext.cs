@@ -41,6 +41,8 @@ public interface IApplicationDbContext
     DbSet<TransactionListView>     TransactionList         { get; }
     DbSet<CompanyBranchUserMapping> CompanyBranchUserMappings { get; }
     DbSet<CompanyBranch>           CompanyBranches         { get; }
+    // Branch↔product entitlement link — scopes the product LOV to the caller's branches.
+    DbSet<BranchProductMapping>    BranchProductMappings   { get; }
     DbSet<Location>                Locations               { get; }
     DbSet<Company>                 Companies               { get; }
     DbSet<Request>                 Requests                { get; }

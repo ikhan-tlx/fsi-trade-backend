@@ -62,6 +62,14 @@ public class GetTransactionByIdQueryHandler
             .FirstOrDefaultAsync(t => t.TransactionId == id, ct)
             ?? throw new NotFoundException("transaction_not_found", $"Transaction {id} does not exist.");
 
+        // ---------- 1a. Per-user access gate (branch scoping) ----------
+        // A transaction is visible only to callers scoped to its branch — the same
+        // User→Branch scoping the wizard enforces (legacy parity). A user may open a
+        // transaction when its branch is one of their actively-mapped branches, or when
+        // they created it (covers a lapsed mapping on one's own record). This gates every
+        // read path that funnels through here — the numeric-PK route AND /ByNumber.
+        await EnsureCallerMayAccessAsync(tx, ct);
+
         // ---------- 2. UDF + child collections (parallel-safe per scoped DbContext: run sequentially) ----------
         var detail        = await _db.TransactionDetails.AsNoTracking()
                                 .Where(d => d.TransactionId == id).FirstOrDefaultAsync(ct);
@@ -382,6 +390,42 @@ public class GetTransactionByIdQueryHandler
             userName = ComposeDisplayName(u.FirstName, u.LastName, u.UserName),
             roleName = firstRoleByUser.TryGetValue(u.Id, out var rn) ? rn : null
         }).ToList();
+    }
+
+    /// <summary>
+    /// Business-rule access gate: the caller may read this transaction only when it
+    /// belongs to one of their actively-mapped branches, or they created it. Mirrors the
+    /// User→Branch scoping used by the new-transaction wizard (legacy parity). An
+    /// unauthenticated caller is rejected outright. Throws <see cref="ForbiddenException"/>
+    /// (HTTP 403, code "transaction_access_denied") when neither holds.
+    /// </summary>
+    private async Task EnsureCallerMayAccessAsync(Domain.Entities.Transaction.Transaction tx, CancellationToken ct)
+    {
+        var userId = _current.UserId;
+        if (string.IsNullOrWhiteSpace(userId))
+            throw new ForbiddenException("transaction_access_denied",
+                "This transaction requires an authenticated caller.");
+
+        // Own record always visible (guards against a lapsed branch mapping on one's own work).
+        if (!string.IsNullOrWhiteSpace(tx.CreatedBy) &&
+            string.Equals(tx.CreatedBy, userId, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        // Otherwise the transaction's branch must be one the caller is actively mapped to.
+        if (tx.CompanyBranchId.HasValue)
+        {
+            var now = DateTime.UtcNow;
+            var inBranch = await _db.CompanyBranchUserMappings.AsNoTracking().AnyAsync(m =>
+                m.UserId == userId
+                && m.CompanyBranchId    == tx.CompanyBranchId.Value
+                && m.ActiveFlag
+                && m.EffectiveStartDate <= now
+                && m.EffectiveEndDate   >= now, ct);
+            if (inBranch) return;
+        }
+
+        throw new ForbiddenException("transaction_access_denied",
+            "You are not scoped to the branch that owns this transaction.");
     }
 
     private static string ComposeDisplayName(string? firstName, string? lastName, string? userName)

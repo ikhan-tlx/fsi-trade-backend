@@ -29,7 +29,9 @@ public class ListRequestsQuery : PagedQuery, IRequest<PagedResult<RequestListIte
     public string? RequestStatusCode { get; set; }
     public string? CreatedBy         { get; set; }
     public string? ExecutedBy        { get; set; }
-    public string? CreatedDate       { get; set; }  // yyyy-MM-dd
+    public string? CreatedDate       { get; set; }  // yyyy-MM-dd (legacy single-day)
+    public string? CreatedFrom       { get; set; }  // yyyy-MM-dd (range start, inclusive)
+    public string? CreatedTo         { get; set; }  // yyyy-MM-dd (range end, inclusive)
 }
 
 public class RequestListItemDto
@@ -76,7 +78,21 @@ public class ListRequestsQueryHandler
             var t = req.ExecutedBy.Trim();
             q = q.Where(r => r.LastUpdatedBy != null && EF.Functions.Like(r.LastUpdatedBy, $"%{t}%"));
         }
-        if (DateTime.TryParse(req.CreatedDate, out var day))
+        // Date range (inclusive on both ends). CreatedFrom/CreatedTo take
+        // precedence; CreatedDate is the legacy single-day filter.
+        if (DateTime.TryParse(req.CreatedFrom, out var fromDay))
+        {
+            var from = fromDay.Date;
+            q = q.Where(r => r.CreatedDate >= from);
+        }
+        if (DateTime.TryParse(req.CreatedTo, out var toDay))
+        {
+            var toExcl = toDay.Date.AddDays(1);   // include the whole "to" day
+            q = q.Where(r => r.CreatedDate < toExcl);
+        }
+        if (string.IsNullOrWhiteSpace(req.CreatedFrom)
+            && string.IsNullOrWhiteSpace(req.CreatedTo)
+            && DateTime.TryParse(req.CreatedDate, out var day))
         {
             var from = day.Date;
             var to   = from.AddDays(1);

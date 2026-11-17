@@ -29,4 +29,7 @@ public class CompanyBranchListItemDto
     public DateTime  effectiveStartDate { get; set; }
     public DateTime  effectiveEndDate   { get; set; }
     public DateTime  createdDate        { get; set; }
+    /// <summary>Active branch→product entitlements. Only populated by GetById (the edit
+    /// form); the list grid leaves it null.</summary>
+    public List<Common.BranchProductItemDto>? tmxBranchProductsMapping { get; set; }
 }

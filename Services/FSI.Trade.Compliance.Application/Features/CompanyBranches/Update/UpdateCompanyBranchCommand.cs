@@ -1,12 +1,15 @@
 using FSI.Trade.Compliance.Application.Common.Exceptions;
 using FSI.Trade.Compliance.Application.Contracts.Identity;
 using FSI.Trade.Compliance.Application.Contracts.Persistence;
+using FSI.Trade.Compliance.Application.Features.CompanyBranches.Common;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 
 namespace FSI.Trade.Compliance.Application.Features.CompanyBranches.Update;
 
-/// <summary>Updates the mutable fields of a company branch. Slice 14.</summary>
+/// <summary>Updates the mutable fields of a company branch (replayed on approval).
+/// Also reconciles the branch→product entitlement mappings
+/// (<see cref="TmxBranchProductsMapping"/> → <c>TmX_Branch_Products_Mapping</c>).</summary>
 public class UpdateCompanyBranchCommand : IRequest<Unit>
 {
     public int       CompanyBranchId    { get; set; }   // from route
@@ -16,6 +19,8 @@ public class UpdateCompanyBranchCommand : IRequest<Unit>
     public string?   Status             { get; set; }
     public DateTime? EffectiveStartDate { get; set; }
     public DateTime? EffectiveEndDate   { get; set; }
+    /// <summary>Products this branch may transact (FE field name preserved for JSON binding).</summary>
+    public List<BranchProductItemDto>? TmxBranchProductsMapping { get; set; }
 }
 
 public class UpdateCompanyBranchCommandHandler : IRequestHandler<UpdateCompanyBranchCommand, Unit>
@@ -42,6 +47,12 @@ public class UpdateCompanyBranchCommandHandler : IRequestHandler<UpdateCompanyBr
         branch.LastUpdatedDate = DateTime.UtcNow;
 
         await _db.SaveChangesAsync(ct);
+
+        // Reconcile the branch's product entitlements to the submitted set. Only
+        // touch mappings when the FE actually sent the list (null = "unchanged").
+        if (req.TmxBranchProductsMapping != null)
+            await BranchProductSync.ApplyAsync(_db, branch.CompanyBranchId, branch.TenantId, req.TmxBranchProductsMapping, ct);
+
         return Unit.Value;
     }
 }

@@ -9,14 +9,13 @@ namespace FSI.Trade.Compliance.Application.Features.Products.List;
 /// "Active" means: <c>Active_Flag = 1</c> AND today falls inside
 /// [EffectiveStartDate, EffectiveEndDate]. Legacy applied the same filters.
 ///
-/// Note: legacy ALSO filtered by the caller's branch-product mapping
-/// (<c>TmX_Branch_Products_Mapping</c>). We don't map that table yet — for
-/// now every active product is visible to every authenticated caller. The
-/// downstream <c>POST /Transaction</c> handler still validates that the
-/// user is mapped to the chosen branch, so the security model isn't
-/// weakened; the dropdown is just less precise. Add the branch-product
-/// filter when <c>TmX_Branch_Products_Mapping</c> is mapped (future slice
-/// when product CRUD or branch-product admin lands).
+/// Scoping (2026-11-12): now filtered by the caller's branch-product mapping
+/// (<c>TmX_Branch_Products_Mapping</c>) — the union of products across the
+/// user's active branches — mirroring legacy
+/// <c>LoanProductService.GetActiveLoanProductLovByUserBranch</c>. The wizard's
+/// branch-first step uses the tighter per-branch query
+/// (<c>ListProductsByBranchQuery</c>); this union list backs other product
+/// dropdowns/filters.
 /// </summary>
 public record ListProductsQuery : IRequest<IReadOnlyList<ProductListItemDto>>;
 

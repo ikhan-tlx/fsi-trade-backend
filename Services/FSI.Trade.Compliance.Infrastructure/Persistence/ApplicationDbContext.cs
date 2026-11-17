@@ -41,6 +41,7 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public DbSet<TransactionListView>      TransactionList           => Set<TransactionListView>();
     public DbSet<CompanyBranchUserMapping> CompanyBranchUserMappings => Set<CompanyBranchUserMapping>();
     public DbSet<CompanyBranch>            CompanyBranches           => Set<CompanyBranch>();
+    public DbSet<BranchProductMapping>     BranchProductMappings     => Set<BranchProductMapping>();
     public DbSet<Location>                 Locations                 => Set<Location>();
     public DbSet<Company>                  Companies                 => Set<Company>();
     public DbSet<Request>                  Requests                  => Set<Request>();

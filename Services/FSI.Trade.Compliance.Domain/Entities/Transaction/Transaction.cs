@@ -63,6 +63,14 @@ public class Transaction
     /// </summary>
     public int?      SubProductTabId         { get; set; }
 
+    /// <summary>
+    /// 2026-11 — how the transaction was initiated (TmX_Lookup id, type
+    /// TRANSACTION_ORIGIN). NULL / the "Normal" id = a normal maker-created
+    /// transaction; the "KYC Review" id marks a transaction created by the
+    /// Customer Insight "Start Review" flow. Added by migration 2026_11_067.
+    /// </summary>
+    public int?      TransactionOriginLkp    { get; set; }
+
     public string    CreatedBy               { get; set; } = "";
     public DateTime  CreatedDate             { get; set; }
     public string?   LastUpdatedBy           { get; set; }

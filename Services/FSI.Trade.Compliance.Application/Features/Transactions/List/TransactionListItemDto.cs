@@ -68,4 +68,12 @@ public class TransactionListItemDto
 
     /// <summary>Numeric rank of <see cref="severity"/> (Critical=4…Info=0) for FE sorting/colour. 0 when none.</summary>
     public int       severityRank            { get; set; }
+
+    /// <summary>
+    /// Non-"Normal" transaction origin label (TRANSACTION_ORIGIN lookup), e.g.
+    /// "KYC Review" for a transaction created by the Customer Insight Start-Review
+    /// flow. NULL for normal maker-created transactions — the FE badges it only
+    /// when present.
+    /// </summary>
+    public string?   transactionOrigin       { get; set; }
 }

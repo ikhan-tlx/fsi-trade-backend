@@ -187,6 +187,7 @@ public class ListReferenceValuesQuery : PagedQuery, IRequest<PagedResult<Referen
 {
     public string? Domain   { get; set; }   // Lookup_Type
     public long?   Category { get; set; }   // Reference_Type_Id
+    public string? Status   { get; set; }   // active | inactive | all
 }
 
 public class ListReferenceValuesQueryHandler : IRequestHandler<ListReferenceValuesQuery, PagedResult<ReferenceValueSummaryDto>>
@@ -231,6 +232,8 @@ public class ListReferenceValuesQueryHandler : IRequestHandler<ListReferenceValu
         }
         if (req.Category is { } catId)
             rows = rows.Where(r => r.categories.Any(c => c.id == catId));
+        if (!string.IsNullOrWhiteSpace(req.Status) && !string.Equals(req.Status, "all", StringComparison.OrdinalIgnoreCase))
+            rows = rows.Where(r => r.active == string.Equals(req.Status, "active", StringComparison.OrdinalIgnoreCase));
 
         var (field, desc) = ListReferenceTypesQueryHandler.ParseSort(req.Sort, "name");
         Func<ReferenceValueSummaryDto, object> key = field switch

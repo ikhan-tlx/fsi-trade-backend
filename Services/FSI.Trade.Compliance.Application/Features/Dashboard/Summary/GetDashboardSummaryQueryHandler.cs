@@ -90,7 +90,7 @@ public class GetDashboardSummaryQueryHandler
 
         var txRows = await _db.Transactions.AsNoTracking()
             .Where(t => cancelledLkp == null || t.TransactionStatusLkp != cancelledLkp)
-            .Select(t => new { t.ProductId, t.SubProductTabId })
+            .Select(t => new { t.ProductId, t.SubProductTabId, t.TransactionStatusLkp })
             .ToListAsync(ct);
 
         dto.kpis.activeInstruments = new KpiActiveInstrumentsDto { value = txRows.Count, deltaPct = null, mix = null };
@@ -119,6 +119,30 @@ public class GetDashboardSummaryQueryHandler
             .OrderByDescending(i => i.count)
             .ToList();
 
+        // ---- Open instruments by workflow status (APPLICATION_STATUS label) ----
+        // The open set (txRows) grouped by Transaction_Status_Lkp → the status
+        // Visible_Value, so the FE's "Open instruments by status" pipeline panel
+        // renders real counts. Unmapped/absent lookups fall back to "Unknown".
+        var statusLkpIds = txRows
+            .Select(r => r.TransactionStatusLkp)
+            .Distinct()
+            .ToList();
+        var statusNames = statusLkpIds.Count == 0
+            ? new Dictionary<int, string?>()
+            : (await _db.Lookups.AsNoTracking()
+                    .Where(l => l.LookupType == CancelledStatusLookupType && statusLkpIds.Contains(l.Id))
+                    .Select(l => new { l.Id, l.VisibleValue })
+                    .ToListAsync(ct))
+                .ToDictionary(x => x.Id, x => x.VisibleValue);
+
+        dto.instrumentsByStatus = txRows
+            .GroupBy(r => statusNames.TryGetValue(r.TransactionStatusLkp, out var sn) && !string.IsNullOrWhiteSpace(sn)
+                ? sn!
+                : "Unknown")
+            .Select(g => new InstrumentStatusDto { status = g.Key, count = g.Count() })
+            .OrderByDescending(s => s.count)
+            .ToList();
+
         // ---- Trend (Phase 1.5 — COUNT series, not USD) ----
         // New instruments per bucket over the range, from Created_Date.
         var trendDates = await _db.Transactions.AsNoTracking()
@@ -127,6 +151,10 @@ public class GetDashboardSummaryQueryHandler
             .Select(t => t.CreatedDate)
             .ToListAsync(ct);
         dto.exposureTrend = DashboardTrend.Build(range, from, to, trendDates);
+
+        // New instruments KPI = instruments created within the range (same set the
+        // trend is built from, so the KPI and the trend reconcile by construction).
+        dto.kpis.newInstruments = new KpiNewInstrumentsDto { value = trendDates.Count };
 
         // ---- Phase 2 (not modeled yet) ----
         dto.countryExposure = new List<CountryExposureDto>();
